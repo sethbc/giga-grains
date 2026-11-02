@@ -1,7 +1,7 @@
 # Listening pack: M2 sub-project 5 (Presets and content)
 
 This pack is rendered for the record now, in the sub-project's second group, and heard at M2's
-close (sub-project 7; the programme design's decision 1). It has two parts:
+close (sub-project 7; the program design's decision 1). It has two parts:
 
 - renders from `gg-render`, to hear offline, one per item of the spec's table (§11): the 48
   factory presets, INIT in each product and the Mutate ladder;
@@ -29,7 +29,12 @@ M=$L/media
 rm -rf "$L" && mkdir -p "$M/presets/mutate"
 $r --write-media "$M"
 cp -R "$b/content/Presets/Giga Grains" "$b/content/Presets/Giga Grains FX" "$M/presets/"
-cp "$c/Samples/Strings/violin-c4-vibrato.flac" "$M/"   # the FX's input and INIT's sample
+for f in violin-c4-vibrato viola-section-c3-vibrato cello-section-c2-vibrato; do
+  cp "$c/Samples/Strings/$f.flac" "$M/"        # the phrase's strings; the violin is INIT's sample
+done
+# First, the FX renders' input: the strings phrase, into the media folder.
+$r docs/listening/m2-presets/specs/phrase-strings.json --media-dir "$M" -o "$M/phrase-strings.wav" \
+   --spectrogram "$L/phrase-strings.png" --metrics "$L/phrase-strings.metrics.json"
 # The Mutate ladder: one press each of FX 01 Soft Focus (seed 0, the default locks).
 fx01="$M/presets/Giga Grains FX/01 Soft Focus.ggpreset"
 $r --mutate-preset "$fx01" -o "$M/presets/mutate/01 Soft Focus 10.ggpreset" --amount 0.1 --counter 1
@@ -37,6 +42,7 @@ $r --mutate-preset "$fx01" -o "$M/presets/mutate/01 Soft Focus 30.ggpreset" --am
 $r --mutate-preset "$fx01" -o "$M/presets/mutate/01 Soft Focus 60.ggpreset" --amount 0.6 --counter 3
 for s in docs/listening/m2-presets/specs/*.json; do
   n=$(basename "$s" .json)
+  [ "$n" = phrase-strings ] && continue        # rendered above
   $r "$s" --media-dir "$M" --content-dir "$c" -o "$L/$n.wav" --spectrogram "$L/$n.png" \
      --metrics "$L/$n.metrics.json"
 done
@@ -50,21 +56,26 @@ Each file is a 48 kHz, stereo, 32-bit float WAV, with a spectrogram PNG and the 
 beside it. A spec's seed is the render's (D6). Every render is deterministic, so on one platform
 the same commit gives the same bytes.
 
-**The FX input** is one content file, `Samples/Strings/violin-c4-vibrato.flac` (VSCO 2: CE's solo
-violin, arco vibrato, a held middle C, 13 s at 44.1 kHz, converted to 48 kHz), not the
-"voice-and-strings phrase" the spec words: release `v2` adds orchestral strings and brass from
-VSCO 2: CE (the director's decision, INTENT §23 #70) to `v1`'s files, but neither VCSL nor VSCO 2:
-CE has a voice, so the `voice` tag stays unused. A file input plays one file, so the "phrase" is
-one bowed note with its own onset and vibrato; the FX presets' own movement (their routes, the
-`midi` notes) does the rest. The same file is INIT's material in both products: the FX's input,
-and the instrument's sample under the phrase-and-chord.
+**The FX input is a strings phrase** rendered first, `phrase-strings.wav`, from
+[`specs/phrase-strings.json`](specs/phrase-strings.json): the instrument in plain settings (no
+preset, no route of its own, 200 ms grains at about 50 Hz, little spray, Position 0.35 in each
+sample's sustain) over three VSCO 2: CE string files of content `v2`, the solo violin
+(`Strings/violin-c4-vibrato`) as layer A, the viola section (`viola-section-c3-vibrato`) as B and
+the cello section (`cello-section-c2-vibrato`) as C, so each note sounds the violin at the key with
+the violas an octave and the cellos two octaves under it. Nine legato notes over 8 s, C4 E4 G4 A4
+G4 F4 E4 D4 C4 (peak -4.6 dBFS, RMS -16.8). It stands in for the spec's "voice-and-strings phrase":
+release `v2` adds orchestral strings and brass from VSCO 2: CE (the director's decision, INTENT §23
+#70) to `v1`'s files, but neither VCSL nor VSCO 2: CE has a voice, so the `voice` tag stays unused.
+The phrase is in the media folder (`$M/phrase-strings.wav`) to hear on its own. The solo violin
+file is also INIT's instrument sample; the Mutate ladder keeps it as its FX input (one held note,
+so the four parts compare the same material).
 
 ## The files
 
 The specs are the preset goldens' (`tests/golden/presets/cases/`), made 8 s long:
 
-- **FX** (`fx-NN-<slug>`): the violin as input; the eight `midi` presets (09 to 14, 08 and 23)
-  get two held notes from 3 s (key 55 at 3.0 s for 1.5 s, then key 67 at 5.0 s for 2.0 s);
+- **FX** (`fx-NN-<slug>`): the strings phrase as input; the eight `midi` presets (09 to 14, 08
+  and 23) get two held notes from 3 s (key 55 at 3.0 s for 1.5 s, then key 67 at 5.0 s for 2.0 s);
   17 and 18 keep their golden's transport, 120 BPM playing.
 - **Instrument** (`inst-NN-<slug>`): each golden's two-note phrase (0.25 s and 1.5 s) and its
   chord at 3.0 s, held 3 s here (to 6.0 s), so 2 s of tail; 16 and 18 keep the transport.
@@ -78,9 +89,9 @@ The specs are the preset goldens' (`tests/golden/presets/cases/`), made 8 s long
 
 | File | Length | What it is | Listen for |
 |---|---|---|---|
-| `fx-NN-<slug>.wav` × 24 | 8 s | Each FX preset over the violin; the eight `midi` ones with two held notes from 3 s | The preset's character; the MIDI ones freezing and repitching on the notes (D7) |
+| `fx-NN-<slug>.wav` × 24 | 8 s | Each FX preset over the strings phrase; the eight `midi` ones with two held notes from 3 s | The preset's character; the MIDI ones freezing and repitching on the notes (D7) |
 | `inst-NN-<slug>.wav` × 24 | 8 s | Each instrument preset: a two-note phrase, then a chord | Playable from note 1; the focus the tags promise |
-| `init-fx.wav`, `init-inst.wav` | 8 s | INIT in each product over the same material | The plain defaults (D8) |
+| `init-fx.wav`, `init-inst.wav` | 8 s | INIT in each product: the FX over the phrase, the instrument over the violin | The plain defaults (D8) |
 | `mutate-ladder.wav` | 16 s | FX 01 Soft Focus, then Mutate at 10%, 30% and 60% (seed fixed, counter 1 to 3), 4 s each | Variations that stay in the family at 10% and leave it by 60% (D3, D4) |
 
 ### Measured (the M5 Max, `build/dev` at this commit)
@@ -91,30 +102,31 @@ non-finite or denormal sample.
 
 | File | Peak dBFS | RMS dBFS | Click |
 |---|---|---|---|
-| fx-01-soft-focus | -3.87 | -19.99 | 4.12 |
-| fx-02-haze-bloom | -7.62 | -22.80 | 4.51 |
-| fx-03-slow-hours | -5.88 | -21.01 | 4.36 |
-| fx-04-undertow | -8.48 | -22.93 | 3.78 |
-| fx-05-shimmer-veil | -7.29 | -21.95 | 4.20 |
-| fx-06-spectral-mist | -4.41 | -21.91 | 3.96 |
-| fx-07-dust-motes | -4.06 | -20.70 | 5.24 |
-| fx-08-still-water | -4.28 | -21.22 | 4.16 |
-| fx-09-snapshot-keys | -4.31 | -19.06 | 4.25 |
-| fx-10-harmonic-hold | -6.42 | -20.97 | 4.23 |
-| fx-11-crystal-keys | -5.98 | -20.78 | 4.60 |
-| fx-12-drawn-bow | -4.77 | -20.07 | 4.21 |
-| fx-13-plucked-ring | -4.02 | -19.90 | 4.03 |
-| fx-14-wobble-keys | -5.28 | -20.38 | 4.64 |
-| fx-15-step-riff | -4.37 | -20.64 | 4.33 |
-| fx-16-grain-gate | -5.03 | -23.07 | 4.18 |
-| fx-17-bar-climber | -4.17 | -20.70 | 4.39 |
-| fx-18-dotted-echoes | -1.78 | -18.52 | 4.35 |
-| fx-19-infinite-regress | -4.54 | -20.66 | 4.15 |
-| fx-20-melting-clock | -7.41 | -24.05 | 4.06 |
-| fx-21-event-horizon | -2.86 | -13.69 | 6.03 |
-| fx-22-shard-storm | -5.42 | -26.65 | 5.20 |
-| fx-23-splinter-keys | -3.57 | -19.94 | 4.40 |
-| fx-24-sinking-spiral | -8.36 | -23.65 | 4.27 |
+| phrase-strings | -4.61 | -16.79 | 4.39 |
+| fx-01-soft-focus | -8.40 | -21.39 | 4.57 |
+| fx-02-haze-bloom | -10.05 | -23.71 | 4.67 |
+| fx-03-slow-hours | -6.04 | -22.43 | 4.94 |
+| fx-04-undertow | -11.71 | -24.30 | 4.42 |
+| fx-05-shimmer-veil | -9.95 | -23.32 | 4.67 |
+| fx-06-spectral-mist | -9.05 | -23.66 | 4.57 |
+| fx-07-dust-motes | -6.25 | -22.10 | 4.63 |
+| fx-08-still-water | -9.14 | -23.00 | 4.44 |
+| fx-09-snapshot-keys | -6.97 | -20.77 | 4.32 |
+| fx-10-harmonic-hold | -9.83 | -22.51 | 4.59 |
+| fx-11-crystal-keys | -7.69 | -22.27 | 4.61 |
+| fx-12-drawn-bow | -8.23 | -21.89 | 4.82 |
+| fx-13-plucked-ring | -6.56 | -21.50 | 4.71 |
+| fx-14-wobble-keys | -8.36 | -22.34 | 4.39 |
+| fx-15-step-riff | -7.96 | -21.99 | 4.73 |
+| fx-16-grain-gate | -6.23 | -24.33 | 4.39 |
+| fx-17-bar-climber | -7.00 | -21.99 | 5.03 |
+| fx-18-dotted-echoes | -4.02 | -19.78 | 4.61 |
+| fx-19-infinite-regress | -4.10 | -11.99 | 4.39 |
+| fx-20-melting-clock | -10.46 | -25.55 | 4.56 |
+| fx-21-event-horizon | -3.29 | -13.34 | 8.47 |
+| fx-22-shard-storm | -9.12 | -28.06 | 5.10 |
+| fx-23-splinter-keys | -5.99 | -21.64 | 4.81 |
+| fx-24-sinking-spiral | -10.55 | -25.15 | 4.47 |
 | inst-01-bowed-horizon | -4.21 | -20.89 | 4.34 |
 | inst-02-glass-orchard | -3.31 | -20.65 | 5.62 |
 | inst-03-ember-field | -6.86 | -20.31 | 0.00 |
@@ -139,7 +151,7 @@ non-finite or denormal sample.
 | inst-22-hall-of-mirrors | -5.36 | -20.30 | 4.52 |
 | inst-23-locust-cloud | -6.45 | -19.29 | 8.80 |
 | inst-24-time-dilation | -4.68 | -19.93 | 4.93 |
-| init-fx | -4.20 | -19.84 | 4.42 |
+| init-fx | -7.15 | -21.40 | 4.51 |
 | init-inst | -20.34 | -38.99 | 3.68 |
 | mutate-ladder-0-original | -4.75 | -20.43 | 4.09 |
 | mutate-ladder-1-10 | -4.97 | -20.35 | 4.03 |
@@ -148,16 +160,30 @@ non-finite or denormal sample.
 
 Notes for the sitting:
 
-- **Most presets sit within a few dB of -20 dBFS RMS.** The outliers: `fx-21-event-horizon` is
-  the loudest (-13.7: a long room fed by a sustained input; peak -2.9), `fx-18-dotted-echoes`
-  peaks highest (-1.8), and `fx-22-shard-storm` (-26.7) and the pulsed `inst-07`, `inst-16` and
-  `inst-17` are quietest. `init-inst` is -39 dBFS RMS (peak -20.3): INIT's Position reads the
-  very start of the sample, and the violin's bow swells in there (the same spec at Position 0.5
-  peaks at -4.9 dBFS). Whether INIT should start the instrument further into a sample is a
-  question for the sitting (D8), not a fault of the render.
-- **The FX presets' character over a held note.** With one bowed note as input, a preset whose
-  Mix keeps much of the dry signal sounds close to the violin; listen for what each adds on top.
-  The `midi` presets show the freeze plainly: the held note's frozen copy at the key's pitch.
+- **Levels.** The instrument presets sit within a few dB of -20 dBFS RMS, the FX ones 1 to 8 dB
+  under it over the phrase (their Mix keeps part of an input at -16.8). The outliers:
+  `fx-19-infinite-regress` (-12.0) and `fx-21-event-horizon` (-13.3, peak -3.3) are loudest, both
+  regenerating (Feedback 0.93; a long room), and `fx-22-shard-storm` (-28.1), `fx-20-melting-clock`
+  (-25.6) and the pulsed `inst-07`, `inst-16` and `inst-17` quietest. `init-inst` is -39 dBFS RMS
+  (peak -20.3): INIT's Position reads the very start of the sample, and the violin's bow swells
+  in there (the same spec at Position 0.5 peaks at -4.9 dBFS). Whether INIT should start the
+  instrument further into a sample is a question for the sitting (D8), not a fault of the render.
+- **Per preset, where the character is specific:**
+  - FX 09 to 14, 08 and 23 (`midi`): from 3 s the last moment freezes and plays at key 55, then
+    67 from 5 s; 23 shatters into shards over two octaves while a key is held.
+  - FX 15 Step Riff: an eight-step pitch figure over the phrase at 4 Hz; FX 16 Grain Gate: the
+    phrase chopped by a 16-step gate.
+  - FX 17 Bar Climber and 18 Dotted Echoes **need a playing host transport** (here 120 BPM):
+    17's pitch climbs an octave over each bar, 18's grain length pulses with the beat under a
+    fixed 375 ms ping-pong. Without a transport they sound like plain clouds.
+  - FX 22 Shard Storm: short, pitched-up grains; on drum input they tick at the transients
+    (that's why its golden runs over a sweep), so try it on a drum loop in the host.
+  - FX 19 Infinite Regress: the regenerating feedback builds over the 8 s; listen that it
+    stays bounded.
+  - Instrument 15 Kalimba Steps: the mbira's recorded hiss (gained +27.3 dB in the content)
+    shows under the arpeggio even through its 3.5 kHz low-pass; judge whether it's acceptable.
+  - Instrument 16 Pulse Bells and 18 Clockwork Brass also follow the transport (beat and bar).
+  - Instrument 19 Gong Abyss blooms slowly: its first note sounds after about 0.5 s.
 - **The ladder's grain counts** (one run of the event log) are 171 at 10%, 946 at 30% and 22 at
   60%: at 60% Density has moved far enough to change the texture's grain, which is the point.
 

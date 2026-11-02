@@ -5,5 +5,5 @@
   "blockSize": 256,
   "seed": 1,
   "preset": "presets/Giga Grains FX/03 Slow Hours.ggpreset",
-  "input": {"kind": "file", "path": "violin-c4-vibrato.flac"}
+  "input": {"kind": "file", "path": "phrase-strings.wav"}
 }
