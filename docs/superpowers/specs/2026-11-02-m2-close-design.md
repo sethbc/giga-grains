@@ -4,7 +4,7 @@
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 7 of 7, wave 4 |
 | **Status** | **Approved by the program manager 2026-11-02**, with **the director's decisions of 2026-11-02 by forced choice: option 1 of every question in §8** (K-1 to K-8, rows 402, 333, 393, 396 and 387, the gate's shape and the host checks), recorded in §8 and applied in place. Phase B (the plan and the build) starts from here. Drafted 2026-11-02 as Phase A of the close's brief: the consistency review (`docs/m2-consistency-review.md`) and the carry-over triage (§10) |
-| **Spec authority** | `INTENT.md`; the program design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`, renamed to `…-program-design.md` by §6.6), whose §6.7 this document **amends** (§1) and realizes |
+| **Spec authority** | `INTENT.md`; the program design (`docs/superpowers/specs/2026-10-29-m2-program-design.md`, renamed to `…-program-design.md` by §6.6), whose §6.7 this document **amends** (§1) and realizes |
 | **Builds on** | Sub-projects 1 to 6, all merged (PRs #15 to #20, #23 to #25; INTENT §23 #65, #66, #68 to #71); the CI changes (#28, #29; §23 #73 to #76) |
 | **Starts from** | `main` at `0189dc9` on branch `m2-close`; `docs/m2-carry-over.md` with **80 open rows** (79 open plus row 330, closed in part) |
 | **Waits on** | Nothing for the build. Outside this sub-project and left to the program manager: the Windows link race on dispatch run 41543261855 (two format targets writing one `.exp`/`.lib`, from #76; PR #30, the Windows link pool; this branch merges `main` when it lands) and the docs-only CI change (heavy jobs skipped on docs-only PRs under one required gate, a PR of its own) |

@@ -1,7 +1,7 @@
 # Consistency review C: the M2 program documents and sub-projects 1, 2 and 3, against INTENT
 
-**Read:** `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (all 640 lines);
-`docs/superpowers/plans/2026-10-29-m2-programme.md` (all 293); the layers spec
+**Read:** `docs/superpowers/specs/2026-10-29-m2-program-design.md` (all 640 lines);
+`docs/superpowers/plans/2026-10-29-m2-program.md` (all 293); the layers spec
 (`2026-10-29-m2-layers-design.md`, all 1038), the engine spec (`2026-10-30-m2-engine-design.md`,
 all 947) and the sources spec (`2026-10-30-m2-sources-design.md`: status, §1–§6.11, §7–§15);
 INTENT §13, §14 (units, budget, mipmaps, the chain, the morph, the Source kind, the matrix's
