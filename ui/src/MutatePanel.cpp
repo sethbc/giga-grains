@@ -18,7 +18,7 @@
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/data/Continuous.h>
 
-#include "Theme.h"
+#include "PresetColours.h"
 #include "gg/core/Mutate.h"
 
 namespace gg::ui
@@ -37,7 +37,9 @@ constexpr int kHeadingHeight = 26;
 constexpr int kAllWidth = 90; ///< a layer's Lock all and Unlock all
 constexpr int kBarHeight = 64;
 constexpr float kDefaultAmount = 0.15f;
-constexpr float kOffAlpha = 0.4f; // an off layer's rows
+/// An off layer's rows and the not-mutable ones: the dim text at this alpha reads at least 3:1
+/// on both themes' ground (it was 0.4: 1.8:1 in the light theme, 2.1 in the dark). Row 313.
+constexpr float kOffAlpha = 0.75f;
 
 juce::String fromUtf8(const std::string &text) { return juce::String::fromUTF8(text.c_str()); }
 
@@ -45,11 +47,7 @@ void styleButton(juce::TextButton &button, const juce::String &id, const juce::S
 {
     button.setComponentID(id);
     button.setButtonText(text);
-    button.setColour(juce::TextButton::buttonColourId, theme::kBackground);
-    button.setColour(juce::TextButton::buttonOnColourId, theme::kAccent.withAlpha(0.35f));
-    button.setColour(juce::TextButton::textColourOffId, theme::kDimText);
-    button.setColour(juce::TextButton::textColourOnId, theme::kText);
-    button.setColour(juce::ComboBox::outlineColourId, theme::kOutline);
+    colourButton(button, Palette::dark()); // the panel's palette replaces it (applyPalette)
 }
 
 /// The amount knob's source: a value of the panel's own, 0 to 1.
@@ -170,7 +168,6 @@ struct MutatePanel::Impl
         section->title = title;
         section->heading.setText(title, juce::dontSendNotification);
         section->heading.setFont(juce::FontOptions(14.0f, juce::Font::bold));
-        section->heading.setColour(juce::Label::textColourId, theme::kText);
         content.addAndMakeVisible(section->heading);
         if (idLetter.isNotEmpty())
         {
@@ -380,10 +377,8 @@ MutatePanel::MutatePanel(const EditorContext &context) : impl_(std::make_unique<
     m.legend.setText("Highlighted parameters are locked: Mutate leaves them where they are.",
                      juce::dontSendNotification);
     m.legend.setFont(juce::FontOptions(12.0f));
-    m.legend.setColour(juce::Label::textColourId, theme::kDimText);
     m.amountText.setComponentID("mutate.amountText");
     m.amountText.setFont(juce::FontOptions(13.0f));
-    m.amountText.setColour(juce::Label::textColourId, theme::kText);
     auto showAmount = [&m] {
         m.amountText.setText("Amount " +
                                  fromUtf8(m.amountSource.getValueAsStringFor(m.amountSource.value)),
@@ -397,7 +392,6 @@ MutatePanel::MutatePanel(const EditorContext &context) : impl_(std::make_unique<
     styleButton(m.go, "mutate.go", "Mutate");
     styleButton(m.reset, "mutate.reset", "Reset locks");
     styleButton(m.close, "mutate.close", "Close");
-    m.go.setColour(juce::TextButton::textColourOffId, theme::kText);
     m.go.setTooltip("Move every parameter that is not locked, by the amount");
     m.reset.setTooltip("Lock the structure alone (Mix, Level, the layers' on switches, the"
                        " macros...); a layer that is off is left alone while it is off");
@@ -426,7 +420,39 @@ MutatePanel::MutatePanel(const EditorContext &context) : impl_(std::make_unique<
         addAndMakeVisible(*c);
     }
     m.showLocks();
+    applyPalette();
 }
+
+void MutatePanel::applyPalette()
+{
+    Impl &m = *impl_;
+    const Palette &palette = paletteOf(*this);
+    m.legend.setColour(juce::Label::textColourId, palette.dimText);
+    m.amountText.setColour(juce::Label::textColourId, palette.text);
+    for (juce::TextButton *button : {&m.go, &m.reset, &m.close})
+    {
+        colourButton(*button, palette);
+    }
+    m.go.setColour(juce::TextButton::textColourOffId, palette.text);
+    for (const auto &section : m.sections)
+    {
+        section->heading.setColour(juce::Label::textColourId, palette.text);
+        if (section->isLayer)
+        {
+            colourButton(section->lockAll, palette);
+            colourButton(section->unlockAll, palette);
+        }
+        for (const auto &row : section->rows)
+        {
+            colourButton(row->button, palette);
+        }
+    }
+    repaint();
+}
+
+void MutatePanel::parentHierarchyChanged() { applyPalette(); }
+
+void MutatePanel::lookAndFeelChanged() { applyPalette(); }
 
 MutatePanel::~MutatePanel() { impl_->viewport.setViewedComponent(nullptr, false); }
 
@@ -444,8 +470,9 @@ void MutatePanel::refresh()
 
 void MutatePanel::paint(juce::Graphics &g)
 {
-    g.fillAll(theme::kBackground); // opaque: nothing of the Perform view shows through (UI-1)
-    g.setColour(theme::kOutline);
+    const Palette &palette = paletteOf(*this);
+    g.fillAll(palette.background); // opaque: nothing of the Perform view shows through (UI-1)
+    g.setColour(palette.outline);
     g.drawRect(getLocalBounds());
 }
 

@@ -77,6 +77,8 @@ class PresetBrowser final : public juce::Component,
     void paint(juce::Graphics &g) override;
     void resized() override;
     void visibilityChanged() override;
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
     bool keyPressed(const juce::KeyPress &key) override;
 
   private:
@@ -111,6 +113,8 @@ class PresetBrowser final : public juce::Component,
     PresetSaveResult save(const std::string &name, const std::vector<std::string> &tags,
                           const std::string &description, bool overwrite);
     void close();
+    /// The controls' colors from the editor's palette (a theme switch calls it again).
+    void applyPalette();
     void setNotice(const juce::String &text);
     void updateStatus();
     void updateButtons();

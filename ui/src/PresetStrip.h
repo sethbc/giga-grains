@@ -36,9 +36,14 @@ class PresetStrip final : public juce::Component, public juce::SettableTooltipCl
     void focusName();
 
     void resized() override;
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
     bool keyPressed(const juce::KeyPress &key) override;
 
   private:
+    /// The buttons' colors from the editor's palette (a theme switch calls it again).
+    void applyPalette();
+
     const EditorContext &context_;
     juce::TextButton prev_, name_, next_;
     juce::String fullName_; // the name last shown, uncut, with its mark

@@ -10,7 +10,9 @@
 // ends; each case runs in a process of its own. A preset load calls state.mark_dirty, and a
 // browser load tells the host with preset_load.loaded: both pinned here with a stub host.
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -30,6 +32,7 @@
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/data/Continuous.h>
 
+#include "Palette.h"
 #include "PluginHarness.h"
 #include "PresetBrowser.h"
 #include "editor/EditorPlugin.h"
@@ -1195,4 +1198,267 @@ TEST_CASE("each layer's Lock all and Unlock all have a row of their own, in view
             CHECK_FALSE(rows[i].intersects(rows[j]));
         }
     }
+}
+
+// ---- Row 313: the strip, the browser and the Mutate panel take the editor's theme ----
+
+namespace
+{
+using gg::ui::ThemeChoice;
+
+/// WCAG's contrast ratio of two opaque colors.
+double contrastOf(juce::Colour a, juce::Colour b)
+{
+    const auto luminance = [](juce::Colour c) {
+        const auto lin = [](float v) {
+            return v <= 0.03928f ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * lin(c.getFloatRed()) + 0.7152 * lin(c.getFloatGreen()) +
+               0.0722 * lin(c.getFloatBlue());
+    };
+    const double la = luminance(a), lb = luminance(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+/// `fg` at its own alpha, times `alpha`, over the opaque `bg`.
+juce::Colour over(juce::Colour fg, juce::Colour bg, float alpha = 1.0f)
+{
+    return bg.interpolatedWith(fg.withAlpha(1.0f), fg.getFloatAlpha() * alpha);
+}
+
+const gg::ui::Palette &paletteFor(ThemeChoice theme)
+{
+    return theme == ThemeChoice::Light ? gg::ui::Palette::light() : gg::ui::Palette::dark();
+}
+
+/// A button's text against its ground, off and on (the on ground: buttonOn over buttonColour).
+void checkButton(const juce::TextButton &button)
+{
+    INFO(button.getComponentID());
+    const juce::Colour ground = button.findColour(juce::TextButton::buttonColourId);
+    CHECK(contrastOf(over(button.findColour(juce::TextButton::textColourOffId), ground), ground) >=
+          4.5);
+    const juce::Colour onGround =
+        over(button.findColour(juce::TextButton::buttonOnColourId), ground);
+    CHECK(contrastOf(over(button.findColour(juce::TextButton::textColourOnId), onGround),
+                     onGround) >= 4.5);
+}
+
+/// The component drawn offscreen at 1x.
+juce::Image drawn(juce::Component &c)
+{
+    return c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);
+}
+
+/// The most contrasting pixel of `area` against `ground`: the text's color at full coverage.
+double strongestContrast(const juce::Image &image, juce::Rectangle<int> area, juce::Colour ground)
+{
+    double best = 1.0;
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+    {
+        for (int x = area.getX(); x < area.getRight(); ++x)
+        {
+            best = std::max(best, contrastOf(image.getPixelAt(x, y).withAlpha(1.0f), ground));
+        }
+    }
+    return best;
+}
+
+void saveImage(const juce::Image &image, const char *name)
+{
+    const char *dir = std::getenv("GG_SCREENSHOT_DIR");
+    if (dir == nullptr || *dir == '\0')
+    {
+        return;
+    }
+    juce::File out = juce::File(juce::String::fromUTF8(dir)).getChildFile(name);
+    juce::FileOutputStream stream(out);
+    if (stream.openedOk())
+    {
+        stream.setPosition(0);
+        stream.truncate();
+        juce::PNGImageFormat().writeImageToStream(image, stream);
+    }
+}
+} // namespace
+
+TEST_CASE("the strip, the browser and the Mutate panel read in both themes", "[plugin][ui][mutate]")
+{
+    // Every text against its ground is at least 4.5:1 (WCAG AA) in the light and the dark theme,
+    // and each takes the palette's grounds. A dimmed row (an off layer's, Ring Length) is
+    // disabled text: WCAG exempts it, and it must still read, so at least 3:1 (the large-text
+    // and UI-component floor).
+    const Machine machine("theme-contrast");
+    putPresets(machine);
+    Fixture f;
+    f.openBrowser();
+    f.list().selectRow(1);
+    click(need<juce::TextButton>(*f.list().getComponentForRowNumber(1), "preset.star"));
+    f.tick();
+    f.list().selectRow(2); // a selected row, a favorite row and a loaded one: three looks
+    for (const ThemeChoice theme : {ThemeChoice::Light, ThemeChoice::Dark})
+    {
+        INFO((theme == ThemeChoice::Light ? "light" : "dark"));
+        REQUIRE(gg::ui::setTheme(*f.editor, theme));
+        const auto &palette = paletteFor(theme);
+
+        // The strip.
+        for (const char *id : {"preset.prev", "preset.name", "preset.next"})
+        {
+            checkButton(need<juce::TextButton>(*f.editor, id));
+        }
+        CHECK(need<juce::TextButton>(*f.editor, "preset.name")
+                  .findColour(juce::TextButton::buttonColourId) == palette.background);
+
+        // The browser.
+        REQUIRE(f.browser().isVisible());
+        CHECK(drawn(f.browser()).getPixelAt(5, 5) == palette.background);
+        for (const char *id :
+             {"preset.favorites", "preset.save", "preset.mutate", "preset.delete", "preset.folder"})
+        {
+            checkButton(need<juce::TextButton>(f.browser(), id));
+        }
+        for (const char *id : {"preset.tag.rhythmic", "preset.tag.texture"})
+        {
+            checkButton(need<juce::TextButton>(f.browser(), id));
+        }
+        const auto &search = need<juce::TextEditor>(f.browser(), "preset.search");
+        const juce::Colour box = search.findColour(juce::TextEditor::backgroundColourId);
+        CHECK(box == palette.background);
+        CHECK(contrastOf(search.findColour(juce::TextEditor::textColourId), box) >= 4.5);
+        CHECK(search.findColour(juce::TextEditor::focusedOutlineColourId) == palette.accent);
+        CHECK(contrastOf(need<juce::Label>(f.browser(), "preset.status")
+                             .findColour(juce::Label::textColourId),
+                         palette.background) >= 4.5);
+        const juce::Colour listGround = f.list().findColour(juce::ListBox::backgroundColourId);
+        CHECK(listGround == palette.header);
+        const juce::Image listImage = drawn(f.list());
+        for (int row = 0; row < f.rows(); ++row)
+        {
+            INFO("row " << row);
+            auto *component = f.list().getComponentForRowNumber(row);
+            REQUIRE(component != nullptr);
+            const auto at = f.list().getLocalArea(component, component->getLocalBounds());
+            const juce::Colour ground = listImage.getPixelAt(at.getX() + 1, at.getY() + 1);
+            const int w = at.getWidth();
+            const int h = at.getHeight();
+            // The strongest pixel is the text at full coverage: the name, then the tags.
+            CHECK(strongestContrast(listImage, {at.getX() + 6, at.getY() + 2, 52, h - 4}, ground) >=
+                  4.5);
+            if (row > 0)
+            {
+                CHECK(strongestContrast(listImage, {at.getX() + 70, at.getY() + 2, w - 140, h - 4},
+                                        ground) >= 4.5);
+            }
+            // The star is a glyph, not text: WCAG's 3:1 for graphics (1.4.11) holds it. The
+            // accent of a favorite is 4.4:1 on the light ground, under the 4.5 of text.
+            const auto &star = need<juce::TextButton>(*component, "preset.star");
+            CHECK(contrastOf(star.findColour(juce::TextButton::textColourOffId),
+                             star.findColour(juce::TextButton::buttonColourId)) >= 3.0);
+        }
+        // The Save as panel.
+        click(f.button("preset.save"));
+        auto &save = *find(f.browser(), "preset.savepanel");
+        REQUIRE(save.isVisible());
+        for (const char *id : {"preset.save.ok", "preset.save.cancel", "preset.save.tag.rhythmic"})
+        {
+            checkButton(need<juce::TextButton>(save, id));
+        }
+        const auto &name = need<juce::TextEditor>(save, "preset.save.name");
+        CHECK(contrastOf(name.findColour(juce::TextEditor::textColourId),
+                         name.findColour(juce::TextEditor::backgroundColourId)) >= 4.5);
+        CHECK(name.findColour(juce::TextEditor::backgroundColourId) == palette.background);
+        const auto &message = need<juce::Label>(save, "preset.save.message");
+        CHECK(contrastOf(message.findColour(juce::Label::textColourId), palette.header) >= 4.5);
+        save.setVisible(false);
+
+        // The Mutate panel.
+        click(need<juce::TextButton>(f.browser(), "preset.mutate"));
+        REQUIRE(panel(f).isVisible());
+        f.tick();
+        CHECK(drawn(panel(f)).getPixelAt(5, 5) == palette.background);
+        for (const char *id : {"mutate.go", "mutate.reset", "mutate.close", "mutate.lockall.A",
+                               "mutate.unlockall.B"})
+        {
+            checkButton(need<juce::TextButton>(panel(f), id));
+        }
+        for (const ParamSlot slot : {ParamSlot::Mix, ParamSlot::Size, ParamSlot::LimiterMode})
+        {
+            checkButton(lockRow(f, slot)); // locked (on) and unlocked (off) rows
+        }
+        const auto labelOn = [&](const char *id, double floor) {
+            INFO(id);
+            CHECK(contrastOf(need<juce::Label>(panel(f), id).findColour(juce::Label::textColourId),
+                             palette.background) >= floor);
+        };
+        labelOn("mutate.heading.A", 4.5);
+        labelOn("mutate.heading.delay", 4.5);
+        labelOn("mutate.heading.limiter", 4.5);
+        labelOn("mutate.amountText", 4.5);
+        // Dimmed rows (an off layer B's, Ring Length): the text blended with the panel's ground.
+        for (const ParamSlot slot : {ParamSlot::B_Size, ParamSlot::RingLength})
+        {
+            auto &row = lockRow(f, slot);
+            REQUIRE(row.getAlpha() < 1.0f);
+            const juce::Colour shown = over(row.findColour(juce::TextButton::textColourOffId),
+                                            palette.background, row.getAlpha());
+            INFO("dimmed " << lockId(slot));
+            CHECK(contrastOf(shown, palette.background) >= 3.0);
+        }
+        // Back to the browser's place for the next theme.
+        click(need<juce::TextButton>(panel(f), "mutate.close"));
+        click(f.button("preset.name"));
+        REQUIRE(f.browser().isVisible());
+    }
+}
+
+TEST_CASE("a theme switch with the browser and the Mutate panel open repaints them",
+          "[plugin][ui][mutate]")
+{
+    const Machine machine("theme-switch");
+    putPresets(machine);
+    Fixture f;
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Dark));
+    f.openBrowser();
+    const juce::Colour darkGround = drawn(f.browser()).getPixelAt(5, 5);
+    const juce::Colour darkButton =
+        f.button("preset.save").findColour(juce::TextButton::buttonColourId);
+    const juce::Colour darkStrip =
+        f.button("preset.name").findColour(juce::TextButton::textColourOffId);
+    const juce::Colour darkList = f.list().findColour(juce::ListBox::backgroundColourId);
+    saveImage(drawn(*f.editor), "dark-browser.png");
+
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Light)); // the browser stays open
+    REQUIRE(f.browser().isVisible());
+    const auto &light = gg::ui::Palette::light();
+    CHECK(drawn(f.browser()).getPixelAt(5, 5) == light.background);
+    CHECK(drawn(f.browser()).getPixelAt(5, 5) != darkGround);
+    CHECK(f.button("preset.save").findColour(juce::TextButton::buttonColourId) != darkButton);
+    CHECK(f.button("preset.name").findColour(juce::TextButton::textColourOffId) != darkStrip);
+    CHECK(f.button("preset.name").findColour(juce::TextButton::textColourOffId) == light.text);
+    CHECK(f.list().findColour(juce::ListBox::backgroundColourId) != darkList);
+    CHECK(f.list().findColour(juce::ListBox::backgroundColourId) == light.header);
+    saveImage(drawn(*f.editor), "light-browser.png");
+
+    click(need<juce::TextButton>(f.browser(), "preset.mutate"));
+    REQUIRE(panel(f).isVisible());
+    CHECK(drawn(panel(f)).getPixelAt(5, 5) == light.background);
+    const juce::Colour lightHeading =
+        need<juce::Label>(panel(f), "mutate.heading.A").findColour(juce::Label::textColourId);
+    CHECK(lightHeading == light.text);
+    saveImage(drawn(*f.editor), "light-mutate.png");
+
+    // Switched back while the panel is open, it follows.
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Dark));
+    CHECK(drawn(panel(f)).getPixelAt(5, 5) == gg::ui::Palette::dark().background);
+    CHECK(need<juce::Label>(panel(f), "mutate.heading.A").findColour(juce::Label::textColourId) ==
+          gg::ui::Palette::dark().text);
+    CHECK(lockRow(f, ParamSlot::Size).findColour(juce::TextButton::buttonColourId) ==
+          gg::ui::Palette::dark().background);
+    click(need<juce::TextButton>(panel(f), "mutate.close"));
+
+    // The strip alone, browser closed.
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Light));
+    CHECK(f.button("preset.next").findColour(juce::TextButton::textColourOffId) == light.dimText);
+    saveImage(drawn(*f.editor), "light-strip.png");
 }

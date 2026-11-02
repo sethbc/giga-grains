@@ -48,10 +48,14 @@ class MutatePanel final : public juce::Component
     void paint(juce::Graphics &g) override;
     void resized() override;
     void visibilityChanged() override;
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
     bool keyPressed(const juce::KeyPress &key) override;
 
   private:
     struct Impl;
+    /// The controls' colors from the editor's palette (a theme switch calls it again).
+    void applyPalette();
     std::unique_ptr<Impl> impl_;
 };
 } // namespace gg::ui

@@ -8,7 +8,7 @@
 #include <initializer_list>
 #include <utility>
 
-#include "Theme.h"
+#include "PresetColours.h"
 
 namespace gg::ui
 {
@@ -27,21 +27,14 @@ void styleButton(juce::TextButton &button, const char *id, const juce::String &t
 {
     button.setComponentID(id);
     button.setButtonText(text);
-    button.setColour(juce::TextButton::buttonColourId, theme::kBackground);
-    button.setColour(juce::TextButton::buttonOnColourId, theme::kAccent.withAlpha(0.35f));
-    button.setColour(juce::TextButton::textColourOffId, theme::kDimText);
-    button.setColour(juce::TextButton::textColourOnId, theme::kText);
-    button.setColour(juce::ComboBox::outlineColourId, theme::kOutline);
+    colourButton(button, Palette::dark()); // the owner's palette replaces it (applyPalette)
 }
 
 void styleEditor(juce::TextEditor &editor, const char *id, const juce::String &placeholder)
 {
     editor.setComponentID(id);
-    editor.setTextToShowWhenEmpty(placeholder, theme::kDimText);
-    editor.setColour(juce::TextEditor::backgroundColourId, theme::kBackground);
-    editor.setColour(juce::TextEditor::textColourId, theme::kText);
-    editor.setColour(juce::TextEditor::outlineColourId, theme::kOutline);
-    editor.setColour(juce::TextEditor::focusedOutlineColourId, theme::kAccent);
+    editor.setTextToShowWhenEmpty(placeholder, Palette::dark().dimText);
+    colourEditor(editor, Palette::dark()); // the owner's palette replaces it (applyPalette)
 }
 
 /// A toggle for the tag `word`.
@@ -98,22 +91,35 @@ struct PresetBrowser::Row final : juce::Component
         const PresetRow &r = owner.rows_[owner.visible_[static_cast<std::size_t>(row)]];
         star.setButtonText(r.favorite ? juce::String::fromUTF8("\xe2\x98\x85")
                                       : juce::String::fromUTF8("\xe2\x98\x86"));
-        star.setColour(juce::TextButton::textColourOffId,
-                       r.favorite ? theme::kAccent : theme::kDimText);
+        favorite = r.favorite;
+        applyPalette();
         star.setTooltip(r.favorite ? "Remove from favorites" : "Add to favorites");
         setTitle(fromUtf8(r.name));
         repaint();
     }
 
+    /// The star's colors: the accent when a favorite, else the dim text.
+    void applyPalette()
+    {
+        const Palette &palette = paletteOf(*this);
+        colourButton(star, palette);
+        star.setColour(juce::TextButton::textColourOffId,
+                       favorite ? palette.accent : palette.dimText);
+    }
+
+    void parentHierarchyChanged() override { applyPalette(); }
+    void lookAndFeelChanged() override { applyPalette(); }
+
     void paint(juce::Graphics &g) override
     {
         const PresetRow &r = owner.rows_[owner.visible_[static_cast<std::size_t>(row)]];
+        const Palette &palette = paletteOf(*this);
         if (selected)
         {
-            g.fillAll(theme::kAccent.withAlpha(0.25f));
+            g.fillAll(palette.accent.withAlpha(0.25f));
         }
         auto area = getLocalBounds().withTrimmedRight(kStarWidth + kGap).reduced(6, 0);
-        g.setColour(r.loaded ? theme::kText : theme::kText.withAlpha(0.85f));
+        g.setColour(r.loaded ? palette.text : palette.text.withAlpha(0.85f));
         const juce::Font nameFont(
             juce::FontOptions(14.0f, r.loaded ? juce::Font::bold : juce::Font::plain));
         g.setFont(nameFont);
@@ -132,7 +138,8 @@ struct PresetBrowser::Row final : juce::Component
             tags = juce::String(r.factory ? "factory" : "content") + (tags.isEmpty() ? "" : "  ") +
                    tags;
         }
-        g.setColour(theme::kDimText);
+        // The dim text is 3.6:1 on the selected row's tinted ground: the text's color there.
+        g.setColour(selected ? palette.text : palette.dimText);
         g.setFont(juce::FontOptions(12.0f));
         g.drawText(tags, area, juce::Justification::centredLeft, true);
     }
@@ -143,6 +150,7 @@ struct PresetBrowser::Row final : juce::Component
     juce::TextButton star;
     int row{0};
     bool selected{false};
+    bool favorite{false};
 };
 
 /// The Save as… panel: a name, a description and tags, OK and Cancel.
@@ -155,9 +163,7 @@ class PresetBrowser::SavePanel final : public juce::Component
         setWantsKeyboardFocus(true);
         title_.setText(juce::String::fromUTF8("Save as\xe2\x80\xa6"), juce::dontSendNotification);
         title_.setFont(juce::FontOptions(15.0f, juce::Font::bold));
-        title_.setColour(juce::Label::textColourId, theme::kText);
         message_.setComponentID("preset.save.message");
-        message_.setColour(juce::Label::textColourId, theme::kAccent);
         styleEditor(name_, "preset.save.name", "Name");
         styleEditor(description_, "preset.save.description", "Description (optional)");
         styleButton(ok_, "preset.save.ok", "OK");
@@ -183,8 +189,30 @@ class PresetBrowser::SavePanel final : public juce::Component
         addAndMakeVisible(description_);
         addAndMakeVisible(ok_);
         addAndMakeVisible(cancel_);
+        applyPalette();
         setVisible(false);
     }
+
+    /// The panel's controls from the editor's palette; the message is in the text's color (the
+    /// notice's and the accent's are under 4.5:1 on the light header).
+    void applyPalette()
+    {
+        const Palette &palette = paletteOf(*this);
+        title_.setColour(juce::Label::textColourId, palette.text);
+        message_.setColour(juce::Label::textColourId, palette.text);
+        colourEditor(name_, palette);
+        colourEditor(description_, palette);
+        colourButton(ok_, palette);
+        colourButton(cancel_, palette);
+        for (const auto &tag : tags_)
+        {
+            colourButton(*tag, palette);
+        }
+        repaint();
+    }
+
+    void parentHierarchyChanged() override { applyPalette(); }
+    void lookAndFeelChanged() override { applyPalette(); }
 
     void open(const juce::String &name)
     {
@@ -217,9 +245,10 @@ class PresetBrowser::SavePanel final : public juce::Component
     void paint(juce::Graphics &g) override
     {
         g.fillAll(juce::Colours::black.withAlpha(0.55f));
-        g.setColour(theme::kHeader);
+        const Palette &palette = paletteOf(*this);
+        g.setColour(palette.header);
         g.fillRoundedRectangle(box_.toFloat(), 4.0f);
-        g.setColour(theme::kOutline);
+        g.setColour(palette.outline);
         g.drawRoundedRectangle(box_.toFloat(), 4.0f, 1.0f);
     }
 
@@ -347,12 +376,9 @@ PresetBrowser::PresetBrowser(const EditorContext &context)
     deleteButton_.onClick = [this] { deleteSelected(); };
     folderButton_.onClick = [this] { chooseContentFolder(); };
     status_.setComponentID("preset.status");
-    status_.setColour(juce::Label::textColourId, theme::kDimText);
     status_.setFont(juce::FontOptions(12.0f));
     list_.setComponentID("preset.list");
     list_.setRowHeight(kRowHeight);
-    list_.setColour(juce::ListBox::backgroundColourId, theme::kLane);
-    list_.setColour(juce::ListBox::outlineColourId, theme::kOutline);
     list_.setOutlineThickness(1);
     list_.setWantsKeyboardFocus(true);
 
@@ -363,6 +389,7 @@ PresetBrowser::PresetBrowser(const EditorContext &context)
         addAndMakeVisible(*c);
     }
     addChildComponent(*savePanel_);
+    applyPalette();
 
     browse = [this](const Browse &b, std::function<void(const juce::File &)> done) {
         chooser_ = std::make_unique<juce::FileChooser>(b.title, b.initial, "");
@@ -380,10 +407,35 @@ PresetBrowser::~PresetBrowser()
     list_.setModel(nullptr);
 }
 
+void PresetBrowser::applyPalette()
+{
+    const Palette &palette = paletteOf(*this);
+    for (juce::TextButton *button :
+         {&favorites_, &saveButton_, &mutateButton_, &deleteButton_, &folderButton_})
+    {
+        colourButton(*button, palette);
+    }
+    for (const auto &tag : tagButtons_)
+    {
+        colourButton(*tag, palette);
+    }
+    colourEditor(search_, palette);
+    status_.setColour(juce::Label::textColourId, palette.dimText);
+    // The list sits on the header's ground: the lanes' (kLane) stay dark in both themes (D9).
+    list_.setColour(juce::ListBox::backgroundColourId, palette.header);
+    list_.setColour(juce::ListBox::outlineColourId, palette.outline);
+    repaint();
+}
+
+void PresetBrowser::parentHierarchyChanged() { applyPalette(); }
+
+void PresetBrowser::lookAndFeelChanged() { applyPalette(); }
+
 void PresetBrowser::paint(juce::Graphics &g)
 {
-    g.fillAll(theme::kBackground); // opaque: nothing of the Perform view shows through (UI-1)
-    g.setColour(theme::kOutline);
+    const Palette &palette = paletteOf(*this);
+    g.fillAll(palette.background); // opaque: nothing of the Perform view shows through (UI-1)
+    g.setColour(palette.outline);
     g.drawRect(getLocalBounds());
 }
 
@@ -703,6 +755,7 @@ void PresetBrowser::rebuildTags()
             }
             applyFilter();
         };
+        colourButton(*button, paletteOf(*this));
         addAndMakeVisible(*button);
         tagButtons_.push_back(std::move(button));
     }
