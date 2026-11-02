@@ -1,0 +1,28 @@
+{
+  "product": "fx",
+  "name": "Shard Storm",
+  "author": "Giga Grains",
+  "description": "Tiny grains at random pitches through a jumping resonant band-pass: the input shredded into glitter and noise; wild on pads and held notes.",
+  "tags": ["extreme", "glitch", "noise", "live-input"],
+  "params": {
+    "Mix": 0.8,
+    "Size": -5.643856,
+    "Density": 7.643856,
+    "Distribution": 1,
+    "Spray": 0.752101,
+    "Stereo": 1,
+    "A Pitch Spread": 24,
+    "A Bus Split": 0.5,
+    "A Bus 1 Filter": 3,
+    "A Bus 1 Cutoff": 10.228819,
+    "A Bus 1 Resonance": 0.6,
+    "A Bus 2 Filter": 2,
+    "A Bus 2 Cutoff": 12.287712,
+    "A Random 1 Rate": 2.584963,
+    "Limiter Mode": 1,
+    "Limiter Ceiling": -3
+  },
+  "mod": [
+    {"slot": 13, "source": "Random 1", "target": "A Bus 1 Cutoff", "targetLayer": "A", "depth": 2, "curve": "Bipolar"}
+  ]
+}

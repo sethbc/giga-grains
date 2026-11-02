@@ -1,0 +1,14 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains FX/09 Snapshot Keys.ggpreset",
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 880, "seconds": 5.5, "amplitude": 0.4},
+  "channels": 2,
+  "notes": [
+    {"time": 2.0, "key": 55, "duration": 1.0},
+    {"time": 3.5, "key": 67, "duration": 1.5}
+  ]
+}

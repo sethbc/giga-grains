@@ -1,0 +1,24 @@
+{
+  "product": "fx",
+  "name": "Infinite Regress",
+  "author": "Giga Grains",
+  "description": "Heavy feedback through the grains: what you play keeps regenerating into a thick, self-sustaining drone, held in check by the limiter.",
+  "tags": ["extreme", "drone", "reverb", "live-input"],
+  "params": {
+    "Mix": 0.7,
+    "Size": -1.321928,
+    "Density": 4.321928,
+    "Spray": 0.47267,
+    "Stereo": 0.7,
+    "A Pitch Spread": 0.3,
+    "Feedback": 0.93,
+    "A Smear": 0.2,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 3,
+    "Limiter Mode": 1,
+    "Limiter Ceiling": -3
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 2", "target": "Feedback", "targetLayer": "A", "depth": 0.05, "curve": "Bipolar"}
+  ]
+}

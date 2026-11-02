@@ -1,0 +1,33 @@
+{
+  "product": "fx",
+  "name": "Melting Clock",
+  "author": "Giga Grains",
+  "description": "Spectral smear at full: the input melts into a sliding, smeared drone an octave below itself, wandering slowly in pitch.",
+  "tags": ["extreme", "smear", "drone", "dark", "live-input"],
+  "params": {
+    "Mix": 0.7,
+    "A Source": 3,
+    "A Smear": 1,
+    "Pitch": -12,
+    "Size": -0.321928,
+    "A Size Spread": 1.5,
+    "Density": 4,
+    "Stereo": 0.7,
+    "A Random 2 Rate": -1.736966,
+    "Layer B On": 1,
+    "B Source": 3,
+    "B Smear": 1,
+    "B Size": -0.736966,
+    "B Density": 3.584963,
+    "B Stereo": 1,
+    "Level B": -4,
+    "Reverb Amount": 0.35,
+    "Reverb Decay": 3.321928,
+    "Reverb Damping": 0.6,
+    "Limiter Mode": 1,
+    "Limiter Ceiling": -2
+  },
+  "mod": [
+    {"slot": 13, "source": "Random 2", "target": "Pitch", "targetLayer": "all", "depth": 1, "curve": "Bipolar"}
+  ]
+}

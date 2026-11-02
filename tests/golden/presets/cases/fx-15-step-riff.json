@@ -1,0 +1,10 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains FX/15 Step Riff.ggpreset",
+  "input": {"kind": "sweep", "startHz": 110, "endHz": 880, "seconds": 5.5, "amplitude": 0.4},
+  "channels": 2
+}

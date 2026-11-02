@@ -1,0 +1,28 @@
+{
+  "product": "fx",
+  "name": "Drawn Bow",
+  "author": "Giga Grains",
+  "description": "Long, slow grains like a bow drawn across the input; hold a note to freeze it and the cloud swells in, and aftertouch loosens it.",
+  "tags": ["playable", "freeze", "pad", "midi", "live-input"],
+  "params": {
+    "Mix": 0.55,
+    "Size": -0.514573,
+    "Density": 3.807355,
+    "Distribution": 0.3,
+    "Spray": 0.47267,
+    "Stereo": 0.6,
+    "Texture": 0.15,
+    "A Env 2 Attack": -0.736966,
+    "A Env 2 Sustain": 1,
+    "A Env 2 Release": 0.263034,
+    "Delay Amount": 0.2,
+    "Delay Time": -1,
+    "Delay Feedback": 0.3,
+    "Delay Damping": 0.6,
+    "Reverb Amount": 0.25
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 2", "target": "Density", "targetLayer": "A", "depth": 1.5, "curve": "Unipolar"},
+    {"slot": 14, "source": "Aftertouch", "target": "Spray", "targetLayer": "A", "depth": 0.3, "curve": "Unipolar"}
+  ]
+}

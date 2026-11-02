@@ -1,0 +1,36 @@
+{
+  "product": "fx",
+  "name": "Shimmer Veil",
+  "author": "Giga Grains",
+  "description": "Grains an octave and a twelfth above feed back into a bright, modulated hall: instant shimmer for chords and drones.",
+  "tags": ["texture", "bright", "reverb", "wide", "live-input"],
+  "params": {
+    "Mix": 0.55,
+    "Size": -1.943416,
+    "Density": 4.906891,
+    "Spray": 0.47267,
+    "Stereo": 0.8,
+    "Layer B On": 1,
+    "B Pitch": 12,
+    "B Size": -2.321928,
+    "B Density": 4.584963,
+    "B Stereo": 1,
+    "B Feedback": 0.35,
+    "Level B": -4,
+    "Layer C On": 1,
+    "C Pitch": 19,
+    "C Size": -2.643856,
+    "C Density": 4,
+    "C Stereo": 1,
+    "C LFO 2 Rate": -2.943416,
+    "Level C": -10,
+    "Reverb Amount": 0.5,
+    "Reverb Decay": 2.807355,
+    "Reverb Size": 0.85,
+    "Reverb Damping": 0.2,
+    "Reverb Modulation": 0.5
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 2", "target": "Level", "targetLayer": "C", "depth": 6, "curve": "Bipolar"}
+  ]
+}

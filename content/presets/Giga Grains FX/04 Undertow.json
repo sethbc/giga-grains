@@ -1,0 +1,43 @@
+{
+  "product": "fx",
+  "name": "Undertow",
+  "author": "Giga Grains",
+  "description": "Your input an octave and two below, through a slowly breathing low-pass, over an ocean-drum bed that rises when you play.",
+  "tags": ["texture", "dark", "drone", "sidechain", "sample", "live-input"],
+  "params": {
+    "Mix": 0.6,
+    "Pitch": -12,
+    "Size": -1.321928,
+    "Density": 4.169925,
+    "Spray": 0.541365,
+    "Stereo": 0.6,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 9.813781,
+    "A Bus 1 Resonance": 0.2,
+    "Layer B On": 1,
+    "B Pitch": -24,
+    "B Size": -0.736966,
+    "B Density": 3.321928,
+    "B Bus 1 Filter": 1,
+    "B Bus 1 Cutoff": 8.965784,
+    "Level B": -6,
+    "Layer C On": 1,
+    "C Source": 0,
+    "C Position": 0.3,
+    "C Size": -1.736966,
+    "C Density": 4,
+    "C Spray": 0.712555,
+    "C Stereo": 1,
+    "C Bus 1 Filter": 1,
+    "C Bus 1 Cutoff": 10.550747,
+    "Level C": -30,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 2.321928,
+    "Reverb Damping": 0.7
+  },
+  "mod": [
+    {"slot": 13, "source": "Env Follower", "target": "Level", "targetLayer": "C", "depth": 24, "curve": "Unipolar"},
+    {"slot": 14, "source": "LFO 2", "target": "A Bus 1 Cutoff", "targetLayer": "A", "depth": 1, "curve": "Bipolar"}
+  ],
+  "samples": {"C": "Samples/Textures/ocean-drum.flac"}
+}

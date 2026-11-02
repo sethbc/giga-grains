@@ -1,0 +1,19 @@
+{
+  "product": "fx",
+  "name": "Bar Climber",
+  "author": "Giga Grains",
+  "description": "Locked to the host's tempo: over each bar the grains climb an octave, and on each beat they jump back, a build-up for loops (play the transport).",
+  "tags": ["rhythmic", "glitch", "live-input"],
+  "params": {
+    "Mix": 0.6,
+    "Position": 0.17188,
+    "Size": -3.058894,
+    "Density": 4,
+    "Spray": 0.148233,
+    "Stereo": 0.5
+  },
+  "mod": [
+    {"slot": 13, "source": "Transport Bar", "target": "Pitch", "targetLayer": "A", "depth": 12, "curve": "Unipolar"},
+    {"slot": 14, "source": "Transport Beat", "target": "Position", "targetLayer": "A", "depth": 0.15, "curve": "Unipolar"}
+  ]
+}
