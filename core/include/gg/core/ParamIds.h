@@ -607,6 +607,18 @@ constexpr std::optional<LayerRef> layerOf(ParamSlot slot) noexcept
     return std::nullopt;
 }
 
+/// Whether `slot` is one of a layer's five ring parameters (M2 sub-project 2's: Ring Length, Loop,
+/// Loop Length, Overdub, Splice): capture and memory, not the sound's character, which a preset
+/// load keeps and Mutate locks (M2 sub-project 5's spec §6.2, §6.9; the program manager's
+/// ruling). False for ParamSlot::Count.
+constexpr bool isRingParam(ParamSlot slot) noexcept
+{
+    const auto ref = layerOf(slot);
+    return ref && (ref->param == LayerParam::RingLength || ref->param == LayerParam::Loop ||
+                   ref->param == LayerParam::LoopLength || ref->param == LayerParam::Overdub ||
+                   ref->param == LayerParam::Splice);
+}
+
 /// Layer `layer`'s Level (0 to 3: Level, Level B, Level C, Level D); ParamSlot::Count out of
 /// range.
 constexpr ParamSlot levelSlot(uint8_t layer) noexcept

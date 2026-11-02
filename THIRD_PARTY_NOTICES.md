@@ -164,12 +164,13 @@ The factory samples and presets that every installer's Content component carries
 the zip released as the tag that `content/pin.txt` pins, in https://github.com/sethbc/giga-grains-content.
 `content/pin.txt` holds that tag and the zip's SHA-256, and the staged `content-version.txt` names
 both. Every file in it is dedicated to the public domain under **CC0 1.0 Universal**:
-recordings taken from the Versilian Community Sample Library (VCSL, which is CC0), and audio the
-Giga Grains authors generated with `gg-render`. CC0 asks for no notice and no credit; the legal
-code is in `licenses/CC0-1.0.txt` (and in the content's `LICENSE-CC0-1.0.txt`), and the content's
-`PROVENANCE.md` lists each sample's source, license and processing, crediting its authors. The
-factory presets themselves are Giga Grains' own, under this project's license. The content is
-data: no product links it.
+recordings taken from two libraries by Versilian Studios, the Versilian Community Sample Library
+(VCSL) and VS Chamber Orchestra: Community Edition (VSCO 2: CE, recorded by Sam Gossner and
+Simon Dalzell), both CC0, and audio the Giga Grains authors generated with `gg-render`. CC0
+asks for no notice and no credit; the legal code is in `licenses/CC0-1.0.txt` (and in the
+content's `LICENSE-CC0-1.0.txt`), and the content's `PROVENANCE.md` lists each sample's source,
+license and processing, crediting its authors. The factory presets themselves are Giga Grains'
+own, under this project's license. The content is data: no product links it.
 
 ## tinyxml (both products)
 

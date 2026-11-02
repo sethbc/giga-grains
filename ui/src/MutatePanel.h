@@ -17,11 +17,14 @@ namespace gg::ui
 /// the editor lays over the canvas and the macros while it is visible, as the preset browser is:
 /// an Amount knob ("mutate.amount": 0 to 100%, 15% at the start), "Mutate" ("mutate.go"), "Reset
 /// locks" ("mutate.reset"), "Close" ("mutate.close"), and the lock list below, in a scrolling
-/// view: the sections Global, Space, Macros and Layer A to D, each parameter a toggle
+/// view: the sections Global, Space, Delay ("mutate.heading.delay"), Limiter
+/// ("mutate.heading.limiter"), Macros and Layer A to D, each parameter a toggle
 /// ("mutate.lock.<slot>", <slot> the parameter's ParamSlot number) that is on while Mutate leaves
-/// it alone. Each layer's 16 Step values are one toggle, named for its Step 1 slot, locking and
-/// unlocking all 16 together. Under each layer's heading ("mutate.heading.<letter>"), a row of
-/// its own holds "Lock all" ("mutate.lockall.<letter>") and "Unlock all"
+/// it alone. A parameter no press moves (each layer's Ring Length, which no host may automate)
+/// has a row with no toggle, dimmed: not mutable. Each layer's 16 Step values are one toggle, named
+/// for its Step 1 slot, locking and unlocking all 16 together. Under each layer's heading
+/// ("mutate.heading.<letter>"), a row of its own holds "Lock all" ("mutate.lockall.<letter>") and
+/// "Unlock all"
 /// ("mutate.unlockall.<letter>"). The panel is opaque, and the list is laid out clear of its
 /// scroll bar ("mutate.viewport").
 ///
@@ -45,10 +48,14 @@ class MutatePanel final : public juce::Component
     void paint(juce::Graphics &g) override;
     void resized() override;
     void visibilityChanged() override;
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
     bool keyPressed(const juce::KeyPress &key) override;
 
   private:
     struct Impl;
+    /// The controls' colors from the editor's palette (a theme switch calls it again).
+    void applyPalette();
     std::unique_ptr<Impl> impl_;
 };
 } // namespace gg::ui

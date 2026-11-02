@@ -1,0 +1,28 @@
+{
+  "product": "fx",
+  "name": "Crystal Keys",
+  "author": "Giga Grains",
+  "description": "An octave up, bright and bell-like, with a ping-pong sparkle; hold a key to freeze the input and play it as glassy keys, the mod wheel softening the grains.",
+  "tags": ["playable", "bright", "keys", "midi", "live-input"],
+  "params": {
+    "Mix": 0.5,
+    "Pitch": 12,
+    "Quality": 2,
+    "Size": -3.473931,
+    "Density": 5.584963,
+    "Spray": 0.283816,
+    "Stereo": 0.6,
+    "Texture": 0.35,
+    "A Bus 1 Filter": 2,
+    "A Bus 1 Cutoff": 8.643856,
+    "Delay Amount": 0.25,
+    "Delay Time": -2,
+    "Delay Feedback": 0.35,
+    "Delay Ping-pong": 1,
+    "Reverb Amount": 0.25
+  },
+  "mod": [
+    {"slot": 13, "source": "Key", "target": "A Bus 1 Cutoff", "targetLayer": "A", "depth": 3, "curve": "Unipolar"},
+    {"slot": 14, "source": "Mod Wheel", "target": "Texture", "targetLayer": "A", "depth": 0.5, "curve": "Unipolar"}
+  ]
+}

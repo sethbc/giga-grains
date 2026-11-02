@@ -1,0 +1,32 @@
+{
+  "product": "fx",
+  "name": "Harmonic Hold",
+  "author": "Giga Grains",
+  "description": "Every grain comes with its fifth and its octave; hold a note to freeze the input into a chord on that key, and the mod wheel detunes it.",
+  "tags": ["playable", "freeze", "pad", "midi", "live-input"],
+  "params": {
+    "Mix": 0.5,
+    "Size": -1.736966,
+    "Density": 4.584963,
+    "Spray": 0.36033,
+    "Stereo": 0.7,
+    "Layer B On": 1,
+    "B Pitch": 7,
+    "B Size": -1.736966,
+    "B Density": 4.321928,
+    "B Stereo": 0.9,
+    "Level B": -5,
+    "Layer C On": 1,
+    "C Pitch": 12,
+    "C Size": -2,
+    "C Density": 4,
+    "Level C": -8,
+    "A Env 2 Attack": -1.321928,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 2
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 2", "sourceLayer": "A", "target": "Reverb Amount", "depth": 0.3, "curve": "Unipolar"},
+    {"slot": 14, "source": "Mod Wheel", "target": "A Pitch Spread", "targetLayer": "all", "depth": 0.5, "curve": "Unipolar"}
+  ]
+}

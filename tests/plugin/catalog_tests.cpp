@@ -12,6 +12,7 @@
 // each case runs in a process of its own.
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -685,6 +686,41 @@ TEST_CASE("changedOnDisk sees a file added to a folder whose time did not move",
     putPreset(machine.user() / "two.ggpreset", infoOf("Two", Mode::Fx));
     fs::last_write_time(machine.user(), before); // the same tick
     CHECK(catalog.changedOnDisk());
+}
+
+// The poll's entry count is bounded (the residuals re-review's (a)): changedOnDisk counts a
+// folder's entries only up to kMaxFilesPerFolder + 1, so a 30 Hz poll of a huge folder costs no
+// more than the listing it guards. Up to the bound a same-tick change is seen; past it only the
+// folder's time is. [serial]: it writes 5,002 files.
+TEST_CASE("changedOnDisk counts a folder's entries no further than the cap allows",
+          "[plugin][catalog][serial]")
+{
+    const Machine machine("poll-bound");
+    fs::create_directories(machine.user());
+    const auto add = [&](int i) {
+        std::string name = std::to_string(i);
+        name.insert(0, 4 - name.size(), '0');
+        std::ofstream(machine.user() / (name + ".txt"));
+    };
+    for (int i = 0; i < 5000; ++i)
+    {
+        add(i);
+    }
+    const PresetCatalog catalog(Mode::Fx, machine.settingsFile());
+    REQUIRE_FALSE(catalog.changedOnDisk());
+    const auto before = fs::last_write_time(machine.user());
+    add(5000); // 5,001 entries: still counted
+    fs::last_write_time(machine.user(), before);
+    CHECK(catalog.changedOnDisk());
+
+    const PresetCatalog full(Mode::Fx, machine.settingsFile());
+    REQUIRE_FALSE(full.changedOnDisk());
+    const auto fullTime = fs::last_write_time(machine.user());
+    add(5001); // 5,002: past the bound, so only the time would show it
+    fs::last_write_time(machine.user(), fullTime);
+    CHECK_FALSE(full.changedOnDisk());
+    fs::last_write_time(machine.user(), fullTime + std::chrono::seconds(2));
+    CHECK(full.changedOnDisk());
 }
 
 TEST_CASE("the walk stops at the depth clap-wrapper's crawl stops at", "[plugin][catalog]")

@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+#include "gg/media/ContentPaths.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 
@@ -49,7 +50,7 @@ SearchCache::Stamps SearchCache::stampsOf(const core::MediaEntry &entry,
     {
         stamps.saved = stampOf(*saved);
     }
-    if (!entry.contentPath.empty())
+    if (media::isContentRelativePath(entry.contentPath))
     {
         const auto content = media::fromUtf8(entry.contentPath);
         for (const auto &root : contentRoots)

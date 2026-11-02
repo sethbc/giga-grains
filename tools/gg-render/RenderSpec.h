@@ -75,7 +75,9 @@
 ///   (see StreamSpec::quality). "source" needs "kind" plus the keys its kind uses (see
 ///   SourceSpec), and no key only another kind uses; "source.sampleRate" is optional for a
 ///   built-in kind and an error for a file.
-/// - Instrument mode requires "sample", read as a source but without "sampleRate"; "params",
+/// - Instrument mode requires "sample", read as a source but without "sampleRate", except beside
+///   "state" or "preset" (below), whose layer A sample is then layer A's (render() refuses a
+///   preset that names none: the render would be silent); "params",
 ///   "automation" and "notes" are optional. It has no input, so no "channels".
 /// - FX mode requires "input", read as a source but without "sampleRate", and "channels",
 ///   except with a file input, which has the file's own channels and so takes no "channels";
@@ -88,7 +90,17 @@
 /// - Instrument and FX mode both take "preset", optional: a preset file's path, read and applied
 ///   before the spec's own "params", "mod" and "samples", which go on top of it (M2 sub-project
 ///   5's spec §6.10; RenderSpec::preset). Sample mode takes none. A spec with "preset" may not
-///   also have "state", which holds a patch of its own.
+///   also have "state", which holds a patch of its own. The preset's samples are found by their
+///   content-relative references under --content-dir alone (never searched), and its ring
+///   parameters are ignored, as a plugin's preset load ignores them (the spec's "params" may
+///   still set them). Besides rendering, gg-render has three modes that render nothing (main.cpp
+///   gives their usage): `--write-media DIR` (the golden media), `--pack-preset <source.json> -o
+///   <out.ggpreset> [--content-dir DIR]` (a preset source, PresetSource.h, into a preset file),
+///   and `--mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N` (a preset file
+///   of either product with its values moved by one Mutate press: seed 0, the default locks,
+///   amount 0 to 1, the press counter; mutatePreset in PresetSource.h; the listening pack's Mutate
+///   ladder, spec §11), whose output a spec's "preset" then renders. A bad amount or counter, or a
+///   file that isn't a preset, exits 2.
 /// - Instrument and FX mode also take M2 sub-project 2's keys (its spec §6.10), each optional: a
 ///   saved session to restore, timed ring operations and the memory cap (see OperationSpec and
 ///   the members of InstrumentSpec and FxSpec):
@@ -373,8 +385,9 @@ struct InstrumentSpec
     /// "memoryCapMiB": the per-instance memory cap, kMemoryCapMinMiB to kMemoryCapMaxMiB, or
     /// nothing for the state's (kMemoryCapDefaultMiB without a state).
     std::optional<uint32_t> memoryCapMiB;
-    /// True when "sample" was left out, which is allowed beside "state" alone: layer A's sample
-    /// is then the state's, and `sample` is unused.
+    /// True when "sample" was left out, which is allowed beside "state" or "preset" alone: layer
+    /// A's sample is then the state's or the preset's (render() refuses a preset naming none),
+    /// and `sample` is unused.
     bool noSample{false};
 
     friend bool operator==(const InstrumentSpec &, const InstrumentSpec &) = default;

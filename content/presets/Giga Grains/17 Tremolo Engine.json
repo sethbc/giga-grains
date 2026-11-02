@@ -1,0 +1,50 @@
+{
+  "product": "instrument",
+  "name": "Tremolo Engine",
+  "author": "Giga Grains",
+  "description": "Tremolo cellos, violas and zither chopped at a fast pulse while a four-step pattern hands the sound from one to the next; hold chords.",
+  "tags": ["rhythmic", "strings", "glitch", "sample"],
+  "params": {
+    "Level": 7.5,
+    "A Position": 0.4,
+    "A Size": -3.473931,
+    "A Density": 6.0,
+    "A Pitch": 17,
+    "A Stereo": 0.5,
+    "A LFO 1 Rate": 2.584963,
+    "A LFO 1 Shape": 4,
+    "A Step Rate": 1.0,
+    "A Step Length": 4,
+    "A Step 1": 0.0,
+    "A Step 2": 0.333333,
+    "A Step 3": 0.666667,
+    "A Step 4": 1.0,
+    "Layer B On": 1,
+    "Level B": 7.5,
+    "B Position": 0.4,
+    "B Size": -3.473931,
+    "B Density": 6.0,
+    "B Pitch": -2,
+    "B Stereo": 0.5,
+    "Layer C On": 1,
+    "Level C": 7.5,
+    "C Position": 0.4,
+    "C Size": -3.473931,
+    "C Density": 6.0,
+    "C Pitch": 13,
+    "C Stereo": 0.5,
+    "Morph X": 0.0,
+    "Morph Y": 0.35,
+    "Reverb Amount": 0.15,
+    "Reverb Decay": 0.584963
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "sourceLayer": "A", "target": "Level", "targetLayer": "all", "depth": -18.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Step", "sourceLayer": "A", "target": "Morph X", "depth": 0.8, "curve": "Unipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Strings/cello-section-g2-tremolo.flac",
+    "B": "Samples/Strings/viola-section-d4-tremolo.flac",
+    "C": "Samples/Strings/dan-tranh-b2-tremolo.flac"
+  }
+}

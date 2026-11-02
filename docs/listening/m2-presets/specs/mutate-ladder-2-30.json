@@ -1,0 +1,9 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 4.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/mutate/01 Soft Focus 30.ggpreset",
+  "input": {"kind": "file", "path": "violin-c4-vibrato.flac"}
+}

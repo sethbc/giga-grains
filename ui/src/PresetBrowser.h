@@ -64,7 +64,8 @@ class PresetBrowser final : public juce::Component,
     ~PresetBrowser() override;
 
     /// The editor's 30 Hz timer, while the browser is open: when the folders changed on disk
-    /// (presetFoldersChanged, a stat per folder), rescans and lists again; else when a load moved
+    /// (presetFoldersChanged: a stat and a bounded entry count per folder), rescans and lists
+    /// again; else when a load moved
     /// presetLoads (the host loaded a preset), lists again without a rescan.
     void refresh();
     /// Loads the neighbour of the loaded preset in the filtered list as it stands (`direction` +1
@@ -76,6 +77,8 @@ class PresetBrowser final : public juce::Component,
     void paint(juce::Graphics &g) override;
     void resized() override;
     void visibilityChanged() override;
+    void parentHierarchyChanged() override;
+    void lookAndFeelChanged() override;
     bool keyPressed(const juce::KeyPress &key) override;
 
   private:
@@ -110,6 +113,8 @@ class PresetBrowser final : public juce::Component,
     PresetSaveResult save(const std::string &name, const std::vector<std::string> &tags,
                           const std::string &description, bool overwrite);
     void close();
+    /// The controls' colors from the editor's palette (a theme switch calls it again).
+    void applyPalette();
     void setNotice(const juce::String &text);
     void updateStatus();
     void updateButtons();

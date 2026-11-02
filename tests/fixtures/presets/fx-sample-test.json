@@ -1,0 +1,12 @@
+{
+  "product": "fx",
+  "name": "FX Sample Test",
+  "author": "Giga Grains",
+  "description": "The FX's sample test preset: layer A reads a content sample, the grains alone",
+  "tags": ["texture", "sample"],
+  "params": {"A Source": 0, "Mix": 1.0},
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "Position", "targetLayer": "all", "depth": 0.1}
+  ],
+  "samples": {"A": "loop-48k.wav"}
+}

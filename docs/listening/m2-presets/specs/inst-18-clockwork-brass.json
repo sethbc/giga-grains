@@ -1,0 +1,16 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains/18 Clockwork Brass.ggpreset",
+  "transport": {"tempoBpm": 120, "playing": true, "startBeat": 0},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 1.0},
+    {"time": 1.5, "key": 67, "duration": 1.25},
+    {"time": 3.0, "key": 60, "duration": 3.0},
+    {"time": 3.0, "key": 64, "duration": 3.0},
+    {"time": 3.0, "key": 67, "duration": 3.0}
+  ]
+}

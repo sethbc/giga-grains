@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70); group 2 (Tasks 14–18 and content v2) goes in a new branch and pull request. (Earlier: group 1 built 2026-10-30, Tasks 1 to 13 plus 10b, on `m2-presets`; PR #17, draft), **group 2 pending** (§6.12: wave 2's merge, then the voicing of the 48 presets). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.8, §6.9, §6.11, §10 and §12 |
+| **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters; INIT keeps Ring Length alone, amended 2026-11-02) is in the §6.2 bullet on what a load keeps |
 | **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
-| **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets`; `docs/m2-carry-over.md` with **11 open rows** |
-| **Waits on** | Wave 2, for its second group of tasks only (§6.12): `MEDI` version 2's content-relative reference (sub-project 2) and wave 2's parameters, which the factory presets are voiced with |
+| **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets` (group 2: `m2-presets-g2`); `docs/m2-carry-over.md` with **11 open rows** at the start |
+| **Waits on** | Nothing: wave 2 is merged (`MEDI` version 2's content-relative reference, sub-project 2, and wave 2's parameters, which the factory presets are voiced with; §6.12) |
 
 ## 1. Why this sub-project
 
@@ -229,6 +229,18 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   it as a restore does (D8 of M1 sub-project 3: before `from_location` returns), through the
   content search path (§6.4). The live rings are never state, so an FX preset keeps what the ring
   holds. Freeze arms as a state load arms it (ruling M1-ac).
+
+  > **Amended 2026-11-01 (group 2's Task 14; the program manager's ruling):** a preset load also
+  > keeps each layer's five ring parameters (Ring Length, Loop, Loop Length, Overdub, Splice), as
+  > it keeps the seed: the instance's capture and memory, so no preset load resizes a ring. **INIT
+  > included** (it is a preset load). A preset file may still hold them (an older one does); they
+  > are ignored on load, gg-render's preset path ignores them too (the defaults', unless the
+  > spec's `params` set them), and a factory source may set none (`--pack-preset` refuses one).
+  >
+  > > **Amended 2026-11-02 (the final review's fix wave; the controller's ruling, D8):** INIT keeps
+  > > each layer's **Ring Length** alone, which is what sizes a ring, and gives Loop, Loop Length,
+  > > Overdub and Splice their defaults, so it is a fresh instance in everything that is heard.
+  > > A preset file load is as above and keeps all five (`gg::core::keepRingLengths`).
 - On success the plugin calls the host's `preset_load.loaded()` with the same identity, so a
   wrapper or host moves its selector or list to the preset; on failure `on_error()` with an OS
   error where there is one and a message ("not a Giga Grains FX preset", "can't read …"). The
@@ -385,6 +397,15 @@ tools/                      the gg-render specs and the shell script that make t
   > generated. §11's "voice-and-strings phrase" therefore has no voice to play. The proposal is
   > option 1: a strings-and-mallets phrase from v1, and the `voice` tag goes unused until a
   > content release has a voice. Not decided; group 2 waits on the answer.
+
+  > **Amended 2026-11-01 (group 2, Task C2; the director's decision):** the answer was a content
+  > release with strings and brass. **Release `v2`** (`giga-grains-content-v2.zip`, 51 files, 48,200,259
+  > bytes) adds VSCO 2: Community Edition (CC0) strings and brass, with full provenance, beside
+  > VCSL; it is a **strict superset of `v1`** (v1's 37 files byte-identical at the same paths; the
+  > `v1` tag untouched), pinned by `content/pin.txt`. VSCO 2: CE's readme asks for credit and that
+  > the samples not be sold directly; neither binds under CC0, and `PROVENANCE.md` credits it.
+  > Files are named by measured sounding pitch (C4 is middle C), not by VSCO's names. The `voice`
+  > tag stays unused: the new content is orchestral strings and brass, not voices.
 - **The pin** in this repository, `content/pin.txt`: the tag, the asset URL and the zip's SHA-256.
   `scripts/fetch-content.sh <dir>` downloads the asset to `<dir>/giga-grains-content-<tag>.zip`,
   checks the SHA-256 (refusing a mismatch), unpacks it to `<dir>/content/` and writes
@@ -443,11 +464,16 @@ tools/                      the gg-render specs and the shell script that make t
 Lowercase ASCII with hyphens, stored in `<preset tags>` and reported as CLAP features. **Focus
 tags**, one or more per preset: `texture`, `playable`, `rhythmic`, `extreme`. **Character tags:**
 `pad`, `drone`, `freeze`, `smear`, `stretch`, `glitch`, `keys`, `pluck`, `percussive`, `voice`,
-`strings`, `winds`, `metal`, `noise`, `dark`, `bright`, `wide`, `mono`, `reverb`, `dry`. **Use
-tags:** `midi` (the FX's MIDI-driven presets), `live-input`, `sample`, `sidechain`. The browser's
-filter shows the focus tags as four buttons and the rest as a list; a tag no factory preset uses
-isn't shown. The director may strike or add words when the preset list is reviewed at the gate; the
-vocabulary is a list in `gg/core/Preset.h`, and a source with a word outside it fails the build.
+`strings`, `winds`, `brass`, `metal`, `noise`, `dark`, `bright`, `wide`, `mono`, `reverb`,
+`dry`. **Use tags:** `midi` (the FX's MIDI-driven presets), `live-input`, `sample`,
+`sidechain`. The browser's filter shows the focus tags as four buttons and the rest as a list; a
+tag no factory preset uses isn't shown. The director may strike or add words when the preset list
+is reviewed at the gate; the vocabulary is a list in `gg/core/Preset.h`, and a source with a word
+outside it fails the build.
+
+> **Amended (2026-11-01):** `brass` joins the character tags, after `winds` (the controller's
+> ruling in Task 16's review): content v2 brought VSCO-2 CE's brass, which `winds` misdescribed.
+> The vocabulary is 29 words; the list's order is otherwise unchanged.
 
 ### 6.8 The browser (INTENT §17, "Presets and editing"; I25, I29)
 
@@ -474,7 +500,7 @@ only if sub-project 6 widens the slot.
     `<user presets>/<name>.ggpreset` (a name that would overwrite asks first) and reloads the list;
     "Delete" on a user preset, with a confirm; factory presets can't be deleted;
   - **Content folder…:** sets the settings' `contentFolder` (a folder chooser) and rescans;
-  - a line at the bottom: the content release found ("Factory content v1 in
+  - a line at the bottom: the content release found ("Factory content v2 in
     /Library/Application Support/sethbc/Giga Grains") or "No factory content found: install it, or
     choose a Content folder".
 - **The list is the plugin's,** built on the main thread by the browser's model
@@ -591,6 +617,17 @@ only if sub-project 6 widens the slot.
 > calls `on_main_thread` without draining is asked again only after a drain (M5). In the panel,
 > each layer's "Lock all" and "Unlock all" have a row of their own under its heading, clear of
 > the scroll bar (UI-2).
+
+> **Amended 2026-11-01 (group 2's Task 14), wave 2's sections:** the structural locks are **62
+> slots**: the 33 above, plus every layer's Quality and five ring parameters (Ring Length, Loop,
+> Loop Length, Overdub, Splice: capture and memory), Budget, Delay Amount (as Reverb Amount is)
+> and the limiter's Mode, Ceiling and Release (output safety). Smear, Bus Split, the buses'
+> filters, cutoffs and resonances, and the delay's Time, Feedback, Damping and Ping-pong move.
+> The panel adds Delay and Limiter sections after Space, and shows each layer's Ring Length,
+> which no press moves (SP-M8), dimmed with no toggle. A preset file load keeps each
+> layer's five ring parameters, as it keeps the seed (the program manager's ruling; INIT keeps
+> Ring Length alone, amended 2026-11-02, §6.2), and a factory source may set none
+> (`--pack-preset` refuses it).
 
 ### 6.10 `gg-render --preset` (INTENT §19; I27)
 
@@ -909,7 +946,7 @@ length, what it is and what to listen for; the host checklist) and `specs/`:
 
 Fifty renders, deterministic on one platform. The README's host checklist for the close's sitting
 in Live and Bitwig: install from the PKG and the EXE (and unpack the tarball) and confirm the
-browser says "Factory content v1 in …"; the 24 presets per product in the browser, in order;
+browser says "Factory content v2 in …"; the 24 presets per product in the browser, in order;
 the VST3 program list and its selector following the browser in Live and Bitwig; the AU factory
 presets in Live (and Logic, best effort); a `midi` preset with a MIDI track routed; Save as… and
 a reopen; a favorite surviving a restart; Mutate recorded as automation; an M1 session reopening
@@ -930,7 +967,8 @@ retains a name after a factory preset load, row 87 is narrowed or closed with th
 `plugin/src/editor/EditorPlugin.cpp` (row 232, which waits on an sst-clap-helpers bump, not a
 touch). No "when touched" row names a file this sub-project edits.
 
-**Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed in
+**Expected at the end: 11 open rows,** no new rows (planned; see the amendment below for what
+group 2 added). Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy).
 
 > **Amended (2026-10-30):** group 1 closed with **row 87's pins unmoved** (Task 12 re-ran them:
@@ -939,6 +977,12 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 > blocked outside this sub-project's work: **233** (clap-validator and Windows preset locations,
 > §10) and **234** (a one-off extra grain on an off layer, x86_64 under Rosetta). The final
 > count is for the close.
+
+> **Amended (2026-11-02):** group 2 added rows 389 to 401 (twelve from its tasks and reviews, 389
+> to 400, and row 401 from the final review; numbered 383 to 395 on its branch, renumbered at the
+> merge with views' PR 2, whose rows took 383 to 388), closed rows 391 and 399 in its final fix
+> wave and left the rest open, as plain-log rows (INTENT §23 #67). The count rule above is
+> retired.
 
 ## 13. INTENT changes (Part II, with one §23 row in the same change)
 

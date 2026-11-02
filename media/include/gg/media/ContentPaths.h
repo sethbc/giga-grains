@@ -203,36 +203,49 @@ inline std::vector<std::filesystem::path> contentRoots(const core::MachineSettin
     return paths;
 }
 
-/// The first `root / contentRelative` of `roots`, in order, that is a regular file (a link to
-/// one counts); nullopt when none is. `contentRelative` is UTF-8 with `/` separators, relative
-/// to a content root (`Samples/Bowed/cello.flac`), and is refused, nullopt without looking,
-/// when it is empty, holds a backslash or a NUL, isn't valid UTF-8 (on Windows), has a root (is
-/// absolute, or on Windows names a drive or a server), or has a `..` segment: a reference never
-/// reaches outside its root.
-inline std::optional<std::filesystem::path>
-resolveContentPath(std::string_view contentRelative, std::span<const std::filesystem::path> roots)
+/// Whether `text` is a content-relative reference (`Samples/Bowed/cello.flac`): UTF-8 with `/`
+/// separators, relative to a content root. False, so that a reference never reaches outside its
+/// root, when it is empty, holds a backslash or a NUL, isn't valid UTF-8 (on Windows), has a root
+/// (is absolute, or on Windows names a drive or a server), or has a `..` segment. The one rule
+/// for every reader of a reference: resolveContentPath, the packer, gg-render, and findSample's
+/// content-root step (the plugins' loader).
+inline bool isContentRelativePath(std::string_view text)
 {
-    namespace fs = std::filesystem;
-    if (contentRelative.empty() || contentRelative.find('\\') != std::string_view::npos ||
-        contentRelative.find('\0') != std::string_view::npos)
+    if (text.empty() || text.find('\\') != std::string_view::npos ||
+        text.find('\0') != std::string_view::npos)
     {
-        return std::nullopt;
+        return false;
     }
-    const auto relative = fromUtf8(std::string(contentRelative));
+    const auto relative = fromUtf8(std::string(text));
     if (!relative || relative->has_root_path())
     {
-        return std::nullopt;
+        return false;
     }
     for (const auto &segment : *relative)
     {
         if (segment == "..")
         {
-            return std::nullopt;
+            return false;
         }
     }
+    return true;
+}
+
+/// The first `root / contentRelative` of `roots`, in order, that is a regular file (a link to
+/// one counts); nullopt when none is. `contentRelative` is refused, nullopt without looking,
+/// when it isn't isContentRelativePath.
+inline std::optional<std::filesystem::path>
+resolveContentPath(std::string_view contentRelative, std::span<const std::filesystem::path> roots)
+{
+    namespace fs = std::filesystem;
+    if (!isContentRelativePath(contentRelative))
+    {
+        return std::nullopt;
+    }
+    const fs::path relative = *fromUtf8(std::string(contentRelative));
     for (const auto &root : roots)
     {
-        fs::path candidate = root / *relative;
+        fs::path candidate = root / relative;
         std::error_code error;
         if (fs::is_regular_file(candidate, error))
         {

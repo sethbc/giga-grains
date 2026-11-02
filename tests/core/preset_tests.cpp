@@ -447,13 +447,13 @@ TEST_CASE("a preset past the cap or the nesting limit is refused", "[core][prese
     }
 }
 
-TEST_CASE("the tag vocabulary is the spec's 28 words", "[core][preset]")
+TEST_CASE("the tag vocabulary is the spec's 29 words", "[core][preset]")
 {
-    constexpr std::array<std::string_view, 28> kWords{
-        "texture", "playable", "rhythmic", "extreme", "pad",        "drone",      "freeze",
-        "smear",   "stretch",  "glitch",   "keys",    "pluck",      "percussive", "voice",
-        "strings", "winds",    "metal",    "noise",   "dark",       "bright",     "wide",
-        "mono",    "reverb",   "dry",      "midi",    "live-input", "sample",     "sidechain"};
+    constexpr std::array<std::string_view, 29> kWords{
+        "texture", "playable", "rhythmic",   "extreme", "pad",        "drone", "freeze",  "smear",
+        "stretch", "glitch",   "keys",       "pluck",   "percussive", "voice", "strings", "winds",
+        "brass",   "metal",    "noise",      "dark",    "bright",     "wide",  "mono",    "reverb",
+        "dry",     "midi",     "live-input", "sample",  "sidechain"};
     const auto vocabulary = gg::core::presetTagVocabulary();
     REQUIRE(vocabulary.size() == kWords.size());
     for (std::size_t i = 0; i < kWords.size(); ++i)
@@ -613,4 +613,136 @@ TEST_CASE("a reader that doesn't know the edited mark reads the state unchanged"
     CHECK(markedSeed == plainSeed);
     CHECK(sameRoutes(markedRoutes, plainRoutes));
     CHECK(markedName == plainName);
+}
+
+// ---- Group 2: samples by their content-relative reference, and what a preset never carries ----
+
+TEST_CASE("a preset names a sample by its content-relative reference", "[core][preset]")
+{
+    // MEDI version 2's reference (MediaEntry::contentPath, written as content="…"): a factory
+    // preset's entry has no absolute or sample-folder path, only the reference and the file's
+    // fingerprint and shape (spec §6.1, §6.12).
+    SessionState state = someState();
+    gg::core::MediaEntry entry;
+    entry.sha256Hex = std::string(64, 'c');
+    entry.fileSize = 123456;
+    entry.format = "flac";
+    entry.channels = 2;
+    entry.sampleRate = 44100.0;
+    entry.frames = 30000;
+    entry.layer = 1;
+    entry.contentPath = "Samples/Strings/cello \xc3\xa9 & bow.flac";
+    state.samples[1] = entry;
+    const std::string bytes = encodePreset(someInfo(), state);
+    const std::string media = *stateChunkPayload(bytes, "MEDI");
+    CHECK(media.find("version=\"2\"") != std::string::npos);
+    CHECK(media.find("content=\"Samples/Strings/cello \xc3\xa9 &#x26; bow.flac\"") !=
+          std::string::npos);
+    CHECK(stateChunkPayload(bytes, "AUDI") == std::nullopt);
+
+    PresetInfo info;
+    SessionState out;
+    REQUIRE(readPreset(bytes, Mode::Fx, info, out));
+    REQUIRE(out.samples[1].has_value());
+    CHECK(*out.samples[1] == entry);
+    CHECK_FALSE(out.samples[0].has_value());
+    CHECK(encodePreset(info, out) == bytes);
+}
+
+TEST_CASE("a preset carries no ring, no embedded audio and the default cap", "[core][preset]")
+{
+    // A preset never embeds audio and carries no ring or cap (spec §6.1; D5): encodePreset leaves
+    // them out whatever the state holds, so its container is PTCH and MEDI alone.
+    SessionState state = someState();
+    gg::core::MediaEntry filed;
+    filed.sha256Hex = std::string(64, 'a');
+    filed.fileSize = 10;
+    filed.absolutePath = "/samples/a.wav";
+    filed.format = "wav";
+    filed.channels = 1;
+    filed.sampleRate = 48000.0;
+    filed.frames = 1;
+    filed.layer = 0;
+    state.samples[0] = filed;
+    gg::core::MediaEntry capture = filed;
+    capture.absolutePath.clear();
+    capture.embed = true;
+    capture.audioId = 2;
+    capture.layer = 2;
+    state.samples[2] = capture;
+    gg::core::RingEntry ring;
+    ring.layer = 1;
+    ring.frames = 4;
+    ring.sampleRate = 48000.0;
+    ring.sha256Hex = std::string(64, 'b');
+    ring.fileSize = 60;
+    ring.embed = true;
+    ring.audioId = 1;
+    state.rings[1] = ring;
+    state.audio = {{1, "ring bytes"}, {2, "capture bytes"}};
+    state.memoryCapMiB = 4096;
+    const std::string bytes = encodePreset(someInfo(), state);
+    CHECK(stateChunkPayload(bytes, "AUDI") == std::nullopt);
+
+    PresetInfo info;
+    SessionState out;
+    REQUIRE(readPreset(bytes, Mode::Fx, info, out));
+    CHECK(out.samples[0] == filed);
+    CHECK_FALSE(out.samples[2].has_value());
+    for (const auto &r : out.rings)
+    {
+        CHECK_FALSE(r.has_value());
+    }
+    CHECK(out.audio.empty());
+    CHECK(out.memoryCapMiB == gg::core::kMemoryCapDefaultMiB);
+}
+
+TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
+{
+    // Ring Length, Loop, Loop Length, Overdub and Splice: capture and memory, which a preset load
+    // keeps (the program manager's ruling) and Mutate locks.
+    std::vector<ParamSlot> rings;
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+        {
+            rings.push_back(static_cast<ParamSlot>(s));
+        }
+    }
+    REQUIRE(rings.size() == 5 * gg::core::kLayers);
+    for (const ParamSlot s :
+         {ParamSlot::RingLength, ParamSlot::Loop, ParamSlot::LoopLength, ParamSlot::Overdub,
+          ParamSlot::Splice, ParamSlot::B_RingLength, ParamSlot::C_Overdub, ParamSlot::D_Splice})
+    {
+        CHECK(std::find(rings.begin(), rings.end(), s) != rings.end());
+    }
+    CHECK_FALSE(gg::core::isRingParam(ParamSlot::Freeze));
+    CHECK_FALSE(gg::core::isRingParam(ParamSlot::Budget));
+    CHECK_FALSE(gg::core::isRingParam(ParamSlot::Count));
+
+    // keepRingParams copies those slots from the instance and leaves every other one.
+    ParamValues current{};
+    current.fill(0.25f);
+    ParamValues loaded{};
+    loaded.fill(0.75f);
+    gg::core::keepRingParams(current, loaded);
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        INFO("slot " << s);
+        CHECK(loaded[s] == (gg::core::isRingParam(static_cast<ParamSlot>(s)) ? 0.25f : 0.75f));
+    }
+
+    // keepRingLengths (INIT's) copies each layer's Ring Length alone.
+    loaded.fill(0.75f);
+    gg::core::keepRingLengths(current, loaded);
+    std::size_t kept = 0;
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        INFO("slot " << s);
+        const auto ref = gg::core::layerOf(static_cast<ParamSlot>(s));
+        const bool length = ref && ref->param == gg::core::LayerParam::RingLength;
+        CHECK(loaded[s] == (length ? 0.25f : 0.75f));
+        kept += length ? 1 : 0;
+    }
+    CHECK(kept == gg::core::kLayers);
 }

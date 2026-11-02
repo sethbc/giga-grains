@@ -1,0 +1,27 @@
+{
+  "product": "fx",
+  "name": "Wobble Keys",
+  "author": "Giga Grains",
+  "description": "A warm, wobbling tape-like copy of your input; hold notes to freeze and play it, and bend for pitch.",
+  "tags": ["playable", "keys", "dark", "midi", "live-input"],
+  "params": {
+    "Mix": 0.6,
+    "Size": -2.473931,
+    "Density": 5,
+    "Spray": 0.326101,
+    "Stereo": 0.3,
+    "A LFO 1 Rate": 2.169925,
+    "A LFO 1 Shape": 0,
+    "A Random 2 Rate": -0.514573,
+    "A Random 2 Smooth": 0.8,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 11.773139,
+    "A Bus 1 Resonance": 0.1,
+    "Reverb Amount": 0.15
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "Pitch", "targetLayer": "A", "depth": 0.12, "curve": "Bipolar"},
+    {"slot": 14, "source": "Random 2", "target": "Pitch", "targetLayer": "A", "depth": 0.25, "curve": "Bipolar"},
+    {"slot": 15, "source": "Pitch Bend", "target": "Pitch", "targetLayer": "all", "depth": 2, "curve": "Bipolar"}
+  ]
+}

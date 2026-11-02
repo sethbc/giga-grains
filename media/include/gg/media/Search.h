@@ -38,7 +38,8 @@ inline constexpr std::size_t kMaxScanEntries = 50'000;
 /// Looks for `entry`'s file. Each candidate must be a regular file (or a symlink to one) whose
 /// size, then SHA-256, are the entry's; the first one that is is Found. The candidates, in order:
 /// 1. `entry.absolutePath`;
-/// 2. each of `contentRoots`, in order, plus `entry.contentPath`, when that is non-empty;
+/// 2. each of `contentRoots`, in order, plus `entry.contentPath`, when that is a content-relative
+///    reference (isContentRelativePath, ContentPaths.h: never one that leaves its root);
 /// 3. `settings.sampleFolder / entry.relativePath`, when both are non-empty;
 /// 4. the captures folder (`settings.capturesFolder`, or defaultCapturesFolder() when that is
 ///    empty) plus the saved path's name, when the saved path's folder is a captures folder: its
