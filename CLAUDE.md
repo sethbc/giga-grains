@@ -459,8 +459,8 @@ runs the tests labelled either. The labels are:
     and caption included (the strip's toggle reads "On", its Level slider has no label, and a
     narrow strip's Source button draws a kind's short form, "Osc"); the light theme reads at
     4.5:1, the strip's column following the theme while the lanes stay dark; a route added in
-    slot 13 scrolls into the Mod view's list. A GUI test that wants one control searches below its view's ID
-    (`view.perform`, `view.edit`, `view.mod`, `view.fx`): the strip's controls share their
+    slot 13 scrolls into the Mod view's list. A GUI test that wants one control searches below its
+    view's ID (`view.perform`, `view.edit`, `view.mod`, `view.fx`): the strip's controls share their
     `param.<id>` with the Edit panels'.
   - `snap_cli` (macOS, with the editor; also `slow`) runs `gg-snap` ("The views as PNGs"
     below).

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>

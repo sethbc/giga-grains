@@ -253,7 +253,6 @@ TEST_CASE("an unchanged route set marks nothing", "[plugin]")
     plugin.impl().uiSetRoutes(routes);
     CHECK(host.dirtyMarks() == marks + 1);
 }
-#endif
 
 TEST_CASE("a load past the memory cap is refused and unloads nothing", "[plugin]")
 {
@@ -278,3 +277,4 @@ TEST_CASE("a load past the memory cap is refused and unloads nothing", "[plugin]
     CHECK(context.sampleStatusFor(0).state == gg::ui::SampleStatusView::State::Loaded);
     CHECK(context.sampleWaveformFor(0).frames == frames);
 }
+#endif
