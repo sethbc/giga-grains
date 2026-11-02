@@ -847,6 +847,7 @@ TEST_CASE("the user's content folder is declared and reported as user content",
 #define GG_CRAWL_UNDER_SANITIZER 1
 #endif
 #endif
+#if !defined(GG_CRAWL_UNDER_SANITIZER)
 namespace
 {
 // True in an x86_64 process that Rosetta translates (macOS sets sysctl.proc_translated to 1).
@@ -862,6 +863,7 @@ bool translatedByRosetta()
 #endif
 }
 } // namespace
+#endif
 
 TEST_CASE("a crawl of the 48 packed factory presets takes under 50 ms",
           "[plugin][discovery][catalog][presets][serial][crawl48]")
