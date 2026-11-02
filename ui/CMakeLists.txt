@@ -22,6 +22,7 @@ add_library(gg-ui-core STATIC
         src/RouteEdits.cpp
         src/UndoStack.cpp
         src/views/Rings.cpp
+        src/MemoryText.cpp
         )
 add_library(gg::ui-core ALIAS gg-ui-core)
 
@@ -49,9 +50,11 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/views/RouteList.cpp
             src/views/ModView.cpp
             src/views/PerformView.cpp
+            src/views/PanelGrid.cpp
             src/MutatePanel.cpp
             src/PresetBrowser.cpp
             src/PresetStrip.cpp
+            src/LaneMenu.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

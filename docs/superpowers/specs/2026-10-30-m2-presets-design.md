@@ -978,9 +978,11 @@ the fix wave unless blocked outside our control or genuinely large (the policy).
 > §10) and **234** (a one-off extra grain on an off layer, x86_64 under Rosetta). The final
 > count is for the close.
 
-> **Amended (2026-11-02):** group 2 added rows 383 to 395 (twelve from its tasks and reviews, 383
-> to 394, and row 395 from the final review), closed rows 385 and 393 in its final fix wave and
-> left the rest open, as plain-log rows (INTENT §23 #67). The count rule above is retired.
+> **Amended (2026-11-02):** group 2 added rows 389 to 401 (twelve from its tasks and reviews, 389
+> to 400, and row 401 from the final review; numbered 383 to 395 on its branch, renumbered at the
+> merge with views' PR 2, whose rows took 383 to 388), closed rows 391 and 399 in its final fix
+> wave and left the rest open, as plain-log rows (INTENT §23 #67). The count rule above is
+> retired.
 
 ## 13. INTENT changes (Part II, with one §23 row in the same change)
 

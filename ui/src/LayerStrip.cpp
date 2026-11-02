@@ -24,7 +24,9 @@ using gg::core::LayerParam;
 using gg::core::ParamSlot;
 namespace jcmp = sst::jucegui::components;
 
-constexpr int kRowHeight = 22; // the letter, the toggles, Source and Level
+constexpr int kRowHeight = 22;  // the letter, the toggles, Source and Level
+constexpr int kOnMinWidth = 24; // "On" and its pads, which the Freeze toggle may take the rest of
+constexpr int kLevelMinWidth = 28; // the Level track the Source menu may take the rest of
 
 /// The layer's letter in its colour: a filled button, the letter dark on it.
 struct LetterButton final : jcmp::TextPushButton
@@ -120,6 +122,9 @@ LayerStrip::LayerStrip(const EditorContext &context, Layout layout)
         cell.level->setTooltip(cell.level->getTitle());
         addAndMakeVisible(*cell.level);
         cell.source = make(gg::core::layerSlot(LayerParam::Source, layer));
+        // The kinds' short forms, which a narrow cell's button draws (the editor at its smallest);
+        // the list, the tooltip and the accessibility value keep the kinds' names.
+        cell.source->setCompactMenuTexts({"Sample", "Live", "Resamp", "Spec", "Osc"});
         cell.freeze = make(gg::core::layerSlot(LayerParam::Freeze, layer));
     }
 }
@@ -186,9 +191,15 @@ void LayerStrip::resized()
         const int row = std::min(kRowHeight, area.getHeight() / (threeRows ? 3 : 2));
         auto header = area.removeFromTop(row);
         cell.letter->setBounds(header.removeFromLeft(std::min(kRowHeight, header.getWidth())));
-        const int half = header.getWidth() / 2;
-        cell.on->setBounds(header.removeFromLeft(half));
-        cell.freeze->setBounds(header);
+        // On and Freeze halve the rest, but Freeze, the longer label, takes from On what it needs
+        // to be drawn whole (a narrow cell, the editor at its smallest).
+        int onWidth = header.getWidth() / 2;
+        cell.freeze->setBounds(header.withTrimmedLeft(onWidth));
+        while (onWidth > kOnMinWidth && !cell.freeze->labelFits())
+        {
+            cell.freeze->setBounds(header.withTrimmedLeft(--onWidth));
+        }
+        cell.on->setBounds(header.removeFromLeft(onWidth));
         auto rest = area.removeFromTop(threeRows ? 2 * row : row);
         if (threeRows)
         {
@@ -197,10 +208,23 @@ void LayerStrip::resized()
         }
         else
         {
-            cell.source->setBounds(rest.removeFromLeft(rest.getWidth() / 2));
+            // Source and Level halve the row, but Source takes from Level what its button needs
+            // to draw each kind whole (or its short form).
+            int sourceWidth = rest.getWidth() / 2;
+            cell.source->setBounds(rest.withWidth(sourceWidth));
+            while (rest.getWidth() - sourceWidth > kLevelMinWidth && !cell.source->labelFits())
+            {
+                cell.source->setBounds(rest.withWidth(++sourceWidth));
+            }
+            rest.removeFromLeft(sourceWidth);
             cell.level->setBounds(rest);
         }
     }
+}
+
+void LayerStrip::lookAndFeelChanged()
+{
+    resized(); // a new style sheet's fonts: the menus' widths are measured again
 }
 
 void LayerStrip::paintOverChildren(juce::Graphics &g)

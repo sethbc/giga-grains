@@ -20,6 +20,7 @@
 #include "gg/core/ParamIds.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/ui/EditLayout.h" // View
+#include "gg/ui/MediaViews.h" // RingView, MemoryView, RingCommand
 
 // This header stays free of JUCE; gg::ui::Editor itself is defined in Editor.cpp. A caller that
 // may destroy the returned std::unique_ptr<juce::Component> still needs juce::Component to be
@@ -130,19 +131,16 @@ struct EditorContext
     /// shows it; empty when the plugin can't tell.
     std::string formatName;
 
-    /// The sample loader strip (spec §6.5): the instrument only. The editor calls these on the
+    /// The sample loader strip (spec §6.3, §6.5): in both products, for the selected layer
+    /// (loadSampleFor, relinkSampleFor and sampleStatusFor below). The editor calls these on the
     /// main thread, with UTF-8 paths; any may be empty. What they capture must outlive the
     /// editor.
     bool showSampleLoader{false};
-    std::function<void(const std::string &utf8Path)> loadSample, relinkSample;
     /// Sets and saves the per-machine sample folder; the strip shows a failure's message.
     std::function<SampleFolderResult(const std::string &utf8Path)> setSampleFolder;
     /// The settings' last load folder (UTF-8; empty if none), where the file choosers open
     /// until a file is chosen or dropped in this editor.
     std::function<std::string()> lastLoadFolder;
-    /// Polled at 30 Hz, on the main thread; the plugin may do its main-thread work in it
-    /// (applying a finished load).
-    std::function<SampleStatusView()> sampleStatus;
 
     /// The product's parameters' metadata and its lane (gg::core::paramMeta).
     gg::core::Mode mode{gg::core::Mode::Fx};
@@ -174,20 +172,47 @@ struct EditorContext
     /// The active sample rate (the last activation's while inactive), for extrapolating the
     /// clock between snapshots.
     double sampleRate{0.0};
-    /// The instrument's sample outline, main thread: cached by the plugin, so it is cheap to
-    /// call every frame; empty in the FX and with no sample.
-    std::function<SampleWaveform()> sampleWaveform;
 
     /// Per layer (M2 sub-project 6's spec §6.3; layer 0 to 3, A to D), for the canvas's four
     /// lanes. Main thread. May be empty (a bare context: the lanes show no peaks and no sample).
     /// livePeaksFor: the layer's live-ring peak strip; null while the plugin is inactive.
     std::function<const gg::core::LivePeaks *(uint8_t layer)> livePeaksFor;
-    /// The layer's sample outline, as sampleWaveform. PR 1: layer 0's sampleWaveform; empty for
-    /// the others, which can't hold a sample until the session format's next version.
+    /// The layer's sample outline, cached by the plugin so it is cheap to call every frame; empty
+    /// (null peaks) while the layer holds no sample.
     std::function<SampleWaveform(uint8_t layer)> sampleWaveformFor;
-    /// Loads a file the user dropped on a layer's lane. True if the layer takes it. PR 1: layer 0
-    /// calls loadSample and returns true; the others return false, and the canvas says so.
+    /// Loads a file the user chose or dropped for a layer (the loader strip's, or a lane's drop
+    /// or menu). True if the layer takes it: every layer does, in both products (ruling VW-P2c);
+    /// the load itself is asynchronous, and its outcome is the status.
     std::function<bool(uint8_t layer, const std::string &utf8Path)> loadSampleFor;
+    /// Relinks a layer's missing sample to the file chosen (SampleLoader::requestRelink).
+    std::function<void(uint8_t layer, const std::string &utf8Path)> relinkSampleFor;
+    /// A layer's sample status, polled at 30 Hz on the main thread; the plugin may do its
+    /// main-thread work in it (applying a finished load).
+    std::function<SampleStatusView(uint8_t layer)> sampleStatusFor;
+
+    /// A Live layer's ring as the audio thread last published it; valid is false while
+    /// inactive. Main thread.
+    std::function<RingView(uint8_t layer)> ringView;
+    /// Adds a splice mark `seconds` behind the ring's head, or clears the layer's marks. Dropped
+    /// while inactive; applied at the next process().
+    std::function<void(uint8_t layer, RingCommand, float seconds)> ringCommand;
+    /// Captures layer `layer`'s ring window (`splice` 0), or its splice k >= 1, into layer
+    /// `target` as an in-memory sample. "" on success, else the message for the user:
+    /// "the plugin isn't running", "no ring to capture", or the target's status after the memory
+    /// cap refused it.
+    std::function<std::string(uint8_t layer, uint32_t splice, uint8_t target)> captureTo;
+    /// Saves the same capture as a float32 WAV at `utf8Path`. "" on success, else the message.
+    std::function<std::string(uint8_t layer, uint32_t splice, const std::string &utf8Path)>
+        saveCaptureTo;
+    /// The captures folder (UTF-8), where the save chooser opens.
+    std::function<std::string()> capturesFolder;
+    /// Collect and save into `utf8Folder`: a summary for the user, "Collected N files" with
+    /// "; M missing" appended when any are missing.
+    std::function<std::string(const std::string &utf8Folder)> collectSamples;
+    /// The memory the instance holds and its cap, polled; and the cap's setter (clamped to 64 to
+    /// 16,384 MiB, saved with the state).
+    std::function<MemoryView()> memory;
+    std::function<void(uint32_t mib)> setMemoryCapMiB;
     /// Called with each transient message for the user (a refused drop) as the editor's header
     /// shows it for 4 s. May be empty.
     std::function<void(const std::string &utf8)> notice;

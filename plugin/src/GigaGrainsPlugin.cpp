@@ -1111,10 +1111,35 @@ float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
 
 void GigaGrainsPlugin::uiSetRoutes(const gg::core::ModRoutes &routes) noexcept
 {
+    if (routes == routes_)
+    {
+        return; // unchanged (a ring drag sends the same array): nothing to push or mark (row 316)
+    }
     routes_ = routes; // what stateSave writes from now on
     if (processor_ != nullptr)
     {
         uiRoutesPending_.push(routes_); // never allocates; inactive, activate() hands routes_ over
+    }
+    if (_host.canUseState())
+    {
+        _host.stateMarkDirty();
+    }
+}
+
+void GigaGrainsPlugin::uiSetMemoryCapMiB(uint32_t mib) noexcept
+{
+    try
+    {
+        const uint32_t before = media_->memoryCapMiB();
+        media_->setMemoryCapMiB(mib);
+        if (media_->memoryCapMiB() == before)
+        {
+            return;
+        }
+    }
+    catch (...)
+    {
+        return;
     }
     if (_host.canUseState())
     {

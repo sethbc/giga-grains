@@ -21,6 +21,7 @@ struct Row
     Panel panel;
     uint8_t order;
     ParamSlot pairedSpread;
+    bool breakBefore{false};
 };
 
 constexpr ParamSlot kNone = ParamSlot::Count;
@@ -30,32 +31,43 @@ constexpr Row edit(ParamSlot slot, Panel panel, uint8_t order, ParamSlot spread 
     return {slot, View::Edit, panel, order, spread};
 }
 
+/// An Edit row whose cell starts a new line in its panel.
+constexpr Row editLine(ParamSlot slot, Panel panel, uint8_t order)
+{
+    return {slot, View::Edit, panel, order, kNone, true};
+}
+
+constexpr Row fx(ParamSlot slot, Panel panel, uint8_t order)
+{
+    return {slot, View::Fx, panel, order, kNone};
+}
+
 /// The pinned table (spec §6.5, §6.7, from INTENT §17 with the modulators added): one row per
 /// LayerParam (by layer A's slot), per per-layer global and per other global, each panel's rows
 /// in order.
 constexpr std::array kRows{
-    // Source: the kind (the sample strip is the Source panel's own, not a parameter's), then M2
-    // sub-project 2's ring parameters, placed when it merged as the smallest change that keeps
-    // them reachable (ruling SP-M7, after VW-T19a; the ring's gestures are PR 2's).
+    // Source: the kind (the sample strip is the Source panel's own, not a parameter's).
     edit(ParamSlot::Source, Panel::Source, 0),
-    edit(ParamSlot::RingLength, Panel::Source, 1),
-    edit(ParamSlot::Loop, Panel::Source, 2),
-    edit(ParamSlot::LoopLength, Panel::Source, 3),
-    edit(ParamSlot::Overdub, Panel::Source, 4),
-    edit(ParamSlot::Splice, Panel::Source, 5),
+    // Ring: M2 sub-project 2's ring parameters, in the Source panel from its merge (ruling SP-M7,
+    // after VW-T19a) until PR 2 gave them a panel of their own.
+    edit(ParamSlot::RingLength, Panel::Ring, 0),
+    edit(ParamSlot::Loop, Panel::Ring, 1),
+    edit(ParamSlot::LoopLength, Panel::Ring, 2),
+    edit(ParamSlot::Overdub, Panel::Ring, 3),
+    edit(ParamSlot::Splice, Panel::Ring, 4),
     // Scheduler.
     edit(ParamSlot::Density, Panel::Scheduler, 0),
     edit(ParamSlot::Distribution, Panel::Scheduler, 1),
     edit(ParamSlot::Freeze, Panel::Scheduler, 2),
-    // Grain: Size and Size Spread, Position and Spray, Texture, Quality (ruling VW-T19a), then
-    // Smear (M2 sub-project 4; ruling VW-T19b).
+    // Grain: Size and Size Spread, Position and Spray, Texture, then M2 sub-project 4's Smear
+    // beside it (ruling VW-T19b, placed last until PR 2), then Quality (ruling VW-T19a).
     edit(ParamSlot::Size, Panel::Grain, 0, ParamSlot::SizeSpread),
     edit(ParamSlot::SizeSpread, Panel::Grain, 1),
     edit(ParamSlot::Position, Panel::Grain, 2, ParamSlot::Spray),
     edit(ParamSlot::Spray, Panel::Grain, 3),
     edit(ParamSlot::Texture, Panel::Grain, 4),
-    edit(ParamSlot::Quality, Panel::Grain, 5),
-    edit(ParamSlot::Smear, Panel::Grain, 6),
+    edit(ParamSlot::Smear, Panel::Grain, 5),
+    edit(ParamSlot::Quality, Panel::Grain, 6),
     // Pitch and Pitch Spread.
     edit(ParamSlot::Pitch, Panel::Pitch, 0, ParamSlot::PitchSpread),
     edit(ParamSlot::PitchSpread, Panel::Pitch, 1),
@@ -64,12 +76,13 @@ constexpr std::array kRows{
     edit(ParamSlot::Diffusion, Panel::Space, 1),
     edit(ParamSlot::Feedback, Panel::Space, 2),
     edit(ParamSlot::Level, Panel::Space, 3),
-    // Filter: the bus split and the two buses' filters (M2 sub-project 4; ruling VW-T19b).
+    // Filter: the bus split, then each bus's filter on a line of its own (M2 sub-project 4;
+    // ruling VW-T19b, one wrapped row until PR 2).
     edit(ParamSlot::BusSplit, Panel::Filter, 0),
-    edit(ParamSlot::Bus1Filter, Panel::Filter, 1),
+    editLine(ParamSlot::Bus1Filter, Panel::Filter, 1),
     edit(ParamSlot::Bus1Cutoff, Panel::Filter, 2),
     edit(ParamSlot::Bus1Resonance, Panel::Filter, 3),
-    edit(ParamSlot::Bus2Filter, Panel::Filter, 4),
+    editLine(ParamSlot::Bus2Filter, Panel::Filter, 4),
     edit(ParamSlot::Bus2Cutoff, Panel::Filter, 5),
     edit(ParamSlot::Bus2Resonance, Panel::Filter, 6),
     // The modulators.
@@ -107,26 +120,26 @@ constexpr std::array kRows{
     edit(ParamSlot::Step14, Panel::Step, 15),
     edit(ParamSlot::Step15, Panel::Step, 16),
     edit(ParamSlot::Step16, Panel::Step, 17),
-    // The FX view (spec §6.7): Reverb, then Output, Mix and the engine's Budget (ruling VW-T19a),
-    // then the global delay and limiter (M2 sub-project 4; ruling VW-T19b, until PR 2's Delay and
-    // Limiter sections).
-    Row{ParamSlot::ReverbAmount, View::Fx, Panel::Reverb, 0, kNone},
-    Row{ParamSlot::ReverbDecay, View::Fx, Panel::Reverb, 1, kNone},
-    Row{ParamSlot::ReverbSize, View::Fx, Panel::Reverb, 2, kNone},
-    Row{ParamSlot::ReverbDamping, View::Fx, Panel::Reverb, 3, kNone},
-    Row{ParamSlot::ReverbPredelay, View::Fx, Panel::Reverb, 4, kNone},
-    Row{ParamSlot::ReverbModulation, View::Fx, Panel::Reverb, 5, kNone},
-    Row{ParamSlot::DryToReverb, View::Fx, Panel::Reverb, 6, kNone},
-    Row{ParamSlot::Mix, View::Fx, Panel::Output, 0, kNone},
-    Row{ParamSlot::Budget, View::Fx, Panel::Output, 1, kNone},
-    Row{ParamSlot::DelayAmount, View::Fx, Panel::Output, 2, kNone},
-    Row{ParamSlot::DelayTime, View::Fx, Panel::Output, 3, kNone},
-    Row{ParamSlot::DelayFeedback, View::Fx, Panel::Output, 4, kNone},
-    Row{ParamSlot::DelayDamping, View::Fx, Panel::Output, 5, kNone},
-    Row{ParamSlot::DelayPingPong, View::Fx, Panel::Output, 6, kNone},
-    Row{ParamSlot::LimiterMode, View::Fx, Panel::Output, 7, kNone},
-    Row{ParamSlot::LimiterCeiling, View::Fx, Panel::Output, 8, kNone},
-    Row{ParamSlot::LimiterRelease, View::Fx, Panel::Output, 9, kNone},
+    // The FX view (spec §6.7): Reverb; Output, Mix and the engine's Budget (ruling VW-T19a); and
+    // M2 sub-project 4's global delay and limiter (in the Output panel by ruling VW-T19b, until
+    // PR 2 gave them panels of their own). The view shows them in the signal chain's order.
+    fx(ParamSlot::ReverbAmount, Panel::Reverb, 0),
+    fx(ParamSlot::ReverbDecay, Panel::Reverb, 1),
+    fx(ParamSlot::ReverbSize, Panel::Reverb, 2),
+    fx(ParamSlot::ReverbDamping, Panel::Reverb, 3),
+    fx(ParamSlot::ReverbPredelay, Panel::Reverb, 4),
+    fx(ParamSlot::ReverbModulation, Panel::Reverb, 5),
+    fx(ParamSlot::DryToReverb, Panel::Reverb, 6),
+    fx(ParamSlot::Mix, Panel::Output, 0),
+    fx(ParamSlot::Budget, Panel::Output, 1),
+    fx(ParamSlot::DelayAmount, Panel::Delay, 0),
+    fx(ParamSlot::DelayTime, Panel::Delay, 1),
+    fx(ParamSlot::DelayFeedback, Panel::Delay, 2),
+    fx(ParamSlot::DelayDamping, Panel::Delay, 3),
+    fx(ParamSlot::DelayPingPong, Panel::Delay, 4),
+    fx(ParamSlot::LimiterMode, Panel::Limiter, 0),
+    fx(ParamSlot::LimiterCeiling, Panel::Limiter, 1),
+    fx(ParamSlot::LimiterRelease, Panel::Limiter, 2),
     // The Perform view: the strip's On switches (Layer B On to D On through A's), the pad, the
     // macros.
     Row{ParamSlot::LayerAOn, View::Perform, Panel::Strip, 0, kNone},
@@ -214,8 +227,8 @@ std::optional<Placement> placementOf(ParamSlot slot) noexcept
     {
         if (row.slot == keyed.key)
         {
-            return Placement{row.view, row.panel, row.order,
-                             inLayer(row.pairedSpread, keyed.layer)};
+            return Placement{row.view, row.panel, row.order, inLayer(row.pairedSpread, keyed.layer),
+                             row.breakBefore};
         }
     }
     return std::nullopt;
@@ -279,6 +292,12 @@ const char *panelName(Panel panel) noexcept
         return "Morph";
     case Panel::Macros:
         return "Macros";
+    case Panel::Ring:
+        return "Ring";
+    case Panel::Delay:
+        return "Delay";
+    case Panel::Limiter:
+        return "Limiter";
     case Panel::Count:
         break;
     }

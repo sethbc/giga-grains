@@ -263,12 +263,18 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The mod matrix's routes in effect (routes_): the factory routes in a new instance, then a
     /// loaded state's or the editor's last uiSetRoutes, whichever came later.
     const gg::core::ModRoutes &uiRoutes() const noexcept { return routes_; }
-    /// Replaces the routes with `routes`: routes_ at once, so the next state save carries them,
+    /// An array equal to routes_ pushes and marks nothing. Otherwise replaces the routes with
+    /// `routes`: routes_ at once, so the next state save carries them,
     /// and state.mark_dirty when the host offers clap.state. Active, they go to the audio thread
     /// through uiRoutesPending_ and apply at the start of its next process() or params.flush,
     /// after any state loaded before then, so a load made after this edit wins; inactive, the
     /// next activate() gives them to the processor with routes_.
     void uiSetRoutes(const gg::core::ModRoutes &routes) noexcept;
+
+    /// The memory cap from the editor (M2 sub-project 6, PR 2), main thread: clamped through
+    /// MediaSession::setMemoryCapMiB (evicting nothing), then state.mark_dirty when the cap
+    /// changed, since the cap is saved with the state (INST).
+    void uiSetMemoryCapMiB(uint32_t mib) noexcept;
 
     /// The output events of the editor's changes that the host's list refused (try_push false):
     /// each counted, never retried. Any thread.

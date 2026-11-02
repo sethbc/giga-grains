@@ -1796,7 +1796,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             LaneSnapshot &lane = s.lanes[L];
             lane.writeHead = l.engine.liveWriteHead();
             lane.frozen = l.engineFrozen;
-            lane.on = layerRendering(L); // its on ramp's target or current value is above 0
+            lane.on = layerRendering(L); // its on ramp's target or current value is non-zero
             lane.builtKind = static_cast<uint8_t>(l.kind);
             lane.basePosition = base(position);
             lane.baseSpray = base(spray);
