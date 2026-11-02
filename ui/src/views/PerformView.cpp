@@ -33,7 +33,7 @@ struct PerformView::Impl
     {
         if (c.showSampleLoader)
         {
-            loader = std::make_unique<LoaderStrip>(c);
+            loader = std::make_unique<LoaderStrip>(c, 0, Compact::No);
             owner.addAndMakeVisible(*loader);
         }
         owner.addAndMakeVisible(canvas);
@@ -77,7 +77,8 @@ struct PerformView::Impl
     }
 
     PerformView &owner;
-    std::unique_ptr<LoaderStrip> loader; // the instrument's only
+    std::unique_ptr<LoaderStrip>
+        loader; // following the selected layer; null unless showSampleLoader
     GrainCanvas canvas;
     LayerStrip strip;
     MorphPad pad;
@@ -98,6 +99,10 @@ void PerformView::setSelectedLayer(uint8_t layer)
 {
     impl_->canvas.setSelectedLayer(layer);
     impl_->strip.setSelectedLayer(layer);
+    if (impl_->loader)
+    {
+        impl_->loader->setLayer(layer);
+    }
 }
 
 void PerformView::refresh()

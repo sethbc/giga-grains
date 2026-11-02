@@ -433,35 +433,13 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context = gg::ui::EditorContext{};
     context.productName = descriptorFor(product())->name;
     context.formatName = formatOf(_host.host());
-    // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
-    // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
-    // Both products have four loaders (M2 sub-project 2), so the strip's members are layer A's in
-    // each.
+    // The loader strip (spec §6.3, §6.5), in both products, on the main thread, as the loader
+    // requires. The loaders are GigaGrainsPlugin's, so they outlive the editor, which the shim
+    // holds. The strip's per-layer members are filled below; the sample folder is the machine's,
+    // saved through layer A's loader as it always was.
     {
         SampleLoader *loader = &media().loader(0);
-        // The strip is still the instrument's: PR 1's FX editor has none (its tests say so), and
-        // the per-layer members below serve both products. Task 7 turns it on in the FX.
-        context.showSampleLoader = mode() == gg::core::Mode::Instrument;
-        // Nothing may throw into JUCE's callbacks. A request that can't be made (no memory)
-        // leaves the status as the loader set it.
-        context.loadSample = [loader](const std::string &path) {
-            try
-            {
-                loader->requestLoad(pathOf(path));
-            }
-            catch (...)
-            {
-            }
-        };
-        context.relinkSample = [loader](const std::string &path) {
-            try
-            {
-                loader->requestRelink(pathOf(path));
-            }
-            catch (...)
-            {
-            }
-        };
+        context.showSampleLoader = true;
         // The settings file couldn't be written, or an allocation failed: the folder stays as
         // it was, and the strip says so (carry-over row 198).
         context.setSampleFolder = [loader](const std::string &path) {
@@ -498,19 +476,6 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
                 return std::string();
             }
         };
-        // Polled by the editor's 30 Hz timer, on the main thread: it first applies what the
-        // loader's worker finished, as on_main_thread does, so a load shows (and plays) even
-        // where the host doesn't deliver on_main_thread, as a VST3 host may not while the plugin
-        // is inactive.
-        context.sampleStatus = [this, loader] {
-            onMainThread();
-            return viewOf(loader->status());
-        };
-        // Cached by the loader: cheap once per sample.
-        context.sampleWaveform = [loader] {
-            const SampleWaveform w = loader->waveform();
-            return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
-        };
     }
     // Per layer, in both products (M2 sub-project 6, PR 2): every layer has a loader.
     context.sampleWaveformFor = [this](uint8_t layer) {
@@ -532,7 +497,7 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
         }
         catch (...)
         {
-            // As loadSample: the status stays as the loader set it.
+            // A request that can't be made (no memory): the status stays as the loader set it.
         }
         return true;
     };
@@ -554,7 +519,10 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
         {
             return gg::ui::SampleStatusView{};
         }
-        onMainThread(); // as sampleStatus: apply what a loader's worker finished
+        onMainThread(); // Apply what a loader's worker finished first, as on_main_thread does, so a
+                        // load shows (and
+        // plays) even where the host doesn't deliver on_main_thread, as a VST3 host may not while
+        // the plugin is inactive.
         return viewOf(media().loader(layer).status());
     };
     fillRingContext(context);

@@ -340,8 +340,9 @@ TEST_CASE("the instrument's gui says when a session's sample is from a newer ver
     CHECK_FALSE(relinkShown(*editor)); // nothing to relink: this build can't read the entry
 }
 
-TEST_CASE("the fx's gui has no sample loader strip", "[plugin]")
+TEST_CASE("the fx's gui has the sample loader strip for its selected layer", "[plugin]")
 {
+    // M2 sub-project 6's PR 2: both products show the strip (PR 1's FX editor had none).
     const juce::ScopedJuceInitialiser_GUI juceGui;
     gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
     REQUIRE(fx.valid());
@@ -353,10 +354,12 @@ TEST_CASE("the fx's gui has no sample loader strip", "[plugin]")
          {"sampleLoad", "sampleFolder", "sampleRelink", "sampleName", "sampleStatus"})
     {
         INFO(id);
-        CHECK(stripChild(*editor, id) == nullptr);
+        CHECK(stripChild(*editor, id) != nullptr);
     }
+    CHECK(labelText(*editor, "sampleStatus") == "no sample");
     auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
-    CHECK((target == nullptr || !target->isInterestedInFileDrag({"/some/file.wav"})));
+    REQUIRE(target != nullptr);
+    CHECK(target->isInterestedInFileDrag({"/some/file.wav"}));
 }
 
 TEST_CASE("the gui's loader strip shows the sample's status and offers relink", "[plugin]")
@@ -367,8 +370,12 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
     gg::ui::EditorContext context;
     context.productName = "Giga Grains";
     context.showSampleLoader = true;
-    context.loadSample = [&loaded](const std::string &path) { loaded = path; };
-    context.sampleStatus = [&view] { return view; };
+    context.loadSampleFor = [&loaded](uint8_t layer, const std::string &path) {
+        CHECK(layer == 0);
+        loaded = path;
+        return true;
+    };
+    context.sampleStatusFor = [&view](uint8_t) { return view; };
     using State = gg::ui::SampleStatusView::State;
 
     SECTION("loaded, with the file's length, channels and rate")
@@ -379,7 +386,7 @@ TEST_CASE("the gui's loader strip shows the sample's status and offers relink", 
         CHECK(labelText(*editor, "sampleStatus") == "loaded: 1.50 s, 2 ch, 44100 Hz");
         CHECK_FALSE(relinkShown(*editor));
 
-        // A drop passes the first file's path, as UTF-8, to loadSample.
+        // A drop passes the first file's path, as UTF-8, to loadSampleFor (layer A).
         auto *target = dynamic_cast<juce::FileDragAndDropTarget *>(editor.get());
         REQUIRE(target != nullptr);
         const juce::String path = juce::String::fromUTF8("/samples/gr\xc3\xa4in.aiff");
@@ -507,8 +514,8 @@ TEST_CASE("the editor context carries the publish structures and the gestures", 
         CHECK(context.clock == nullptr);
         REQUIRE(context.baseValue);
         CHECK(context.baseValue(ParamSlot::Mix) == 0.5f);
-        REQUIRE(context.sampleWaveform);
-        CHECK(context.sampleWaveform().peaks == nullptr); // the FX has no sample
+        REQUIRE(context.sampleWaveformFor);
+        CHECK(context.sampleWaveformFor(0).peaks == nullptr); // no sample yet
 
         REQUIRE(fx.activate(44100.0, 512));
         auto *processor = plugin->processor();
@@ -572,8 +579,8 @@ TEST_CASE("the instrument's editor context outlines its sample", "[plugin]")
     REQUIRE(editor != nullptr);
     const gg::ui::EditorContext &context = plugin->editorContext();
     CHECK(context.mode == gg::core::Mode::Instrument);
-    REQUIRE(context.sampleWaveform);
-    const auto waveform = context.sampleWaveform();
+    REQUIRE(context.sampleWaveformFor);
+    const auto waveform = context.sampleWaveformFor(0);
     REQUIRE(waveform.peaks != nullptr);
     CHECK(waveform.peaks == plugin->sampleLoader()->waveform().peaks);
     CHECK(waveform.frames == 192000);
@@ -662,9 +669,9 @@ TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]"
             }
         }
 
-        // The loader strip is the instrument's alone (the FX's absence is tested above).
-        CHECK((findDeep(*editor, "sampleLoad") != nullptr) == product.instrument);
-        CHECK((findDeep(*editor, "sampleStatus") != nullptr) == product.instrument);
+        // The loader strip is in both products (M2 sub-project 6, PR 2).
+        CHECK(findDeep(*editor, "sampleLoad") != nullptr);
+        CHECK(findDeep(*editor, "sampleStatus") != nullptr);
 
         // At the smallest size every part still has room, inside the editor.
         editor->setSize(gg::ui::kEditorMinWidth, gg::ui::kEditorMinHeight);
@@ -778,7 +785,7 @@ TEST_CASE("the folder button reports a failed save", "[plugin]")
     gg::ui::EditorContext &context = recording.context;
     context.showSampleLoader = true;
     gg::ui::SampleStatusView view = statusView(gg::ui::SampleStatusView::State::None);
-    context.sampleStatus = [&view] { return view; };
+    context.sampleStatusFor = [&view](uint8_t) { return view; };
     std::string folderAsked;
     gg::ui::SampleFolderResult result{false, "can't save the sample folder: settings.xml is "
                                              "read-only"};
@@ -856,7 +863,7 @@ TEST_CASE("the loader strip shows every sample state", "[plugin]")
     gg::ui::SampleStatusView view;
     RecordingContext recording(gg::core::Mode::Instrument);
     recording.context.showSampleLoader = true;
-    recording.context.sampleStatus = [&view] { return view; };
+    recording.context.sampleStatusFor = [&view](uint8_t) { return view; };
     const auto editor = gg::ui::makeEditor(recording.context);
     editor->setSize(1600, gg::ui::kEditorHeight); // wide enough for every status below to fit
     auto *timer = dynamic_cast<juce::Timer *>(editor.get());
@@ -895,9 +902,13 @@ TEST_CASE("the loader strip refuses other files and opens at the last folder", "
     gg::ui::EditorContext &context = recording.context;
     context.showSampleLoader = true;
     std::vector<std::string> loads;
-    context.loadSample = [&loads](const std::string &path) { loads.push_back(path); };
+    context.loadSampleFor = [&loads](uint8_t layer, const std::string &path) {
+        CHECK(layer == 0);
+        loads.push_back(path);
+        return true;
+    };
     gg::ui::SampleStatusView view;
-    context.sampleStatus = [&view] { return view; };
+    context.sampleStatusFor = [&view](uint8_t) { return view; };
     const juce::File start = juce::File::getCurrentWorkingDirectory();
     context.lastLoadFolder = [&start] { return start.getFullPathName().toStdString(); };
     const auto editor = gg::ui::makeEditor(context);
@@ -947,6 +958,296 @@ TEST_CASE("the loader strip refuses other files and opens at the last folder", "
     answer = juce::File();
     relink->onClick();
     CHECK(opened.back() == start.getChildFile("elsewhere"));
+}
+
+namespace
+{
+/// A key with Command (Ctrl off macOS), and Shift if asked.
+juce::KeyPress commandShiftKey(int code)
+{
+    return juce::KeyPress(
+        code, juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
+}
+
+void tickEditor(juce::Component &editor, int n = 1)
+{
+    auto *timer = dynamic_cast<juce::Timer *>(&editor);
+    REQUIRE(timer != nullptr);
+    for (int i = 0; i < n; ++i)
+    {
+        timer->timerCallback();
+    }
+}
+
+/// The view with this component ID below the editor.
+juce::Component *viewById(const juce::Component &editor, const char *viewId)
+{
+    juce::Component *view = findDeep(editor, viewId);
+    REQUIRE(view != nullptr);
+    return view;
+}
+
+constexpr uint64_t kMiBytes = 1024ull * 1024ull;
+} // namespace
+
+TEST_CASE("the strip follows the selected layer in both products", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const auto dir = gg::test::sampleDir("gui-strip-layers");
+    gg::test::useSettingsFile(dir / "settings.xml");
+    const auto file = gg::test::writeSineWav(dir / "layer-c.wav");
+    for (const char *id : {"org.sethbc.giga-grains", "org.sethbc.giga-grains-fx"})
+    {
+        INFO(id);
+        gg::test::PluginUnderTest product(id);
+        REQUIRE(product.valid());
+        auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&product.impl());
+        REQUIRE(plugin != nullptr);
+        const std::unique_ptr<juce::Component> editor = plugin->createEditor();
+        REQUIRE(editor != nullptr);
+        const gg::ui::EditorContext &context = plugin->editorContext();
+        CHECK(labelText(*editor, "loader.letter") == "A");
+
+        REQUIRE(editor->keyPressed(commandShiftKey('C')));
+        tickEditor(*editor);
+        CHECK(labelText(*editor, "loader.letter") == "C");
+        CHECK(labelText(*editor, "sampleStatus") == "no sample");
+
+        // Load... through its path seam: the file goes to layer C.
+        auto *strip = dynamic_cast<gg::ui::LoaderStrip *>(findDeep(*editor, "sampleStrip"));
+        REQUIRE(strip != nullptr);
+        strip->browse = [&file](const gg::ui::LoaderStrip::Browse &, auto done) {
+            done(juce::File(utf8String(file)));
+        };
+        auto *load = dynamic_cast<juce::Button *>(findDeep(*editor, "sampleLoad"));
+        REQUIRE(load != nullptr);
+        load->onClick();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (context.sampleStatusFor(2).state == gg::ui::SampleStatusView::State::Loading &&
+               std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(context.sampleStatusFor(2).state == gg::ui::SampleStatusView::State::Loaded);
+        CHECK(context.sampleStatusFor(0).state == gg::ui::SampleStatusView::State::None);
+        tickEditor(*editor);
+        CHECK(labelText(*editor, "sampleStatus").startsWith("loaded"));
+        CHECK(labelText(*editor, "sampleName") == "layer-c.wav");
+
+        // Layer A has none; back on C the strip shows C's again.
+        REQUIRE(editor->keyPressed(commandShiftKey('A')));
+        tickEditor(*editor);
+        CHECK(labelText(*editor, "loader.letter") == "A");
+        CHECK(labelText(*editor, "sampleStatus") == "no sample");
+        REQUIRE(editor->keyPressed(commandShiftKey('C')));
+        tickEditor(*editor);
+        CHECK(labelText(*editor, "sampleStatus").startsWith("loaded"));
+    }
+}
+
+TEST_CASE("the memory readout and the cap", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    for (const auto mode : {gg::core::Mode::Instrument, gg::core::Mode::Fx})
+    {
+        RecordingContext recording(mode);
+        recording.context.showSampleLoader = true;
+        gg::ui::EditorContext &context = recording.context;
+        gg::ui::MemoryView memory{312 * kMiBytes, 1024};
+        std::vector<uint32_t> caps;
+        context.memory = [&memory] { return memory; };
+        context.setMemoryCapMiB = [&caps, &memory](uint32_t mib) {
+            caps.push_back(mib);
+            memory.capMiB = mib;
+        };
+        const auto editor = gg::ui::makeEditor(context);
+        tickEditor(*editor, 10);
+        CHECK(labelText(*editor, "loader.memory") == "312 MB of 1 GB");
+
+        auto *cap = dynamic_cast<juce::ComboBox *>(findDeep(*editor, "loader.cap"));
+        REQUIRE(cap != nullptr);
+        CHECK(cap->getNumItems() == 9);
+        CHECK(cap->getSelectedId() == 1024);
+        CHECK(cap->getText() == "1 GB");
+        cap->setSelectedId(512, juce::sendNotificationSync);
+        REQUIRE(caps.size() == 1);
+        CHECK(caps[0] == 512);
+        tickEditor(*editor, 10);
+        CHECK(labelText(*editor, "loader.memory") == "312 MB of 512 MB");
+        CHECK(cap->getSelectedId() == 512);
+
+        // A cap from a state that is not a choice is listed in order and ticked.
+        memory.capMiB = 300;
+        tickEditor(*editor, 10);
+        CHECK(cap->getNumItems() == 10);
+        CHECK(cap->getSelectedId() == 300);
+        CHECK(cap->getText() == "300 MB");
+        CHECK(cap->getItemText(2) == "256 MB");
+        CHECK(cap->getItemText(3) == "300 MB");
+        CHECK(cap->getItemText(4) == "512 MB");
+        CHECK(caps.size() == 1); // listing it asks for nothing
+    }
+}
+
+TEST_CASE("the readout shows over the cap", "[plugin]")
+{
+    // Review Focus 3: lowering the cap below what is held unloads nothing; the readout says so.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    recording.context.showSampleLoader = true;
+    gg::ui::EditorContext &context = recording.context;
+    gg::ui::MemoryView memory{700 * kMiBytes, 512};
+    int loads = 0;
+    context.memory = [&memory] { return memory; };
+    context.setMemoryCapMiB = [&memory](uint32_t mib) { memory.capMiB = mib; };
+    context.loadSampleFor = [&loads](uint8_t, const std::string &) {
+        ++loads;
+        return true;
+    };
+    context.relinkSampleFor = [&loads](uint8_t, const std::string &) { ++loads; };
+    const auto editor = gg::ui::makeEditor(context);
+    tickEditor(*editor, 10);
+    const auto *readout = dynamic_cast<juce::Label *>(findDeep(*editor, "loader.memory"));
+    REQUIRE(readout != nullptr);
+    CHECK(readout->getText() == "700 MB of 512 MB");
+    CHECK(readout->findColour(juce::Label::textColourId) == gg::ui::Palette::dark().notice);
+    CHECK(loads == 0);
+
+    memory.capMiB = 1024;
+    tickEditor(*editor, 10);
+    CHECK(readout->getText() == "700 MB of 1 GB");
+    CHECK(readout->findColour(juce::Label::textColourId) == gg::ui::Palette::dark().dimText);
+
+    // and in the light theme, the light palette's notice color.
+    memory.capMiB = 64;
+    REQUIRE(gg::ui::setTheme(*editor, gg::ui::ThemeChoice::Light));
+    tickEditor(*editor, 10);
+    CHECK(readout->findColour(juce::Label::textColourId) == gg::ui::Palette::light().notice);
+}
+
+TEST_CASE("Collect asks for a folder and posts the summary", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    recording.context.showSampleLoader = true;
+    gg::ui::EditorContext &context = recording.context;
+    std::string collected;
+    context.collectSamples = [&collected](const std::string &folder) {
+        collected = folder;
+        return std::string("Collected 2 files; 1 missing");
+    };
+    const auto editor = gg::ui::makeEditor(context);
+    auto *strip = dynamic_cast<gg::ui::LoaderStrip *>(findDeep(*editor, "sampleStrip"));
+    REQUIRE(strip != nullptr);
+    const juce::File folder = juce::File::getCurrentWorkingDirectory();
+    std::string title;
+    bool wantedFolder = false;
+    strip->browse = [&](const gg::ui::LoaderStrip::Browse &b, auto done) {
+        title = b.title.toStdString();
+        wantedFolder = b.folders;
+        done(folder);
+    };
+    auto *button = dynamic_cast<juce::Button *>(findDeep(*editor, "loader.collect"));
+    REQUIRE(button != nullptr);
+    button->onClick();
+    CHECK(wantedFolder);
+    CHECK(collected == folder.getFullPathName().toStdString());
+    CHECK(labelText(*editor, "header.notice") == "Collected 2 files; 1 missing");
+
+    // Cancelled: nothing collected.
+    collected.clear();
+    strip->browse = [](const gg::ui::LoaderStrip::Browse &, auto done) { done(juce::File()); };
+    button->onClick();
+    CHECK(collected.empty());
+}
+
+TEST_CASE("Edit shows the compact strip for the selected layer", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    using State = gg::ui::SampleStatusView::State;
+    for (const auto mode : {gg::core::Mode::Instrument, gg::core::Mode::Fx})
+    {
+        RecordingContext recording(mode);
+        recording.context.showSampleLoader = true;
+        gg::ui::EditorContext &context = recording.context;
+        std::vector<uint8_t> asked;
+        context.sampleStatusFor = [&asked](uint8_t layer) {
+            asked.push_back(layer);
+            return layer == 2 ? statusView(State::Loaded, "pad.wav", {}, 2.0, 2, 48000.0)
+                              : statusView(State::None);
+        };
+        context.layer = [] { return uint8_t{2}; };
+        const auto editor = gg::ui::makeEditor(context);
+        asked.clear(); // the strips poll layer A once as they are built, before the layer is set
+        REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Edit));
+        tickEditor(*editor);
+        const juce::Component *edit = viewById(*editor, "view.edit");
+        const auto *status = dynamic_cast<const juce::Label *>(findDeep(*edit, "sampleStatus"));
+        REQUIRE(status != nullptr);
+        CHECK(status->getText() == "loaded: 2.00 s, 2 ch, 48000 Hz");
+        CHECK(status->isShowing() == edit->isShowing());
+        const auto *letter = dynamic_cast<const juce::Label *>(findDeep(*edit, "loader.letter"));
+        REQUIRE(letter != nullptr);
+        CHECK(letter->getText() == "C");
+        CHECK(findDeep(*edit, "sampleLoad") != nullptr);
+        // Compact: no readout, cap, Collect or folder button.
+        CHECK(findDeep(*edit, "loader.memory") == nullptr);
+        CHECK(findDeep(*edit, "loader.cap") == nullptr);
+        CHECK(findDeep(*edit, "loader.collect") == nullptr);
+        CHECK(findDeep(*edit, "sampleFolder") == nullptr);
+        // The panels sit below it, inside the view.
+        const auto *strip = findDeep(*edit, "sampleStrip");
+        REQUIRE(strip != nullptr);
+        CHECK(edit->getLocalBounds().contains(strip->getBounds()));
+        for (const uint8_t layer : asked)
+        {
+            CHECK(layer == 2);
+        }
+    }
+}
+
+TEST_CASE("the strip's buttons follow the light theme", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    recording.context.showSampleLoader = true;
+    gg::ui::SampleStatusView view =
+        statusView(gg::ui::SampleStatusView::State::Missing, "k.wav", {}, 0.0, 0, 0.0, true);
+    recording.context.sampleStatusFor = [&view](uint8_t) { return view; };
+    const auto editor = gg::ui::makeEditor(recording.context);
+    REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Edit));
+    tickEditor(*editor);
+
+    const auto check = [&](const gg::ui::Palette &palette) {
+        for (const char *viewId : {"view.perform", "view.edit"})
+        {
+            const juce::Component *view = viewById(*editor, viewId);
+            for (const char *id : {"sampleLoad", "sampleRelink", "sampleFolder", "loader.collect"})
+            {
+                const auto *button = dynamic_cast<const juce::TextButton *>(findDeep(*view, id));
+                if (button == nullptr)
+                {
+                    CHECK(std::string(viewId) == "view.edit"); // the compact strip has no more
+                    CHECK(
+                        (std::string(id) == "sampleFolder" || std::string(id) == "loader.collect"));
+                    continue;
+                }
+                INFO(viewId << " " << id);
+                CHECK(button->findColour(juce::TextButton::buttonColourId) == palette.header);
+                CHECK(button->findColour(juce::TextButton::textColourOffId) == palette.text);
+                CHECK(button->findColour(juce::ComboBox::outlineColourId) == palette.outline);
+            }
+        }
+        const auto *cap = dynamic_cast<const juce::ComboBox *>(findDeep(*editor, "loader.cap"));
+        REQUIRE(cap != nullptr);
+        CHECK(cap->findColour(juce::ComboBox::backgroundColourId) == palette.header);
+        CHECK(cap->findColour(juce::ComboBox::textColourId) == palette.text);
+    };
+    check(gg::ui::Palette::dark());
+    REQUIRE(gg::ui::setTheme(*editor, gg::ui::ThemeChoice::Light));
+    check(gg::ui::Palette::light());
+    REQUIRE(gg::ui::setTheme(*editor, gg::ui::ThemeChoice::Dark));
+    check(gg::ui::Palette::dark());
 }
 
 TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")

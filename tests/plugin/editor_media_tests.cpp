@@ -119,7 +119,7 @@ struct Rig
 };
 } // namespace
 
-TEST_CASE("every layer loads a sample in both products", "[plugin][media]")
+TEST_CASE("every layer loads a sample in both products", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
@@ -143,7 +143,7 @@ TEST_CASE("every layer loads a sample in both products", "[plugin][media]")
           gg::ui::SampleStatusView::State::None);
 }
 
-TEST_CASE("the ring view follows the ring", "[plugin][media]")
+TEST_CASE("the ring view follows the ring", "[plugin]")
 {
     Rig rig(kFxId);
     const auto &context = rig.context();
@@ -169,7 +169,7 @@ TEST_CASE("the ring view follows the ring", "[plugin][media]")
     CHECK(context.ringView(0).spliceCount == 0);
 }
 
-TEST_CASE("capture loads the window into a layer", "[plugin][media]")
+TEST_CASE("capture loads the window into a layer", "[plugin]")
 {
     Rig rig(kFxId);
     const auto &context = rig.context();
@@ -188,7 +188,7 @@ TEST_CASE("capture loads the window into a layer", "[plugin][media]")
     CHECK_FALSE(context.capturesFolder().empty());
 }
 
-TEST_CASE("capture refuses honestly", "[plugin][media]")
+TEST_CASE("capture refuses honestly", "[plugin]")
 {
     Rig rig(kFxId);
     const auto &context = rig.context();
@@ -204,7 +204,7 @@ TEST_CASE("capture refuses honestly", "[plugin][media]")
     CHECK(message.starts_with("over the memory cap"));
 }
 
-TEST_CASE("the memory cap is a saved setting", "[plugin][media]")
+TEST_CASE("the memory cap is a saved setting", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
@@ -235,7 +235,7 @@ TEST_CASE("the memory cap is a saved setting", "[plugin][media]")
     CHECK(context.memory().usedBytes > before);
 }
 
-TEST_CASE("an unchanged route set marks nothing", "[plugin][media]")
+TEST_CASE("an unchanged route set marks nothing", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);

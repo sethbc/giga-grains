@@ -368,12 +368,12 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
         {
             return "can't write " + wav.string();
         }
-        context.loadSample(wav.string());
+        context.loadSampleFor(0, wav.string());
         bool loaded = false;
         for (int i = 0; i < 500 && !loaded; ++i)
         {
             instance.mainThread();
-            loaded = context.sampleStatus().state == gg::ui::SampleStatusView::State::Loaded;
+            loaded = context.sampleStatusFor(0).state == gg::ui::SampleStatusView::State::Loaded;
             if (!loaded)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -381,7 +381,7 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
         }
         if (!loaded)
         {
-            return "the generated sample didn't load: " + context.sampleStatus().message;
+            return "the generated sample didn't load: " + context.sampleStatusFor(0).message;
         }
     }
 

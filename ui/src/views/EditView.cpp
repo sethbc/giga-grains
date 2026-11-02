@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "../LayerStrip.h"
+#include "../LoaderStrip.h"
 #include "PanelGrid.h"
 #include "gg/ui/EditLayout.h"
 
@@ -17,6 +18,7 @@ namespace
 constexpr int kPanelMargin = 2;
 constexpr int kStripHeight = 64; // as the Mod view's
 constexpr int kStripGap = 4;
+constexpr int kLoaderHeight = 28; // the compact sample strip, as Perform's
 constexpr Panel kPanels[] = {Panel::Source,  Panel::Ring,  Panel::Scheduler, Panel::Grain,
                              Panel::Pitch,   Panel::Space, Panel::Filter,    Panel::Lfo1,
                              Panel::Lfo2,    Panel::Env1,  Panel::Env2,      Panel::Random1,
@@ -53,6 +55,11 @@ struct EditView::Impl
                 }
             };
             owner.addAndMakeVisible(*strip);
+        }
+        if (withStrip && c.showSampleLoader)
+        {
+            loader = std::make_unique<LoaderStrip>(context, 0, Compact::Yes);
+            owner.addAndMakeVisible(*loader);
         }
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false);
@@ -110,7 +117,8 @@ struct EditView::Impl
     /// (row 335), so the panels are rebuilt when it shows rather than at every layer change.
     bool stale{false};
     std::function<uint8_t()> selectedLayer;
-    std::unique_ptr<LayerStrip> strip; // the editor's Edit view only
+    std::unique_ptr<LayerStrip> strip;   // the editor's Edit view only
+    std::unique_ptr<LoaderStrip> loader; // likewise: the compact sample strip, the layer's
     juce::Viewport viewport;
     juce::Component content;
     std::vector<std::unique_ptr<ParamPanel>> panels;
@@ -138,6 +146,10 @@ void EditView::setLayer(uint8_t layer)
     {
         m.strip->setSelectedLayer(layer);
     }
+    if (m.loader)
+    {
+        m.loader->setLayer(layer);
+    }
     m.stale = true;
     m.rebuildIfShown();
 }
@@ -159,6 +171,10 @@ void EditView::refresh()
     if (m.strip)
     {
         m.strip->refresh();
+    }
+    if (m.loader)
+    {
+        m.loader->refresh();
     }
     if (m.rebuildIfShown())
     {
@@ -193,6 +209,11 @@ void EditView::resized()
     if (impl_->strip)
     {
         impl_->strip->setBounds(area.removeFromTop(kStripHeight));
+        area.removeFromTop(kStripGap);
+    }
+    if (impl_->loader)
+    {
+        impl_->loader->setBounds(area.removeFromTop(kLoaderHeight));
         area.removeFromTop(kStripGap);
     }
     impl_->viewport.setBounds(area);

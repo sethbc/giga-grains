@@ -22,6 +22,7 @@ add_library(gg-ui-core STATIC
         src/RouteEdits.cpp
         src/UndoStack.cpp
         src/views/Rings.cpp
+        src/MemoryText.cpp
         )
 add_library(gg::ui-core ALIAS gg-ui-core)
 

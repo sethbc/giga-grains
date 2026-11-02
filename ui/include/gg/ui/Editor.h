@@ -131,19 +131,16 @@ struct EditorContext
     /// shows it; empty when the plugin can't tell.
     std::string formatName;
 
-    /// The sample loader strip (spec §6.5): the instrument only. The editor calls these on the
+    /// The sample loader strip (spec §6.3, §6.5): in both products, for the selected layer
+    /// (loadSampleFor, relinkSampleFor and sampleStatusFor below). The editor calls these on the
     /// main thread, with UTF-8 paths; any may be empty. What they capture must outlive the
     /// editor.
     bool showSampleLoader{false};
-    std::function<void(const std::string &utf8Path)> loadSample, relinkSample;
     /// Sets and saves the per-machine sample folder; the strip shows a failure's message.
     std::function<SampleFolderResult(const std::string &utf8Path)> setSampleFolder;
     /// The settings' last load folder (UTF-8; empty if none), where the file choosers open
     /// until a file is chosen or dropped in this editor.
     std::function<std::string()> lastLoadFolder;
-    /// Polled at 30 Hz, on the main thread; the plugin may do its main-thread work in it
-    /// (applying a finished load).
-    std::function<SampleStatusView()> sampleStatus;
 
     /// The product's parameters' metadata and its lane (gg::core::paramMeta).
     gg::core::Mode mode{gg::core::Mode::Fx};
@@ -175,22 +172,22 @@ struct EditorContext
     /// The active sample rate (the last activation's while inactive), for extrapolating the
     /// clock between snapshots.
     double sampleRate{0.0};
-    /// The instrument's sample outline, main thread: cached by the plugin, so it is cheap to
-    /// call every frame; empty in the FX and with no sample.
-    std::function<SampleWaveform()> sampleWaveform;
 
     /// Per layer (M2 sub-project 6's spec §6.3; layer 0 to 3, A to D), for the canvas's four
     /// lanes. Main thread. May be empty (a bare context: the lanes show no peaks and no sample).
     /// livePeaksFor: the layer's live-ring peak strip; null while the plugin is inactive.
     std::function<const gg::core::LivePeaks *(uint8_t layer)> livePeaksFor;
-    /// The layer's sample outline, as sampleWaveform; empty with no sample.
+    /// The layer's sample outline, cached by the plugin so it is cheap to call every frame; empty
+    /// (null peaks) while the layer holds no sample.
     std::function<SampleWaveform(uint8_t layer)> sampleWaveformFor;
-    /// Loads a file the user dropped on a layer's lane, or chose from its lane menu. True if the
-    /// layer takes it: every layer does, in both products (ruling VW-P2c).
+    /// Loads a file the user chose or dropped for a layer (the loader strip's, or a lane's drop
+    /// or menu). True if the layer takes it: every layer does, in both products (ruling VW-P2c);
+    /// the load itself is asynchronous, and its outcome is the status.
     std::function<bool(uint8_t layer, const std::string &utf8Path)> loadSampleFor;
     /// Relinks a layer's missing sample to the file chosen (SampleLoader::requestRelink).
     std::function<void(uint8_t layer, const std::string &utf8Path)> relinkSampleFor;
-    /// A layer's sample status, polled like sampleStatus (which is layer 0's).
+    /// A layer's sample status, polled at 30 Hz on the main thread; the plugin may do its
+    /// main-thread work in it (applying a finished load).
     std::function<SampleStatusView(uint8_t layer)> sampleStatusFor;
 
     /// A Live layer's ring as the audio thread last published it; valid is false while
