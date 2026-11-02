@@ -224,7 +224,10 @@ void UndoStack::applyValues(const ParamChanges &changes, bool undoing, bool batc
         {
             std::ranges::for_each(changes, add);
         }
-        callbacks_.setValues(values);
+        if (!values.empty())
+        {
+            callbacks_.setValues(values);
+        }
         return;
     }
     const auto set = [this, undoing](const ParamChange &c) {

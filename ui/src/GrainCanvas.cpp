@@ -98,7 +98,8 @@ GrainCanvas::GrainCanvas(const EditorContext &context) : context_(context)
         marks.reserve(gg::core::kMaxSplices); // a paint never grows them
     }
     showMenu = [this](juce::PopupMenu menu) {
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(menuArea_));
+        menu.showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(menuArea_));
     };
     browse = [this](const Browse &b, std::function<void(const juce::File &)> done) {
         chooser_ = std::make_unique<juce::FileChooser>(b.title, b.initial, b.patterns);

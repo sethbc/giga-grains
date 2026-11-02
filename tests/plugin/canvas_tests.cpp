@@ -1277,7 +1277,9 @@ TEST_CASE("capture to layer B loads B", "[plugin]")
     choose(f.canvas->laneMenu(0), "B");
     CHECK(f.waitFor(1, gg::ui::SampleStatusView::State::Loaded));
     CHECK(f.context().sampleWaveformFor(1).frames > 0);
-    CHECK_FALSE(f.noticeShown());
+    // B is a Live lane: the capture loads but doesn't switch its Source, so the notice says so.
+    CHECK(f.noticeShown());
+    CHECK(f.notice() == "B's sample is loading: set B Source to Sample to play it");
 
     // Save capture as…: the chooser opens in the captures folder, and a name without an
     // extension is saved as a WAV.
@@ -1303,6 +1305,25 @@ TEST_CASE("capture to layer B loads B", "[plugin]")
     choose(f.canvas->laneMenu(0), "C");
     CHECK(f.noticeShown());
     CHECK(f.notice().startsWith("over the memory cap"));
+}
+
+TEST_CASE("capture to a Sample layer says it took it", "[plugin]")
+{
+    gg::test::useMediaScratch("canvas-capture-sample");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    const ParamSlot source = slotOf(gg::core::LayerParam::Source, 2);
+    f.context().beginGesture(source);
+    f.context().setValue(source, 0.0); // Sample
+    f.context().endGesture(source);
+    f.process(2 * 48000);
+    f.plugin.onMainThread();
+    f.process(kBlock);
+    CHECK_FALSE(f.noticeShown());
+    choose(f.canvas->laneMenu(0), "C");
+    CHECK(f.waitFor(2, gg::ui::SampleStatusView::State::Loaded));
+    CHECK(f.noticeShown());
+    CHECK(f.notice() == "Captured into C");
 }
 
 TEST_CASE("a Ring Length change mid-draw draws no stale mark", "[plugin]")

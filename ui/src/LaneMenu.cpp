@@ -119,11 +119,20 @@ juce::PopupMenu GrainCanvas::laneMenu(uint8_t layer)
                 {
                     return;
                 }
+                const bool live = safe->liveLane(target); // the kind built before the load
                 const std::string message = safe->context_.captureTo(layer, splice, target);
                 if (!message.empty())
                 {
                     postNotice(*safe, safe->context_, message);
+                    return;
                 }
+                // A Live target keeps reading its ring: the capture doesn't switch its Source,
+                // so say how to hear it, as a drop does. A Sample target says it took it.
+                const std::string letter(1, kLayerLetters[target]);
+                postNotice(*safe, safe->context_,
+                           live ? letter + "'s sample is loading: set " + letter +
+                                      " Source to Sample to play it"
+                                : "Captured into " + letter);
             });
     }
     menu.addSubMenu("Capture to layer", targets, ring.valid);

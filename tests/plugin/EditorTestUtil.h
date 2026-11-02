@@ -10,6 +10,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <vector>
+
 #include "PluginHarness.h"
 #if GG_BUILD_EDITOR
 #include <algorithm>

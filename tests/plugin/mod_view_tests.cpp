@@ -321,7 +321,7 @@ TEST_CASE("a held ring drag or depth drag keeps undo from changing the routes un
     }
 }
 
-TEST_CASE("an editor destroyed mid depth-drag leaves undo usable", "[plugin]")
+TEST_CASE("a Mod view destroyed mid depth-drag leaves undo usable", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     ModHarness h(gg::core::Mode::Fx);

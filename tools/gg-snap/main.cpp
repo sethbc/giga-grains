@@ -450,16 +450,18 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
     }
 
     // The FX's layer A (a Live ring) gets Loop on and two splice marks, so its lane draws the
-    // marks and the loop window. The ring holds about 2.1 s by now; the marks are 1.5 s and
-    // 0.6 s behind the head, and more blocks follow so the commands apply and the lane refreshes.
+    // marks and the loop window. The ring holds about 2.1 s by now and Loop Length is 1 s. The
+    // marks are 0.45 s and 0.15 s behind the head when added, and the 40 blocks that follow (so
+    // the commands apply and the lane refreshes) carry the head on 0.43 s, which leaves both
+    // inside the window.
     if (product.fx)
     {
         const ParamSlot loop = gg::core::layerSlot(gg::core::LayerParam::Loop, 0);
         context.beginGesture(loop);
         context.setValue(loop, 1.0);
         context.endGesture(loop);
-        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 1.5f);
-        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.6f);
+        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.45f);
+        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.15f);
         for (int i = 0; i < 40; ++i)
         {
             if (!instance.block())
@@ -512,7 +514,6 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
     editor.reset();
     return {};
 }
-} // namespace
 
 int run(int argc, char **argv)
 {
@@ -588,6 +589,7 @@ int run(int argc, char **argv)
     fs::remove_all(scratch, ec);
     return status;
 }
+} // namespace
 
 int main(int argc, char **argv)
 {

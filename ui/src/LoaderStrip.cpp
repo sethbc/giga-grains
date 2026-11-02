@@ -101,8 +101,7 @@ LoaderStrip::LoaderStrip(const EditorContext &context, uint8_t layer, Compact co
         setUpButton(collectButton_, "loader.collect", withEllipsis("Collect"),
                     [this] { chooseCollectFolder(); });
         collectButton_.setTooltip("Copy the samples into a folder, to move the session");
-        setUpButton(moreButton_, "loader.more", juce::String::charToString(0x22ef),
-                    [this] { showMore(); });
+        setUpButton(moreButton_, "loader.more", juce::String("..."), [this] { showMore(); });
         moreButton_.setTooltip("Sample folder, Collect");
         moreButton_.setVisible(false); // shown only in a narrow strip
         memory_.setComponentID("loader.memory");

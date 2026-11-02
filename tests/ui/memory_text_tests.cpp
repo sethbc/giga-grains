@@ -28,6 +28,10 @@ TEST_CASE("formatMemory reads like the refusal", "[ui]")
     CHECK(formatMemory(700 * kMiB, 512) == "700 MB of 512 MB");
     CHECK(formatMemory(3 * 1024 * kMiB, 1024) == "3 GB of 1 GB");
     CHECK(formatMemory(16384 * kMiB, 16384) == "16 GB of 16 GB");
+    // Just over a GB-sized cap: the used figure rounds up, so it never reads as the cap.
+    CHECK(formatMemory(1025 * kMiB, 1024) == "1.1 GB of 1 GB");
+    CHECK(formatMemory(1024 * kMiB + 1, 1024) == "1.1 GB of 1 GB");
+    CHECK(formatMemory(16385 * kMiB, 16384) == "16.1 GB of 16 GB");
     CHECK(formatMemory(1023 * kMiB, 1536) == "1023 MB of 1.5 GB");
 }
 

@@ -254,3 +254,27 @@ TEST_CASE("an unchanged route set marks nothing", "[plugin]")
     CHECK(host.dirtyMarks() == marks + 1);
 }
 #endif
+
+TEST_CASE("a load past the memory cap is refused and unloads nothing", "[plugin]")
+{
+    Rig rig(kFxId);
+    const auto &context = rig.context();
+    const auto wav = gg::test::sineSampleFile("editor-media-over-cap");
+    REQUIRE(rig.plugin.activate(192000.0, kBlock)); // the four rings take about 98 MB
+    rig.process(kBlock);
+    REQUIRE(context.loadSampleFor(0, wav.string()));
+    REQUIRE(rig.waitFor(0, gg::ui::SampleStatusView::State::Loaded));
+    const int64_t frames = context.sampleWaveformFor(0).frames;
+    REQUIRE(frames > 0);
+
+    context.setMemoryCapMiB(64); // below what is in use
+    context.loadSampleFor(1, wav.string());
+    REQUIRE(rig.waitFor(1, gg::ui::SampleStatusView::State::Error));
+    const std::string message = context.sampleStatusFor(1).message;
+    CAPTURE(message);
+    // A load's refusal names the file ("x.wav: needs 2 MB, the memory cap allows 0 MB"); a
+    // capture's starts "over the memory cap" (MediaSession's two wordings).
+    CHECK(message.find("the memory cap allows") != std::string::npos);
+    CHECK(context.sampleStatusFor(0).state == gg::ui::SampleStatusView::State::Loaded);
+    CHECK(context.sampleWaveformFor(0).frames == frames);
+}

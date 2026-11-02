@@ -196,6 +196,11 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         {
             buffer = media().captureRing(layer, splice, *p);
         }
+        catch (const std::bad_alloc &)
+        {
+            message = "can't capture the ring: not enough memory";
+            return nullptr;
+        }
         catch (...)
         {
         }
@@ -206,15 +211,15 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         return buffer;
     };
     context.captureTo = [this, capture](uint8_t layer, uint32_t splice, uint8_t target) {
+        if (target >= gg::core::kLayers)
+        {
+            return std::string("no such layer"); // before the ring is copied
+        }
         std::string message;
         const auto buffer = capture(layer, splice, message);
         if (buffer == nullptr)
         {
             return message;
-        }
-        if (target >= gg::core::kLayers)
-        {
-            return std::string("no such layer");
         }
         try
         {

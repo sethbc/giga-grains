@@ -22,8 +22,7 @@ function(gg_first_difference out a b)
         set(n ${lb})
     endif ()
     set(at -1)
-    # Binary search on the common prefix would need substring equality only, which is O(n) each;
-    # this walks in blocks of 64 and then bytes.
+    # Walk in blocks of 64, then bytes.
     set(i 0)
     while (i LESS n)
         math(EXPR rest "${n} - ${i}")
