@@ -594,6 +594,12 @@ jobs:
       # The x86_64 slice writes the cases' media itself first (the media go through libm), as
       # the golden_media fixture does, and every render resolves their paths there.
       # arch -x86_64 fails on a binary without an x86_64 slice.
+      # Three at a time (INTENT §23 #75): gg-tests in three Catch2 shards side by side (--order
+      # decl, so the shards are disjoint), then the [serial] cases alone, since they measure time
+      # or memory; then the golden cases, three gg-render processes at once. One process ran it
+      # all for about 16 minutes on the runner's three cores. On a pull request and a push to
+      # main the [slow] cases are left out here, as ASan leaves them out; the nightly, a dispatch
+      # and a tag run them, and the native arm64 ctest above always does.
       - name: Test the x86_64 slice under Rosetta (macOS)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
         timeout-minutes: 20
@@ -605,23 +611,52 @@ jobs:
           tests="$build_dir/tests/gg-tests"
           render="$build_dir/tools/gg-render/gg-render"
           echo "gg-tests: $(lipo -archs "$tests"); gg-render: $(lipo -archs "$render")"
-          arch -x86_64 "$tests"
+          slow=""
+          if [[ "${{ github.event_name }}" == pull_request || "${{ github.ref }}" == refs/heads/main && "${{ github.event_name }}" == push ]]; then
+            slow="~[slow]"
+          fi
+          logs="$build_dir/rosetta-logs"
+          mkdir -p "$logs"
+          pids=()
+          for i in 0 1 2; do
+            arch -x86_64 "$tests" "~[serial]$slow" --order decl --shard-count 3 --shard-index "$i" \
+              > "$logs/shard-$i.txt" 2>&1 &
+            pids+=("$!")
+          done
+          failed=0
+          for i in 0 1 2; do
+            if wait "${pids[$i]}"; then status=0; else status=$?; fi
+            echo "::group::gg-tests shard $((i + 1)) of 3 (exit $status)"
+            cat "$logs/shard-$i.txt"
+            echo "::endgroup::"
+            if [[ $status != 0 ]]; then
+              echo "::error title=Rosetta::gg-tests shard $((i + 1)) of 3 failed (exit $status)"
+              failed=1
+            fi
+          done
+          arch -x86_64 "$tests" "[serial]$slow" --allow-running-no-tests || failed=1
           out="$build_dir/golden-x86_64"
           arch -x86_64 "$render" --write-media "$out-media"
-          for spec in tests/golden/cases/*.json; do
-            name="$(basename "$spec" .json)"
-            arch -x86_64 "$render" "$spec" \
+          export render out
+          golden() {
+            name="$(basename "$1" .json)"
+            arch -x86_64 "$render" "$1" \
               --media-dir "$out-media" \
               -o "$out/$name.wav" \
               --spectrogram "$out/$name.png" \
               --compare "tests/golden/expected/$name.metrics.json" \
-              --compare-events "tests/golden/expected/$name.events.jsonl"
-          done
+              --compare-events "tests/golden/expected/$name.events.jsonl" \
+              || { echo "::error title=Rosetta golden::$name"; return 1; }
+          }
+          export -f golden
+          printf '%s\n' tests/golden/cases/*.json | xargs -P 3 -I {} bash -c 'golden "$1"' _ {} || failed=1
+          exit "$failed"
 
       # Full length on the nightly schedule, workflow_dispatch and a release tag; --quick on a
-      # pull request and a push to main (INTENT §23 #73: the nightly measures main once a day). A
-      # quick run is a smoke check: it must not crash, but its ratios are too noisy for the
-      # baseline, so it checks none, prints no verdict and uploads nothing.
+      # pull request and a push to main (INTENT §23 #73: the nightly measures main once a day),
+      # with one round, not five (§23 #75). A quick run is a smoke check: it must not crash, but
+      # its ratios are too noisy for the baseline, so it checks none, prints no verdict and
+      # uploads nothing.
       # Reported, not gated until 1.0.0 (ruling 3; INTENT §16, §19, §23 #61). gg-bench times the kernels,
       # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
       # rounds; ruling T10-c) and reports each engine case's ratio to the reference,
@@ -650,7 +685,7 @@ jobs:
           quick=false
           if [[ "${{ github.event_name }}" == pull_request || "${{ github.ref }}" == refs/heads/main && "${{ github.event_name }}" == push ]]; then
             quick=true
-            args+=(--quick)
+            args+=(--quick --rounds 1)
           elif [[ -f "$baseline" ]]; then
             args+=(--baseline "$baseline")
           fi

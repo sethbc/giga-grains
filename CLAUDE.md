@@ -519,6 +519,13 @@ slice under Rosetta. The fp-contract tests (`fp_contract_fast.cpp`'s canary and 
 can fail only on arm64 Clang; Linux, Windows and the x86_64 slice can't catch a fused
 multiply-add. Keep that step whenever the macOS leg changes.
 
+**The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
+Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
+cases alone, then the golden cases three `gg-render` processes at a time. On a pull request and a
+push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
+shard locally: `arch -x86_64 build/mac-universal/tests/gg-tests '~[serial]~[slow]' --order decl
+--shard-count 3 --shard-index 0`.
+
 **Test case names are ASCII only** (tags too). CTest passes a name to `gg-tests` on its command
 line, and on Windows a non-ASCII character there reaches Catch2's narrow `main` through the ANSI
 code page, so the name matches nothing and the test fails with "No tests ran". Spell `×` as `x`,
@@ -1059,8 +1066,8 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on the nightly schedule
   (03:17 UTC), on `workflow_dispatch` and on a pushed `v*` tag. They print the output, and a
   verdict per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
-  `gg-bench.txt`). On a pull request and a push to `main` each leg runs `--quick` as a smoke
-  check only (INTENT §23 #73): it checks no baseline, prints no verdict and uploads nothing, but
+  `gg-bench.txt`). On a pull request and a push to `main` each leg runs `--quick --rounds 1` as
+  a smoke check only (INTENT §23 #73, #75): it checks no baseline, prints no verdict and uploads nothing, but
   a crash or exit 1 or 2 still fails the job. A full run is limited to 60 minutes a leg, the
   build job to 120: it outgrew 30 once M2's cases joined.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
