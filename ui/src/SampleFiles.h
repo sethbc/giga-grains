@@ -18,10 +18,15 @@ inline bool isSampleFilePath(const juce::String &path)
         "wav;aif;aiff;aifc;flac;mp3");
 }
 
+/// The patterns a chooser for a sample offers (the loader strip's and the lane menu's).
+inline constexpr const char *kSampleFileChooserPatterns = "*.wav;*.aif;*.aiff;*.aifc;*.flac;*.mp3";
+
 /// What both drop targets say of a file that isn't one.
 inline juce::String notSampleFileNotice(const juce::String &path)
 {
-    return "can't load " + juce::File::createFileWithoutCheckingPath(path).getFileName() +
+    // The name after either separator: juce::File splits on the native one alone, so on Windows a
+    // path with "/" would keep its folders in the message.
+    return "can't load " + path.substring(path.lastIndexOfAnyOf("/\\") + 1) +
            ": not a WAV, AIFF, FLAC or MP3 file";
 }
 } // namespace gg::ui

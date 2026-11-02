@@ -1,0 +1,26 @@
+{
+  "product": "fx",
+  "name": "Plucked Ring",
+  "author": "Giga Grains",
+  "description": "Short grains that thin out between notes; each key you press plucks a burst from the frozen input at its pitch, harder notes ringing longer.",
+  "tags": ["playable", "pluck", "percussive", "midi", "live-input"],
+  "params": {
+    "Mix": 0.5,
+    "Size": -4.058894,
+    "Density": 3.584963,
+    "Distribution": 0.1,
+    "Spray": 0.148233,
+    "Stereo": 0.5,
+    "A Env 1 Attack": -8.965784,
+    "A Env 1 Decay": -1.514573,
+    "A Env 1 Sustain": 0.1,
+    "A Env 1 Release": -2.321928,
+    "Delay Amount": 0.2,
+    "Delay Time": -2.473931,
+    "Reverb Amount": 0.15
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 1", "target": "Density", "targetLayer": "A", "depth": 3, "curve": "Unipolar"},
+    {"slot": 14, "source": "Velocity", "target": "Size", "targetLayer": "A", "depth": 1, "curve": "Unipolar"}
+  ]
+}

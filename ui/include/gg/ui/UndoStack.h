@@ -9,7 +9,9 @@
 #include <deque>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -26,6 +28,11 @@ struct UndoCallbacks
     std::function<void(gg::core::ParamSlot, float)> setValue;
     /// Replaces the mod matrix's 48 routes.
     std::function<void(const gg::core::ModRoutes &)> setRoutes;
+    /// Sets many parameters at once: a whole-state entry (a snapshot) calls it once with every
+    /// value that differs, in the order setValue would get them, so the owner can send them in
+    /// batches that never overflow its queue (the plugin's sendValues). Optional: without it a
+    /// snapshot calls setValue for each slot.
+    std::function<void(std::span<const std::pair<gg::core::ParamSlot, double>>)> setValues;
 };
 
 /// The editor's undo and redo history (spec §6.8, D7): framework-free, knowing nothing of JUCE or
@@ -47,6 +54,20 @@ class UndoStack
 {
   public:
     static constexpr std::size_t kDepth = 200;
+    /// Key-repeat nudges merge into one entry while each begins within this many seconds of the
+    /// last one's end (spec §6.8, VW-T15e).
+    static constexpr double kNudgeMergeSeconds = 1.0;
+
+    /// How a gesture is recorded. A nudge (an arrow key's step) is merged with the entry before
+    /// it, when that is a nudge on the same slot or slots, nothing waits to be redone and the
+    /// gesture begins at most kNudgeMergeSeconds after that entry's end; the merged entry keeps
+    /// the older before and takes the newer after, and is removed if they are equal.
+    /// `timeSeconds` is the gesture's time on any steady clock, the same for every call.
+    struct GestureOptions
+    {
+        bool nudge{false};
+        double timeSeconds{0.0};
+    };
 
     explicit UndoStack(UndoCallbacks callbacks);
 
@@ -54,6 +75,10 @@ class UndoStack
     /// a slot whose gesture is still open is ignored (its first before and label are kept);
     /// gestures on different slots may be open at once.
     void beginGesture(gg::core::ParamSlot slot, float before, std::string label);
+    /// As above, recorded as `options` say. (An overload and not a default argument: a nested
+    /// type's default member initializers can't be used by one in the class that holds it.)
+    void beginGesture(gg::core::ParamSlot slot, float before, std::string label,
+                      GestureOptions options);
     /// Closes the gesture on `slot` at value `after`: one entry, or one gesture in the open group.
     /// No entry when `after` equals the before exactly, or when no gesture on `slot` is open.
     void endGesture(gg::core::ParamSlot slot, float after);
@@ -70,7 +95,8 @@ class UndoStack
     void pushRoutes(const gg::core::ModRoutes &before, const gg::core::ModRoutes &after,
                     std::string label);
     /// Pushes a whole-state entry (sub-project 5's Mutate and preset recall). Only the values and
-    /// the routes that differ are kept and applied; no entry when nothing differs.
+    /// the routes that differ are kept and applied, the values in one setValues call when it is
+    /// set; no entry when nothing differs.
     void pushSnapshot(std::string label, const gg::core::ParamValues &vBefore,
                       const gg::core::ModRoutes &rBefore, const gg::core::ParamValues &vAfter,
                       const gg::core::ModRoutes &rAfter);
@@ -122,15 +148,21 @@ class UndoStack
     {
         std::string label;
         std::variant<ParamChange, ParamChanges, RoutesChange, Snapshot> change;
+        bool nudge{false};      ///< made of nudges alone: later nudges may merge into it
+        double endSeconds{0.0}; ///< a nudge entry's last gesture's time
     };
     struct OpenGesture
     {
         gg::core::ParamSlot slot;
         float before;
         std::string label;
+        GestureOptions options;
     };
 
     void push(Entry entry);
+    /// Pushes a parameter entry, or merges it into the top one when it is a nudge that may.
+    void pushOrMerge(Entry entry, double beginSeconds);
+    void applyValues(const ParamChanges &changes, bool undoing, bool batch);
 
     UndoCallbacks callbacks_;
     std::deque<Entry> entries_;
@@ -140,6 +172,8 @@ class UndoStack
     int groupDepth_{0};
     std::string groupLabel_;
     ParamChanges group_;
+    bool groupNudge_{true};
+    double groupSeconds_{0.0};
 };
 } // namespace gg::ui
 

@@ -1,0 +1,27 @@
+{
+  "product": "fx",
+  "name": "Event Horizon",
+  "author": "Giga Grains",
+  "description": "Everything falls into an endless, dark room that never decays; play a phrase and it hangs in the air for as long as you let it.",
+  "tags": ["extreme", "reverb", "drone", "dark", "live-input"],
+  "params": {
+    "Mix": 0.8,
+    "Size": -1.736966,
+    "Density": 4,
+    "Spray": 0.59099,
+    "Stereo": 0.8,
+    "Diffusion": 0.8,
+    "Level": 10,
+    "Reverb Amount": 1,
+    "Reverb Decay": 6.068255709804611,
+    "Reverb Size": 0.9,
+    "Reverb Damping": 0.65,
+    "Dry to Reverb": 0.3,
+    "A Random 2 Rate": -2.321928,
+    "Limiter Mode": 1,
+    "Limiter Ceiling": -3
+  },
+  "mod": [
+    {"slot": 13, "source": "Random 2", "target": "Diffusion", "targetLayer": "A", "depth": 0.2, "curve": "Bipolar"}
+  ]
+}

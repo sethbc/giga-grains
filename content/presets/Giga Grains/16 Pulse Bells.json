@@ -1,0 +1,32 @@
+{
+  "product": "instrument",
+  "name": "Pulse Bells",
+  "author": "Giga Grains",
+  "description": "Tubular and hand bells struck at a steady rate; while the host's transport plays, their level falls across each beat and snaps back on the next, and the strikes drift into the ring across each bar.",
+  "tags": ["rhythmic", "metal", "percussive", "reverb", "sample"],
+  "params": {
+    "Level": 10.0,
+    "A Position": 0.02,
+    "A Size": -1.321928,
+    "A Density": 2.0,
+    "A Distribution": 0.0,
+    "A Stereo": 0.5,
+    "Layer B On": 1,
+    "Level B": 8.0,
+    "B Position": 0.0,
+    "B Size": -1.736966,
+    "B Density": 3.0,
+    "B Distribution": 0.0,
+    "B Stereo": 0.9,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 1.584963
+  },
+  "mod": [
+    {"slot": 13, "source": "Transport Beat", "target": "Level", "targetLayer": "all", "depth": -12.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Transport Bar", "target": "Position", "targetLayer": "A", "depth": 0.25, "curve": "Unipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Mallets/tubular-bell-c4.flac",
+    "B": "Samples/Mallets/nepalese-hand-bell.flac"
+  }
+}

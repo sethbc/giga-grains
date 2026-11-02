@@ -241,26 +241,64 @@ TEST_CASE("mutate gives a stepped slot whole steps in range", "[core][mutate]")
 
 TEST_CASE("mutate's default locks are the structure and the off layers", "[core][mutate]")
 {
-    // D3: the structure stays locked, in either product.
-    const std::vector<ParamSlot> structural{
-        ParamSlot::Mix,          ParamSlot::Level,        ParamSlot::LevelB,
-        ParamSlot::LevelC,       ParamSlot::LevelD,       ParamSlot::LayerAOn,
-        ParamSlot::LayerBOn,     ParamSlot::LayerCOn,     ParamSlot::LayerDOn,
-        ParamSlot::Source,       ParamSlot::B_Source,     ParamSlot::C_Source,
-        ParamSlot::D_Source,     ParamSlot::Freeze,       ParamSlot::B_Freeze,
-        ParamSlot::C_Freeze,     ParamSlot::D_Freeze,     ParamSlot::StepLength,
-        ParamSlot::B_StepLength, ParamSlot::C_StepLength, ParamSlot::D_StepLength,
-        ParamSlot::Macro1,       ParamSlot::Macro2,       ParamSlot::Macro3,
-        ParamSlot::Macro4,       ParamSlot::Macro5,       ParamSlot::Macro6,
-        ParamSlot::Macro7,       ParamSlot::Macro8,       ParamSlot::MorphX,
-        ParamSlot::MorphY,       ParamSlot::ReverbAmount, ParamSlot::DryToReverb,
+    // D3: the structure stays locked, in either product; and wave 2's structure by section
+    // (spec §6.9, group 2): each layer's Quality and five ring parameters (capture and memory),
+    // the global Budget, the delay's Amount (as Reverb Amount is) and the limiter's three (output
+    // safety).
+    std::vector<ParamSlot> structural{
+        ParamSlot::Mix,
+        ParamSlot::Level,
+        ParamSlot::LevelB,
+        ParamSlot::LevelC,
+        ParamSlot::LevelD,
+        ParamSlot::LayerAOn,
+        ParamSlot::LayerBOn,
+        ParamSlot::LayerCOn,
+        ParamSlot::LayerDOn,
+        ParamSlot::Source,
+        ParamSlot::B_Source,
+        ParamSlot::C_Source,
+        ParamSlot::D_Source,
+        ParamSlot::Freeze,
+        ParamSlot::B_Freeze,
+        ParamSlot::C_Freeze,
+        ParamSlot::D_Freeze,
+        ParamSlot::StepLength,
+        ParamSlot::B_StepLength,
+        ParamSlot::C_StepLength,
+        ParamSlot::D_StepLength,
+        ParamSlot::Macro1,
+        ParamSlot::Macro2,
+        ParamSlot::Macro3,
+        ParamSlot::Macro4,
+        ParamSlot::Macro5,
+        ParamSlot::Macro6,
+        ParamSlot::Macro7,
+        ParamSlot::Macro8,
+        ParamSlot::MorphX,
+        ParamSlot::MorphY,
+        ParamSlot::ReverbAmount,
+        ParamSlot::DryToReverb,
+        ParamSlot::Budget,
+        ParamSlot::DelayAmount,
+        ParamSlot::LimiterMode,
+        ParamSlot::LimiterCeiling,
+        ParamSlot::LimiterRelease,
     };
+    for (const LayerParam p : {LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
+                               LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
+    {
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            structural.push_back(layerSlot(p, layer));
+        }
+    }
     LockSet expectedStructural;
     for (const ParamSlot s : structural)
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 33);
+    REQUIRE(expectedStructural.count() == 62);
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -278,29 +316,33 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     };
 
     // The FX with layer B on: layers C and D (off by default) are locked whole, and A, B and
-    // Space's five voiced parameters move. So do sub-project 3's Budget, a global, and each on
-    // layer's Quality and sub-project 2's five ring parameters, and sub-project 4's eight globals
-    // (the delay and the limiter) and each on layer's eight (Smear, the bus split and the buses'
-    // filters): wave 2's parameters stay unlocked until group 2 extends the default lock list to
-    // wave 2's sections (spec §6.9, §6.12). Ring Length is unlocked but never moves: mutate()
-    // skips a slot no host may automate (SP-M8; its own test below).
+    // Space's five voiced parameters move; so do the delay's sound (Time, Feedback, Damping, Ping
+    // Pong) and each on layer's Extremes (Smear, the bus split and the buses' filters).
     ParamValues values = defaults(Mode::Fx);
     values[idx(ParamSlot::LayerBOn)] = 1.0f;
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 151);
+    CHECK(bOn.count() == 168);
     LockSet unlocked = ~bOn;
-    CHECK(unlocked.count() == 132);
+    CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
          {ParamSlot::ReverbDecay, ParamSlot::ReverbSize, ParamSlot::ReverbDamping,
-          ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation, ParamSlot::Budget,
-          ParamSlot::DelayAmount, ParamSlot::DelayTime, ParamSlot::DelayFeedback,
-          ParamSlot::DelayDamping, ParamSlot::DelayPingPong, ParamSlot::LimiterMode,
-          ParamSlot::LimiterCeiling, ParamSlot::LimiterRelease})
+          ParamSlot::ReverbPredelay, ParamSlot::ReverbModulation, ParamSlot::DelayTime,
+          ParamSlot::DelayFeedback, ParamSlot::DelayDamping, ParamSlot::DelayPingPong})
     {
         CHECK(unlocked.test(idx(s)));
         unlocked.reset(idx(s));
+    }
+    for (uint8_t layer = 0; layer < 2; ++layer)
+    {
+        for (const LayerParam p :
+             {LayerParam::Smear, LayerParam::BusSplit, LayerParam::Bus1Filter,
+              LayerParam::Bus1Cutoff, LayerParam::Bus1Resonance, LayerParam::Bus2Filter,
+              LayerParam::Bus2Cutoff, LayerParam::Bus2Resonance})
+        {
+            CHECK(unlocked.test(idx(layerSlot(p, layer))));
+        }
     }
     for (size_t s = 0; s < kParamCount; ++s)
     {
@@ -313,6 +355,8 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
             CHECK(ref->param != LayerParam::Source);
             CHECK(ref->param != LayerParam::Freeze);
             CHECK(ref->param != LayerParam::StepLength);
+            CHECK(ref->param != LayerParam::Quality);
+            CHECK_FALSE(gg::core::isRingParam(static_cast<ParamSlot>(s)));
         }
     }
 
@@ -320,8 +364,8 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 210);
-    CHECK((bOff & ~bOn).count() == 59);
+    CHECK(bOff.count() == 221);
+    CHECK((bOff & ~bOn).count() == 53);
 
     // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".
     values[idx(ParamSlot::LayerAOn)] = 0.49f;

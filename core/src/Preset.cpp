@@ -17,13 +17,13 @@ namespace gg::core
 {
 namespace
 {
-// Spec §6.7's vocabulary: the four focus tags (texture to extreme), the twenty character tags
-// (pad to dry), then the four use tags (midi to sidechain).
-constexpr std::array<std::string_view, 28> kTagVocabulary{
-    "texture", "playable", "rhythmic", "extreme", "pad",        "drone",      "freeze",
-    "smear",   "stretch",  "glitch",   "keys",    "pluck",      "percussive", "voice",
-    "strings", "winds",    "metal",    "noise",   "dark",       "bright",     "wide",
-    "mono",    "reverb",   "dry",      "midi",    "live-input", "sample",     "sidechain"};
+// Spec §6.7's vocabulary: the four focus tags (texture to extreme), the twenty-one character tags
+// (pad to dry; brass added 2026-11-01), then the four use tags (midi to sidechain).
+constexpr std::array<std::string_view, 29> kTagVocabulary{
+    "texture", "playable", "rhythmic",   "extreme", "pad",        "drone", "freeze",  "smear",
+    "stretch", "glitch",   "keys",       "pluck",   "percussive", "voice", "strings", "winds",
+    "brass",   "metal",    "noise",      "dark",    "bright",     "wide",  "mono",    "reverb",
+    "dry",     "midi",     "live-input", "sample",  "sidechain"};
 } // namespace
 
 std::span<const std::string_view> presetTagVocabulary() noexcept { return kTagVocabulary; }
@@ -54,6 +54,22 @@ std::string encodePreset(const PresetInfo &info, const SessionState &state)
     preset.preset = info;
     preset.seed = 0;       // ignored on load: the instance keeps its own (spec §6.1, D6)
     preset.edited = false; // a session's mark alone (D-Q2)
+    // A preset never embeds audio and carries no ring or cap (spec §6.1; D5): its samples are
+    // files, named by their paths and (a factory sample's) content-relative reference.
+    for (auto &sample : preset.samples)
+    {
+        if (sample && sample->embed)
+        {
+            sample.reset();
+        }
+    }
+    preset.rings = {};
+    preset.audio.clear();
+    preset.sampleAudioMissing = {};
+    preset.ringAudioMissing = {};
+    preset.memoryCapMiB = kMemoryCapDefaultMiB;
+    preset.newerMedia.reset();
+    preset.newerAudio.reset();
     return encodeState(preset);
 }
 
@@ -85,6 +101,29 @@ bool presetInfoOf(std::string_view bytes, PresetInfo &info)
     std::string_view media;
     return findStateChunks(bytes, patch, media) && patch.find('\0') == std::string_view::npos &&
            presetInfoOfXml(patch, info);
+}
+
+void keepRingParams(const ParamValues &current, ParamValues &loaded) noexcept
+{
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        if (isRingParam(static_cast<ParamSlot>(s)))
+        {
+            loaded[s] = current[s];
+        }
+    }
+}
+
+void keepRingLengths(const ParamValues &current, ParamValues &loaded) noexcept
+{
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        const auto ref = layerOf(static_cast<ParamSlot>(s));
+        if (ref && ref->param == LayerParam::RingLength)
+        {
+            loaded[s] = current[s];
+        }
+    }
 }
 
 SessionState initState(Mode mode)

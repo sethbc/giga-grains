@@ -9,9 +9,11 @@
 #include <cstddef>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include <clap/ext/params.h>
 #include <sst/basic-blocks/params/ParamMetadata.h>
+#include <sst/jucegui/components/ContinuousParamEditor.h>
 #include <sst/jucegui/components/HSlider.h>
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/components/MenuButton.h>
@@ -126,6 +128,7 @@ struct Inertia : juce::SettableTooltipClient
 /// arrow keys (stepByArrowKey).
 template <typename Editor> struct Control final : Editor, Inertia
 {
+    ParamValue *value{nullptr}; ///< the control's own, set by wire
     bool keyPressed(const juce::KeyPress &key) override
     {
         if (inert)
@@ -134,7 +137,7 @@ template <typename Editor> struct Control final : Editor, Inertia
         }
         if constexpr (std::is_base_of_v<jcmp::ContinuousParamEditor, Editor>)
         {
-            if (stepByArrowKey(*this, key))
+            if (value != nullptr && stepByArrowKey(*this, key, *value))
             {
                 return true;
             }
@@ -165,6 +168,44 @@ float angleOf(float v01)
 {
     return kArcSweep * juce::MathConstants<float>::pi * (2.0f * std::clamp(v01, 0.0f, 1.0f) - 1.0f);
 }
+
+/// sst-jucegui's menu button, which draws a choice's short form (setCompactMenuTexts) where its
+/// text doesn't fit the button. Only what the button draws changes: the popup list and the
+/// accessibility value read the source's full text.
+struct CompactMenuButton : jcmp::MenuButtonDiscreteEditor
+{
+    /// sst-jucegui's MenuButtonPainter draws the text in the button less 1 + 4 px at the left and
+    /// 1 + 4 + 6 px (the arrow) at the right.
+    static constexpr int kTextInset = 2 + 4 + 4 + 6;
+
+    /// The text drawn for step `v`: its full text, or its short form where that doesn't fit.
+    juce::String textFor(int v)
+    {
+        const juce::String full = data != nullptr ? juce::String(data->getValueAsStringFor(v)) : "";
+        const std::size_t i = data != nullptr ? static_cast<std::size_t>(v - data->getMin()) : 0;
+        if (data == nullptr || i >= compact.size() || compact[i].isEmpty() ||
+            ParamControl::textWidth(font(), full) <= textRoom())
+        {
+            return full;
+        }
+        return compact[i];
+    }
+
+    juce::Font font() { return getFont(Styles::labelfont); }
+    float textRoom() const { return static_cast<float>(getWidth() - kTextInset); }
+
+    void paint(juce::Graphics &g) override
+    {
+        if (data == nullptr)
+        {
+            jcmp::MenuButtonDiscreteEditor::paint(g);
+            return;
+        }
+        paintMenuButton(g, textFor(data->getValue()).toStdString());
+    }
+
+    std::vector<juce::String> compact; ///< each step's short form, from the lowest
+};
 } // namespace
 
 struct ParamControl::Impl
@@ -232,6 +273,7 @@ std::unique_ptr<juce::Component> wire(std::unique_ptr<Control<Editor>> editor, S
                                       ParamValue &value, Inertia *&inertia, const bool &modMode)
 {
     editor->setSource(source);
+    editor->value = &value;
     // No gesture opens in mod mode, whichever path (the accessibility interface's) asks.
     editor->onBeginEdit = [&value, &modMode] {
         if (!modMode)
@@ -244,6 +286,31 @@ std::unique_ptr<juce::Component> wire(std::unique_ptr<Control<Editor>> editor, S
     return editor;
 }
 } // namespace
+
+bool stepByArrowKey(sst::jucegui::components::ContinuousParamEditor &editor,
+                    const juce::KeyPress &key, ParamValue &value)
+{
+    const int code = key.getKeyCode();
+    const bool up = code == juce::KeyPress::upKey || code == juce::KeyPress::rightKey;
+    const bool down = code == juce::KeyPress::downKey || code == juce::KeyPress::leftKey;
+    sst::jucegui::data::Continuous *source = editor.continuous();
+    if ((!up && !down) || source == nullptr || key.getModifiers().isCommandDown())
+    {
+        return false;
+    }
+    const float range = source->getMax() - source->getMin();
+    const float step = range * (key.getModifiers().isShiftDown() ? 0.001f : 0.01f);
+    const float v =
+        std::clamp(source->getValue() + (up ? step : -step), source->getMin(), source->getMax());
+    value.setNudge(true);
+    editor.onBeginEdit();
+    source->setValueFromGUI(v);
+    editor.onEndEdit();
+    value.setNudge(false);
+    editor.notifyAccessibleChange();
+    editor.repaint();
+    return true;
+}
 
 ParamControl::Kind ParamControl::kindFor(const ParamMetaData &meta) noexcept
 {
@@ -301,8 +368,8 @@ ParamControl::ParamControl(const EditorContext &context, ParamSlot slot, Kind ki
     }
     case Kind::Menu:
         m.discrete = std::make_unique<DiscreteSource>(m.value, m.modMode);
-        m.control = wire(std::make_unique<Control<jcmp::MenuButtonDiscreteEditor>>(),
-                         m.discrete.get(), m.value, m.inertia, m.modMode);
+        m.control = wire(std::make_unique<Control<CompactMenuButton>>(), m.discrete.get(), m.value,
+                         m.inertia, m.modMode);
         break;
     }
     if (auto *knob = dynamic_cast<jcmp::Knob *>(m.control.get()))
@@ -457,9 +524,36 @@ bool ParamControl::labelFits() const
                (getHeight() >= kSliderTextHeight &&
                 widest({shownLabel(), shownText()}) <= static_cast<float>(getWidth()));
     case Kind::Menu:
+        // Every choice the button can show, in its own font, within the room it draws text in.
+        if (auto *menu = dynamic_cast<CompactMenuButton *>(m.control.get());
+            menu != nullptr && menu->data != nullptr && menu->style() != nullptr)
+        {
+            for (int v = menu->data->getMin(); v <= menu->data->getMax(); ++v)
+            {
+                if (textWidth(menu->font(), menu->textFor(v)) > menu->textRoom())
+                {
+                    return false;
+                }
+            }
+        }
         break;
     }
     return true;
+}
+
+void ParamControl::setCompactMenuTexts(std::vector<juce::String> texts)
+{
+    if (auto *menu = dynamic_cast<CompactMenuButton *>(impl_->control.get()))
+    {
+        menu->compact = std::move(texts);
+        menu->repaint();
+    }
+}
+
+juce::String ParamControl::menuText(int step) const
+{
+    auto *menu = dynamic_cast<CompactMenuButton *>(impl_->control.get());
+    return menu != nullptr ? menu->textFor(step) : juce::String();
 }
 
 void ParamControl::setRings(std::vector<Ring> rings)

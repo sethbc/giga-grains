@@ -13,8 +13,6 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/basic-blocks/params/ParamMetadata.h>
-#include <sst/jucegui/components/ContinuousParamEditor.h>
-#include <sst/jucegui/data/Continuous.h>
 
 #include "HeldValue.h"
 #include "gg/core/ParamIds.h"
@@ -54,7 +52,21 @@ class ParamValue
     const std::string &label() const noexcept { return label_; }
     float value() const noexcept { return value_; }
 
-    void setCommitOnRelease(bool on) noexcept { commitOnRelease_ = on; }
+    /// Turned off mid-gesture, the value held back for the release is sent now, and the gesture
+    /// goes on sending as it moves.
+    void setCommitOnRelease(bool on)
+    {
+        commitOnRelease_ = on;
+        if (!on && pending_)
+        {
+            send(*pending_);
+            pending_.reset();
+        }
+    }
+    /// While on, the gestures that begin are key-repeat nudges (UndoStack::GestureOptions): the
+    /// undo stack merges a run of them into one entry. The arrow keys' handler turns it on around
+    /// the one gesture it makes.
+    void setNudge(bool on) noexcept { nudge_ = on; }
 
     void begin()
     {
@@ -65,7 +77,8 @@ class ParamValue
         editing_ = true;
         if (context_.undo != nullptr)
         {
-            context_.undo->beginGesture(slot_, value_, meta_.name);
+            context_.undo->beginGesture(slot_, value_, meta_.name,
+                                        {.nudge = nudge_, .timeSeconds = wallSeconds()});
         }
         held_.begin();
         if (context_.beginGesture)
@@ -155,36 +168,11 @@ class ParamValue
     float value_;
     bool editing_{false};
     bool commitOnRelease_{false};
+    bool nudge_{false};
     std::optional<float> pending_;
     HeldValue held_;
 };
 
-/// The arrow keys' edit of a continuous control: Up and Right raise it by 1/100 of its range,
-/// Down and Left lower it, by 1/1000 with Shift, each press one gesture, where sst-jucegui's
-/// controls step by 1/40 and know no Left or Right. False, changing nothing, for any other key,
-/// with Command held, or with no source: the control's own handling takes those.
-inline bool stepByArrowKey(sst::jucegui::components::ContinuousParamEditor &editor,
-                           const juce::KeyPress &key)
-{
-    const int code = key.getKeyCode();
-    const bool up = code == juce::KeyPress::upKey || code == juce::KeyPress::rightKey;
-    const bool down = code == juce::KeyPress::downKey || code == juce::KeyPress::leftKey;
-    sst::jucegui::data::Continuous *source = editor.continuous();
-    if ((!up && !down) || source == nullptr || key.getModifiers().isCommandDown())
-    {
-        return false;
-    }
-    const float range = source->getMax() - source->getMin();
-    const float step = range * (key.getModifiers().isShiftDown() ? 0.001f : 0.01f);
-    const float v =
-        std::clamp(source->getValue() + (up ? step : -step), source->getMin(), source->getMax());
-    editor.onBeginEdit();
-    source->setValueFromGUI(v);
-    editor.onEndEdit();
-    editor.notifyAccessibleChange();
-    editor.repaint();
-    return true;
-}
 } // namespace gg::ui
 
 #endif // GG_UI_PARAMVALUE_H

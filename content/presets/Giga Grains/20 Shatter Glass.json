@@ -1,0 +1,51 @@
+{
+  "product": "instrument",
+  "name": "Shatter Glass",
+  "author": "Giga Grains",
+  "description": "Glass, bells and chimes broken into hundreds of tiny grains a second, scattered in pitch and space; play high and hold.",
+  "tags": ["extreme", "glitch", "bright", "metal", "sample"],
+  "params": {
+    "Level": 5.5,
+    "A Position": 0.4,
+    "A Size": -6.965784,
+    "A Density": 8.228819,
+    "A Pitch": 9,
+    "A Spray": 0.875703,
+    "A Stereo": 1.0,
+    "A Quality": 2,
+    "A Pitch Spread": 12.0,
+    "A Random 1 Rate": 3.584963,
+    "Layer B On": 1,
+    "Level B": 5.5,
+    "B Position": 0.2,
+    "B Size": -6.380822,
+    "B Density": 7.643856,
+    "B Pitch": 12,
+    "B Spray": 0.752101,
+    "B Stereo": 1.0,
+    "B Quality": 2,
+    "B Pitch Spread": 7.0,
+    "B Random 1 Rate": 3.169925,
+    "Layer C On": 1,
+    "Level C": 3.5,
+    "C Position": 0.1,
+    "C Size": -5.643856,
+    "C Density": 6.906891,
+    "C Pitch": 12,
+    "C Spray": 0.661828,
+    "C Stereo": 1.0,
+    "C Quality": 2,
+    "C Random 1 Rate": 2.807355,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 1.584963,
+    "Reverb Damping": 0.1
+  },
+  "mod": [
+    {"slot": 13, "source": "Random 1", "target": "Pitch", "targetLayer": "all", "depth": 12.0, "curve": "Bipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Mallets/wine-glass-ds4-rubbed.flac",
+    "B": "Samples/Generated/bell-additive.flac",
+    "C": "Samples/Mallets/hand-chime-c4.flac"
+  }
+}

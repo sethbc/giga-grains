@@ -10,13 +10,15 @@
 // as tests/plugin/editor_frame_tests.cpp makes them, and each editor is drawn with
 // createComponentSnapshot, never shown in a window.
 //
-// What the pictures show: the instrument has a generated 2 s sine loaded (written as a scratch
-// WAV), both products have layers B and C on and one route added, a few hundred blocks have run so
-// the canvas has grains, and the canvas draws GG_STRESS_GRAINS=2048 synthetic grains (the seam is
-// read when the canvas is made, so it is set before the editor). The per-machine settings point at
-// a scratch file, so the tool never reads or writes the user's.
+// What the pictures show: the instrument has a generated 2 s sine loaded on layer A and both
+// products one on layer B (written as scratch WAVs; the FX's layer B reads it), the FX's layer A
+// has Loop on and two splice marks, both products have layers B and C on and one route added, a few
+// hundred blocks have run so the canvas has grains, and the canvas draws GG_STRESS_GRAINS=2048
+// synthetic grains (the seam is read when the canvas is made, so it is set before the editor). The
+// per-machine settings point at a scratch file, so the tool never reads or writes the user's.
 //
-// Exit status: 0, or 1 with a message on stderr (2 for bad usage).
+// Exit status: 0, or 1 with a message on stderr (an error, or an exception that reached the top;
+// 2 for bad usage, an unknown option included).
 
 #include <algorithm>
 #include <array>
@@ -26,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -34,6 +37,12 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <clap/clap.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -78,6 +87,15 @@ int fail(const std::string &message)
 {
     std::fprintf(stderr, "gg-snap: %s\n", message.c_str());
     return 1;
+}
+
+long processId()
+{
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
 }
 
 void setEnv(const char *name, const std::string &value)
@@ -343,28 +361,51 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
     }
     const gg::ui::EditorContext &context = plugin->editorContext();
 
-    // The instrument's sample: a 2 s sine, loaded through the loader strip's own path.
-    if (!product.fx)
-    {
-        const fs::path wav = scratch / "sine-2s.wav";
-        if (!writeSineWav(wav, 2.0, 220.0))
+    // Samples, loaded through the loader strip's own path: the instrument's layer A and both
+    // products' layer B get a generated 2 s sine (lane B and the strip then show a sample).
+    const auto loadSample = [&](uint8_t layer, const char *name, double hz) -> std::string {
+        const fs::path wav = scratch / name;
+        if (!writeSineWav(wav, 2.0, hz))
         {
             return "can't write " + wav.string();
         }
-        context.loadSample(wav.string());
+        context.loadSampleFor(layer, wav.string());
         bool loaded = false;
         for (int i = 0; i < 500 && !loaded; ++i)
         {
             instance.mainThread();
-            loaded = context.sampleStatus().state == gg::ui::SampleStatusView::State::Loaded;
+            loaded =
+                context.sampleStatusFor(layer).state == gg::ui::SampleStatusView::State::Loaded;
             if (!loaded)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
-        if (!loaded)
+        return loaded
+                   ? std::string()
+                   : "the generated sample didn't load: " + context.sampleStatusFor(layer).message;
+    };
+    if (!product.fx)
+    {
+        if (const std::string e = loadSample(0, "sine-2s-a.wav", 220.0); !e.empty())
         {
-            return "the generated sample didn't load: " + context.sampleStatus().message;
+            return e;
+        }
+    }
+    if (const std::string e = loadSample(1, "sine-2s-b.wav", 330.0); !e.empty())
+    {
+        return e;
+    }
+    if (product.fx)
+    {
+        // The FX's layers default to Live; B reads its sample.
+        const ParamSlot source = gg::core::layerSlot(gg::core::LayerParam::Source, 1);
+        context.beginGesture(source);
+        context.setValue(source, static_cast<double>(gg::core::SourceKind::Sample));
+        context.endGesture(source);
+        if (!instance.block())
+        {
+            return "process failed";
         }
     }
 
@@ -408,6 +449,32 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
         }
     }
 
+    // The FX's layer A (a Live ring) gets Loop on and two splice marks, so its lane draws the
+    // marks and the loop window. The ring holds about 2.1 s by now and Loop Length is 1 s. The
+    // marks are 0.45 s and 0.15 s behind the head when added, and the 40 blocks that follow (so
+    // the commands apply and the lane refreshes) carry the head on 0.43 s, which leaves both
+    // inside the window.
+    if (product.fx)
+    {
+        const ParamSlot loop = gg::core::layerSlot(gg::core::LayerParam::Loop, 0);
+        context.beginGesture(loop);
+        context.setValue(loop, 1.0);
+        context.endGesture(loop);
+        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.45f);
+        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.15f);
+        for (int i = 0; i < 40; ++i)
+        {
+            if (!instance.block())
+            {
+                return "process failed";
+            }
+            if (i % 4 == 0)
+            {
+                tick(*editor);
+            }
+        }
+    }
+
     for (const auto &[theme, themeName] : kThemes)
     {
         if (!gg::ui::setTheme(*editor, theme))
@@ -423,7 +490,10 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
             for (const Size &size : sizes)
             {
                 editor->setSize(size.w, size.h);
-                instance.block();
+                if (!instance.block())
+                {
+                    return "process failed";
+                }
                 tick(*editor, 2);
                 const juce::Image image =
                     editor->createComponentSnapshot(editor->getLocalBounds(), true, 1.0f);
@@ -444,9 +514,8 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
     editor.reset();
     return {};
 }
-} // namespace
 
-int main(int argc, char **argv)
+int run(int argc, char **argv)
 {
     fs::path outDir;
     std::vector<Size> sizes;
@@ -484,13 +553,22 @@ int main(int argc, char **argv)
     }
     // A scratch folder for the sample and the settings; the settings seam is read when an
     // instance is made, and the canvas's stress seam when a canvas is.
-    const fs::path scratch =
-        fs::temp_directory_path() /
-        ("gg-snap-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    fs::create_directories(scratch, ec);
-    if (ec)
+    // Named by the process id and a counter, so two runs never share one; a folder that exists
+    // (a crashed run's leftover with a reused id) is skipped, not reused.
+    fs::path scratch;
+    for (int counter = 0;; ++counter)
     {
-        return fail("can't create " + scratch.string() + ": " + ec.message());
+        scratch = fs::temp_directory_path() /
+                  ("gg-snap-" + std::to_string(processId()) + "-" + std::to_string(counter));
+        if (fs::create_directories(scratch, ec))
+        {
+            break;
+        }
+        if (ec || counter >= 1000)
+        {
+            return fail("can't create " + scratch.string() +
+                        (ec ? ": " + ec.message() : ": every name is taken"));
+        }
     }
     setEnv("GG_SETTINGS_FILE", (scratch / "settings.xml").string());
     setEnv("GG_STRESS_GRAINS", "2048");
@@ -510,4 +588,21 @@ int main(int argc, char **argv)
     }
     fs::remove_all(scratch, ec);
     return status;
+}
+} // namespace
+
+int main(int argc, char **argv)
+{
+    try
+    {
+        return run(argc, argv);
+    }
+    catch (const std::exception &e)
+    {
+        return fail(std::string("unexpected error: ") + e.what());
+    }
+    catch (...)
+    {
+        return fail("unexpected error");
+    }
 }

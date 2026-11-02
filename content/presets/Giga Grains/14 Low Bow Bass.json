@@ -1,0 +1,48 @@
+{
+  "product": "instrument",
+  "name": "Low Bow Bass",
+  "author": "Giga Grains",
+  "description": "A bowed bass of cellos in tune with a double bass an octave under; play the low keys, aftertouch opening the tone.",
+  "tags": ["playable", "strings", "dark", "mono", "sample"],
+  "params": {
+    "Level": -16.8,
+    "A Position": 0.35,
+    "A Size": -2.0,
+    "A Density": 5.0,
+    "A Pitch": 24,
+    "A Spray": 0.283816,
+    "A Stereo": 0.15,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 10.550747,
+    "A Env 1 Attack": -3.643856,
+    "A Env 1 Decay": -1.0,
+    "A Env 1 Sustain": 0.9,
+    "A Env 1 Release": -1.321928,
+    "Layer B On": 1,
+    "Level B": -18.8,
+    "B Position": 0.4,
+    "B Size": -1.736966,
+    "B Density": 4.807355,
+    "B Pitch": 20,
+    "B Spray": 0.283816,
+    "B Stereo": 0.1,
+    "B Bus 1 Filter": 1,
+    "B Bus 1 Cutoff": 10.228819,
+    "B Env 1 Attack": -3.643856,
+    "B Env 1 Decay": -1.0,
+    "B Env 1 Sustain": 0.9,
+    "B Env 1 Release": -1.321928,
+    "Reverb Amount": 0.15,
+    "Reverb Decay": 0.584963
+  },
+  "mod": [
+    {"slot": 13, "source": "Velocity", "target": "Level", "targetLayer": "all", "depth": 8.0, "curve": "Bipolar"},
+    {"slot": 14, "source": "Pitch Bend", "target": "Pitch", "targetLayer": "all", "depth": 2.0, "curve": "Bipolar"},
+    {"slot": 15, "source": "Env 1", "target": "Level", "targetLayer": "all", "depth": 18.0, "curve": "Unipolar"},
+    {"slot": 16, "source": "Aftertouch", "target": "A Bus 1 Cutoff", "targetLayer": "all", "depth": 2.0, "curve": "Unipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Strings/cello-section-c2-vibrato.flac",
+    "B": "Samples/Strings/double-bass-e1-sustain.flac"
+  }
+}

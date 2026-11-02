@@ -1,0 +1,9 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains FX/15 Step Riff.ggpreset",
+  "input": {"kind": "file", "path": "phrase-strings.wav"}
+}

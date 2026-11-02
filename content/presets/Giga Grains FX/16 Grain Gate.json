@@ -1,0 +1,39 @@
+{
+  "product": "fx",
+  "name": "Grain Gate",
+  "author": "Giga Grains",
+  "description": "A sixteen-step gate on the grain stream under a slowly sweeping filter: chopped, moving rhythm from anything you feed it.",
+  "tags": ["rhythmic", "percussive", "glitch", "live-input"],
+  "params": {
+    "Mix": 0.85,
+    "Size": -4.321928,
+    "Density": 0,
+    "Distribution": 0,
+    "Spray": 0.36033,
+    "Stereo": 0.6,
+    "A Step Rate": 3,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 11.550747,
+    "A Bus 1 Resonance": 0.3,
+    "A Step 1": 1,
+    "A Step 2": 0,
+    "A Step 3": 0,
+    "A Step 4": 1,
+    "A Step 5": 0,
+    "A Step 6": 1,
+    "A Step 7": 1,
+    "A Step 8": 0,
+    "A Step 9": 1,
+    "A Step 10": 0,
+    "A Step 11": 0,
+    "A Step 12": 1,
+    "A Step 13": 0,
+    "A Step 14": 1,
+    "A Step 15": 0,
+    "A Step 16": 1
+  },
+  "mod": [
+    {"slot": 13, "source": "Step", "target": "Density", "targetLayer": "A", "depth": 5, "curve": "Unipolar"},
+    {"slot": 14, "source": "LFO 2", "target": "A Bus 1 Cutoff", "targetLayer": "A", "depth": 1.5, "curve": "Bipolar"}
+  ]
+}

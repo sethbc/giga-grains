@@ -22,6 +22,7 @@
 
 #include "gg/core/MachineSettings.h"
 #include "gg/core/SessionState.h"
+#include "gg/media/ContentPaths.h"
 #include "gg/media/Search.h"
 #include "TestHooks.h"
 #include "gg/media/Sha256.h"
@@ -601,6 +602,37 @@ TEST_CASE("findSample tries the content roots between the saved path and the rel
     // The saved path still comes first.
     put(dir / "old" / "gone.wav", kContent);
     requireFound(findSample(entry, settings, roots), dir / "old" / "gone.wav", false);
+}
+
+TEST_CASE("findSample's content roots refuse a reference that leaves its root", "[media]")
+{
+    // Task 14's review: step 2 takes a content-relative reference as resolveContentPath does
+    // (isContentRelativePath): a `..` segment, a root or an absolute path, a backslash or a NUL is
+    // no reference, so the step looks nowhere, even where such a join would find the file.
+    const auto dir = freshDir("search-content-escape");
+    const auto root = dir / "root";
+    put(dir / "outside" / "kick.wav", kContent);
+    put(root / "packs" / "kick.wav", kContent);
+#if !defined(_WIN32)
+    put(root / "packs\\kick.wav", kContent); // one name, where a backslash isn't a separator
+#endif
+    const std::vector<fs::path> roots{root};
+    const MachineSettings settings;
+    auto entry = entryFor(dir / "old" / "gone.wav");
+    for (const std::string &reference :
+         {std::string("../outside/kick.wav"), std::string("packs/../../outside/kick.wav"),
+          utf8(dir / "outside" / "kick.wav"), std::string("packs\\kick.wav"),
+          std::string("packs/kick.wav\0x", 16)})
+    {
+        INFO(reference);
+        entry.contentPath = reference;
+        CHECK_FALSE(gg::media::isContentRelativePath(reference));
+        requireMissing(findSample(entry, settings, roots));
+    }
+    // A good reference still finds it.
+    entry.contentPath = "packs/kick.wav";
+    CHECK(gg::media::isContentRelativePath(entry.contentPath));
+    requireFound(findSample(entry, settings, roots), root / "packs" / "kick.wav", true);
 }
 
 TEST_CASE("findSample looks in the captures folder for a path saved in one", "[media]")

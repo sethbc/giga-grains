@@ -1,0 +1,25 @@
+{
+  "product": "fx",
+  "name": "Spectral Mist",
+  "author": "Giga Grains",
+  "description": "The input dissolved into a soft spectral blur that keeps its pitch but loses its edges; beautiful on keys, strings and held notes.",
+  "tags": ["texture", "smear", "pad", "live-input"],
+  "params": {
+    "Mix": 0.6,
+    "A Source": 3,
+    "A Smear": 0.5,
+    "Position": 0.36033,
+    "Size": -1.736966,
+    "Density": 4.321928,
+    "Spray": 0.50335,
+    "Stereo": 0.7,
+    "Diffusion": 0.4,
+    "A Random 1 Rate": -1,
+    "A Random 1 Smooth": 0.8,
+    "Reverb Amount": 0.25,
+    "Reverb Decay": 1.807355
+  },
+  "mod": [
+    {"slot": 13, "source": "Random 1", "target": "Position", "targetLayer": "A", "depth": 0.05, "curve": "Bipolar"}
+  ]
+}

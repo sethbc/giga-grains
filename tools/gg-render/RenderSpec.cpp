@@ -668,8 +668,9 @@ void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode m
 InstrumentSpec readInstrument(const Object &o, const RenderSpec &spec)
 {
     InstrumentSpec instrument;
-    // "sample" may be left out beside a "state", whose layer A sample is then used.
-    if (o.has("sample") || !o.has("state"))
+    // "sample" may be left out beside a "state" or a "preset", whose layer A sample (if any) is
+    // then used.
+    if (o.has("sample") || (!o.has("state") && !o.has("preset")))
     {
         instrument.sample = readSource(o.member("sample"), SignalRole::Sample);
     }

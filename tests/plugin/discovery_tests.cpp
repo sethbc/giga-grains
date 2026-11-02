@@ -24,6 +24,7 @@
 
 #include "Factory.h"
 #include "GigaGrainsPlugin.h"
+#include "PresetCatalog.h"
 #include "PresetDiscovery.h"
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
@@ -821,4 +822,86 @@ TEST_CASE("the user's content folder is declared and reported as user content",
     REQUIRE(received.presets.size() == 1);
     CHECK(received.presets[0].flags == CLAP_PRESET_DISCOVERY_IS_USER_CONTENT);
     CHECK_FALSE(received.presets[0].soundpack.has_value());
+}
+
+// Spec §10: a host crawls the factory content at load (Live and Bitwig do), and the browser
+// rescans it, so the 48 real packed factory presets, not fixtures, must be read fast. The fixture
+// presets_built packs them (tests/CMakeLists.txt requires it for [crawl48]). The crawl is the
+// walk of the factory folder and a get_metadata per file, as clap-wrapper's index does; then the
+// catalog of each product, whose time is reported and not bounded (each catalog reads all 48
+// files to keep its own 24: about 47 ms apiece in `dev`, past the spec's bound for a crawl, which
+// is the host's scan). [serial]: it measures time.
+//
+// The 50 ms bound is the spec's, for `dev` (Debug). It is meaningless where the code is slowed
+// several-fold, so under AddressSanitizer the counts and names are checked and the time is not.
+#if defined(__SANITIZE_ADDRESS__)
+#define GG_CRAWL_UNDER_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define GG_CRAWL_UNDER_SANITIZER 1
+#endif
+#endif
+TEST_CASE("a crawl of the 48 packed factory presets takes under 50 ms",
+          "[plugin][discovery][catalog][presets][serial][crawl48]")
+{
+    const Scratch scratch("crawl48");
+    const Environment env(scratch, true);
+    const fs::path factory = scratch.content / "Presets";
+    fs::remove_all(factory);
+    const fs::path built = GG_BUILT_PRESETS_DIR;
+    for (const char *product : {"Giga Grains", "Giga Grains FX"})
+    {
+        const fs::path from = built / product;
+        REQUIRE(fs::is_directory(from));
+        fs::create_directories(factory / product);
+        for (const auto &entry : fs::directory_iterator(from))
+        {
+            if (entry.path().extension() == ".ggpreset")
+            {
+                fs::copy_file(entry.path(), factory / product / entry.path().filename());
+            }
+        }
+    }
+
+    using Clock = std::chrono::steady_clock;
+    const Provider provider;
+    const auto start = Clock::now();
+    std::size_t seen = 0, instrument = 0, fx = 0;
+    std::vector<fs::path> files;
+    for (const auto &entry : fs::recursive_directory_iterator(factory))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".ggpreset")
+        {
+            files.push_back(entry.path());
+        }
+    }
+    for (const auto &file : files)
+    {
+        Received received;
+        REQUIRE(provider.metadataOf(file, received));
+        REQUIRE(received.presets.size() == 1);
+        REQUIRE(received.presets[0].pluginIds.size() == 1);
+        const bool isFx = received.presets[0].pluginIds[0].second == descriptorFor(Product::Fx)->id;
+        (isFx ? fx : instrument) += 1;
+        ++seen;
+    }
+    const auto crawl = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+
+    const auto catalogStart = Clock::now();
+    const gg::plugin::PresetCatalog fxCatalog(Mode::Fx, scratch.settingsFile);
+    const gg::plugin::PresetCatalog instrumentCatalog(Mode::Instrument, scratch.settingsFile);
+    const auto catalogs =
+        std::chrono::duration<double, std::milli>(Clock::now() - catalogStart).count();
+
+    // Not vacuous: all 48 were seen, 24 of each product, and each catalog lists its own 24
+    // beside INIT.
+    CHECK(seen == 48);
+    CHECK(fx == 24);
+    CHECK(instrument == 24);
+    CHECK(fxCatalog.entries().size() == 25);
+    CHECK(instrumentCatalog.entries().size() == 25);
+    INFO("crawl " << crawl << " ms, catalogs " << catalogs << " ms");
+#if !defined(GG_CRAWL_UNDER_SANITIZER)
+    CHECK(crawl < 50.0);
+#endif
 }

@@ -1,0 +1,27 @@
+{
+  "product": "fx",
+  "name": "Still Water",
+  "author": "Giga Grains",
+  "description": "A calm wash of your input; hold a note and it freezes into a still pool at that key, blooming slowly into the reverb.",
+  "tags": ["texture", "freeze", "pad", "midi", "live-input"],
+  "params": {
+    "Mix": 0.5,
+    "Size": -1,
+    "A Size Spread": 0.5,
+    "Density": 4.459432,
+    "Spray": 0.59099,
+    "Stereo": 0.8,
+    "Diffusion": 0.3,
+    "A Env 2 Attack": -0.321928,
+    "A Env 2 Decay": 0.584963,
+    "A Env 2 Sustain": 1,
+    "A Env 2 Release": 1,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 2.584963,
+    "Reverb Size": 0.75
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 2", "sourceLayer": "A", "target": "Reverb Amount", "depth": 0.35, "curve": "Unipolar"},
+    {"slot": 14, "source": "Env 2", "sourceLayer": "A", "target": "Mix", "depth": 0.35, "curve": "Unipolar"}
+  ]
+}

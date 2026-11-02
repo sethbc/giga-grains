@@ -9,9 +9,11 @@
 #         -P <this file>
 #
 # - Presets/Giga Grains/ and Presets/Giga Grains FX/ each hold at least PRODUCTS_MIN .ggpreset
-#   files (0 in M2-5's first group, which has no factory presets yet; 24 once they exist), and
-#   Presets/Giga Grains FX/ at least MIDI_MIN of them tagged `midi` (0, then 8). A preset's tags
+#   files (the CTest passes 24, the factory presets per product), and Presets/Giga Grains FX/ at
+#   least MIDI_MIN of them tagged `midi` (8). A preset's tags
 #   are readable in the file's text (`tags="texture midi"`).
+# - Every staged preset's sample references (`content="Samples/..."`, the MEDI chunk's text)
+#   resolve to a file under DIR (spec §6.11).
 # - Samples/ holds at least one file, and every file's SHA-256 appears in PROVENANCE.md.
 # - PROVENANCE.md, LICENSE-CC0-1.0.txt, README.md and content-version.txt are there, and
 #   content-version.txt is `giga-grains-content <tag> <sha256>` of PIN's tag and zip SHA-256.
@@ -31,6 +33,7 @@ if (NOT IS_DIRECTORY "${DIR}")
 endif ()
 
 set(failures "")
+set(refs_seen 0)
 
 foreach (name IN ITEMS PROVENANCE.md LICENSE-CC0-1.0.txt README.md content-version.txt)
     if (NOT EXISTS "${DIR}/${name}")
@@ -83,6 +86,17 @@ foreach (product IN ITEMS "Giga Grains" "Giga Grains FX")
             continue()
         endif ()
         math(EXPR count "${count} + 1")
+        file(STRINGS "${preset}" ref_lines REGEX "content=\"[^\"]+\"")
+        foreach (ref_line IN LISTS ref_lines)
+            string(REGEX MATCHALL "content=\"[^\"]+\"" refs "${ref_line}")
+            foreach (ref IN LISTS refs)
+                string(REGEX REPLACE "^content=\"(.*)\"$" "\\1" ref_path "${ref}")
+                math(EXPR refs_seen "${refs_seen} + 1")
+                if (NOT EXISTS "${DIR}/${ref_path}")
+                    string(APPEND failures "\n  ${preset} names ${ref_path}, which isn't staged")
+                endif ()
+            endforeach ()
+        endforeach ()
         file(STRINGS "${preset}" tag_lines REGEX "tags=\"([^\"]* )?midi( [^\"]*)?\"" LIMIT_COUNT 1)
         if (tag_lines)
             math(EXPR midi "${midi} + 1")
@@ -97,6 +111,10 @@ foreach (product IN ITEMS "Giga Grains" "Giga Grains FX")
                 "${MIDI_MIN}")
     endif ()
 endforeach ()
+
+if (refs_seen EQUAL 0)
+    string(APPEND failures "\n  no staged preset names a sample (the factory presets do)")
+endif ()
 
 # Every sample's SHA-256 is in PROVENANCE.md.
 file(READ "${DIR}/PROVENANCE.md" provenance)

@@ -7,10 +7,12 @@
 // these need no editor or JUCE and also run in the sanitizer builds.
 
 #include <cstddef>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "gg/core/ModMatrix.h"
@@ -32,8 +34,25 @@ struct Model
     ModRoutes routes{};
     std::vector<std::pair<ParamSlot, float>> valueCalls;
     std::vector<ModRoutes> routeCalls;
+    std::vector<std::vector<std::pair<ParamSlot, double>>> batchCalls;
 
-    gg::ui::UndoCallbacks callbacks()
+    /// With `batched`, setValues is set too and logs each call.
+    gg::ui::UndoCallbacks callbacks(bool batched = false)
+    {
+        gg::ui::UndoCallbacks c = plain();
+        if (batched)
+        {
+            c.setValues = [this](std::span<const std::pair<ParamSlot, double>> v) {
+                batchCalls.emplace_back(v.begin(), v.end());
+                for (const auto &[slot, value] : v)
+                {
+                    values[static_cast<std::size_t>(slot)] = static_cast<float>(value);
+                }
+            };
+        }
+        return c;
+    }
+    gg::ui::UndoCallbacks plain()
     {
         return {.setValue =
                     [this](ParamSlot slot, float v) {
@@ -44,7 +63,8 @@ struct Model
                     [this](const ModRoutes &r) {
                         routes = r;
                         routeCalls.push_back(r);
-                    }};
+                    },
+                .setValues = {}};
     }
     void clearCalls()
     {
@@ -436,7 +456,8 @@ TEST_CASE("a snapshot entry undoes its routes before its values", "[ui]")
                      [&](const ModRoutes &r) {
                          routes = r;
                          order.push_back('r');
-                     }}};
+                     },
+                 .setValues = {}}};
     ParamValues vBefore{};
     ParamValues vAfter = vBefore;
     vAfter[static_cast<std::size_t>(ParamSlot::Texture)] = 0.9f;
@@ -447,4 +468,148 @@ TEST_CASE("a snapshot entry undoes its routes before its values", "[ui]")
     order.clear();
     s.redo();
     CHECK(std::string(order.begin(), order.end()) == "vvr");
+}
+
+namespace
+{
+using Options = UndoStack::GestureOptions;
+
+/// One nudge of `slot` from `before` to `after`, begun at `t`.
+void nudge(UndoStack &s, ParamSlot slot, float before, float after, double t)
+{
+    s.beginGesture(slot, before, "A Size", Options{.nudge = true, .timeSeconds = t});
+    s.endGesture(slot, after);
+}
+} // namespace
+
+TEST_CASE("nudges within a second merge", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    for (int i = 0; i < 30; ++i)
+    {
+        nudge(s, ParamSlot::Size, 0.1f + 0.01f * static_cast<float>(i),
+              0.1f + 0.01f * static_cast<float>(i + 1), 0.03 * i);
+    }
+    REQUIRE(s.size() == 1);
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::Size, 0.1f});
+    m.clearCalls();
+    s.redo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0].second == Catch::Approx(0.4f));
+}
+
+TEST_CASE("a nudge after a pause is its own entry", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    nudge(s, ParamSlot::Size, 0.1f, 0.2f, 0.0);
+    nudge(s, ParamSlot::Size, 0.2f, 0.3f, 0.5);
+    nudge(s, ParamSlot::Size, 0.3f, 0.4f, 2.0); // 1.5 s after the last
+    CHECK(s.size() == 2);
+}
+
+TEST_CASE("a drag between nudges splits them", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    nudge(s, ParamSlot::Size, 0.1f, 0.2f, 0.0);
+    s.beginGesture(ParamSlot::Size, 0.2f, "A Size"); // a drag: not a nudge
+    s.endGesture(ParamSlot::Size, 0.5f);
+    nudge(s, ParamSlot::Size, 0.5f, 0.6f, 0.2);
+    CHECK(s.size() == 3);
+}
+
+TEST_CASE("nudges on two slots stay apart", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    nudge(s, ParamSlot::Size, 0.1f, 0.2f, 0.0);
+    nudge(s, ParamSlot::Pitch, 0.1f, 0.2f, 0.1);
+    nudge(s, ParamSlot::Size, 0.2f, 0.3f, 0.2);
+    CHECK(s.size() == 3);
+}
+
+TEST_CASE("nudges back to the start leave no entry", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    nudge(s, ParamSlot::Size, 0.25f, 0.5f, 0.0);
+    nudge(s, ParamSlot::Size, 0.5f, 0.25f, 0.1);
+    CHECK(s.size() == 0);
+    CHECK_FALSE(s.canUndo());
+}
+
+TEST_CASE("a nudge does not merge into an entry waiting to be redone", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    nudge(s, ParamSlot::Size, 0.1f, 0.2f, 0.0);
+    s.undo();
+    nudge(s, ParamSlot::Size, 0.1f, 0.3f, 0.1);
+    CHECK(s.size() == 1);
+    CHECK_FALSE(s.canRedo());
+}
+
+TEST_CASE("a group of nudges merges as one entry", "[ui]")
+{
+    Model m;
+    UndoStack s{m.callbacks()};
+    for (int i = 0; i < 5; ++i)
+    {
+        const auto f = static_cast<float>(i);
+        s.beginGroup();
+        s.beginGesture(ParamSlot::MorphX, 0.5f + 0.01f * f, "Morph",
+                       Options{.nudge = true, .timeSeconds = 0.05 * i});
+        s.beginGesture(ParamSlot::MorphY, 0.5f, "Morph",
+                       Options{.nudge = true, .timeSeconds = 0.05 * i});
+        s.endGesture(ParamSlot::MorphX, 0.5f + 0.01f * (f + 1.0f));
+        s.endGesture(ParamSlot::MorphY, 0.5f);
+        s.endGroup();
+    }
+    REQUIRE(s.size() == 1);
+    s.undo();
+    REQUIRE(m.valueCalls.size() == 1);
+    CHECK(m.valueCalls[0] == std::pair{ParamSlot::MorphX, 0.5f});
+}
+
+TEST_CASE("a snapshot replays in one batch", "[ui]")
+{
+    ParamValues before{};
+    ParamValues after{};
+    for (std::size_t i = 0; i < gg::core::kParamCount; ++i)
+    {
+        after[i] = 1.0f;
+    }
+    const ModRoutes routes{};
+    SECTION("with setValues: one call, every pair")
+    {
+        Model m;
+        UndoStack s{m.callbacks(true)};
+        s.pushSnapshot("Mutate", before, routes, after, routes);
+        s.undo();
+        CHECK(m.valueCalls.empty());
+        REQUIRE(m.batchCalls.size() == 1);
+        CHECK(m.batchCalls[0].size() == gg::core::kParamCount);
+        for (const auto &[slot, v] : m.batchCalls[0])
+        {
+            CHECK(v == 0.0);
+        }
+        m.batchCalls.clear();
+        s.redo();
+        REQUIRE(m.batchCalls.size() == 1);
+        CHECK(m.batchCalls[0].size() == gg::core::kParamCount);
+        CHECK(m.batchCalls[0][0].second == 1.0);
+    }
+    SECTION("without it: setValue for each slot")
+    {
+        Model m;
+        UndoStack s{m.callbacks()};
+        s.pushSnapshot("Mutate", before, routes, after, routes);
+        s.undo();
+        CHECK(m.valueCalls.size() == gg::core::kParamCount);
+        CHECK(m.batchCalls.empty());
+    }
 }

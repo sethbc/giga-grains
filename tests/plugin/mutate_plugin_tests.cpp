@@ -23,6 +23,13 @@
 #include "PluginHarness.h"
 #include "gg/core/Mutate.h"
 #include "gg/core/ParamIds.h"
+#if GG_BUILD_EDITOR
+#include <juce_gui_basics/juce_gui_basics.h>
+
+#include "editor/EditorPlugin.h"
+#include "gg/ui/Editor.h"
+#include "gg/ui/UndoStack.h"
+#endif
 
 namespace
 {
@@ -173,6 +180,13 @@ std::vector<float> bases(const GigaGrainsPlugin &impl)
 }
 
 bool same(float a, float b) { return std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b); }
+
+/// The slots INIT keeps (gg::core::keepRingLengths): each layer's Ring Length.
+bool keptByInit(ParamSlot slot)
+{
+    const auto ref = gg::core::layerOf(slot);
+    return ref && ref->param == gg::core::LayerParam::RingLength;
+}
 
 void unlockAll(GigaGrainsPlugin &impl)
 {
@@ -410,22 +424,25 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
         REQUIRE(plugin.loadDefaultsWithSeed(5));
         GigaGrainsPlugin &impl = plugin.impl();
         everythingMoves(plugin);
-        std::vector<float> result;
         if (withLoad)
         {
             impl.mutate(1.0f);
             const auto first = drain(plugin);
             CHECK(first.size() == GigaGrainsPlugin::kMutateBatch);
             // Slots still wait: the load comes before the rest is sent.
+            const auto beforeLoad = bases(impl);
             impl.loadInit();
             // Nothing of the press reaches the host again.
             const auto rest = drainAll(plugin);
             CHECK(rest.empty());
-            // The values are INIT's: its defaults (layers B to D off again).
+            // The values are INIT's: its defaults (layers B to D off again), but for Ring Length,
+            // which INIT keeps (gg::core::keepRingLengths).
             for (std::size_t s = 0; s < kParamCount; ++s)
             {
-                CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
-                           gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+                const auto slot = static_cast<ParamSlot>(s);
+                CHECK(same(impl.uiBaseValue(slot),
+                           keptByInit(slot) ? beforeLoad[s]
+                                            : gg::core::paramMeta(slot, impl.mode()).defaultVal));
             }
         }
         else
@@ -439,7 +456,20 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
         impl.mutate(1.0f);
         drainAll(plugin);
         CHECK(impl.uiQueueDropped() == 0);
-        return bases(impl);
+        // The Ring Length the cut press had sent stays through the load (INIT keeps it:
+        // gg::core::keepRingLengths), so it starts the next press elsewhere. Zeroing it here is a
+        // deliberate narrowing of this test: it no longer checks Ring Length (which never moves
+        // under a press) after a cut press, only every other slot. Its keep is checked above and
+        // in preset_tests.cpp.
+        auto compared = bases(impl);
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            if (keptByInit(static_cast<ParamSlot>(s)))
+            {
+                compared[s] = 0.0f;
+            }
+        }
+        return compared;
     };
     // A press that starts from the loaded values gives what it gives from the same values with
     // the same counter, whether or not a press was cut short before.
@@ -766,13 +796,17 @@ TEST_CASE("a preset load while a set is half sent discards the rest", "[plugin][
     impl.sendValues(wholeSet(impl.mode(), 1));
     const auto first = drain(plugin);
     CHECK(first.size() == GigaGrainsPlugin::kMutateBatch);
+    const auto beforeLoad = bases(impl);
     impl.loadInit(); // slots still wait
     const auto rest = drainAll(plugin);
     CHECK(rest.empty());
+    // INIT's defaults, but for Ring Length, which INIT keeps.
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
-        CHECK(same(impl.uiBaseValue(static_cast<ParamSlot>(s)),
-                   gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode()).defaultVal));
+        const auto slot = static_cast<ParamSlot>(s);
+        CHECK(same(impl.uiBaseValue(slot),
+                   keptByInit(slot) ? beforeLoad[s]
+                                    : gg::core::paramMeta(slot, impl.mode()).defaultVal));
     }
     CHECK(impl.uiQueueDropped() == 0);
 }
@@ -962,3 +996,102 @@ TEST_CASE("deactivate forgets a callback request the host may swallow", "[plugin
     impl.flushMutate();  // the editor's tick: slots still wait, so it asks again
     CHECK(host.callbackRequests() == before + 2);
 }
+
+#if GG_BUILD_EDITOR
+namespace
+{
+/// The automatable slots' values a whole-state entry restores: each one's range end away from
+/// where the slot is now, so the snapshot differs from the present in every one of them.
+gg::core::ParamValues farFrom(const GigaGrainsPlugin &impl)
+{
+    gg::core::ParamValues far{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        const auto slot = static_cast<ParamSlot>(s);
+        const auto &meta = gg::core::paramMeta(slot, impl.mode());
+        const float now = impl.uiBaseValue(slot);
+        far[s] = now != meta.maxVal ? meta.maxVal : meta.minVal;
+    }
+    return far;
+}
+
+bool automatable(const GigaGrainsPlugin &impl, std::size_t s)
+{
+    const auto &meta = gg::core::paramMeta(static_cast<ParamSlot>(s), impl.mode());
+    return (meta.flags & CLAP_PARAM_IS_AUTOMATABLE) != 0;
+}
+} // namespace
+
+TEST_CASE("a whole-state undo reaches every slot however the host drains", "[plugin][mutate]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    gg::test::PluginUnderTest plugin(kFx);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.activate(48000.0, 64));
+    auto *impl = dynamic_cast<gg::plugin::EditorPlugin *>(&plugin.impl());
+    REQUIRE(impl != nullptr);
+    const auto editor = impl->createEditor(); // fills the context, undo stack included
+    REQUIRE(editor != nullptr);
+    gg::ui::UndoStack *undo = impl->editorContext().undo;
+    REQUIRE(undo != nullptr);
+
+    gg::core::ParamValues now{};
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        now[s] = impl->uiBaseValue(static_cast<ParamSlot>(s));
+    }
+    const gg::core::ParamValues far = farFrom(*impl);
+    const gg::core::ModRoutes routes{};
+    undo->pushSnapshot("Preset", far, routes, now, routes);
+    REQUIRE(undo->canUndo());
+
+    SECTION("one params.flush per 30 Hz tick drops nothing")
+    {
+        undo->undo();
+        for (int tick = 0; tick < 64; ++tick)
+        {
+            const auto h = drain(plugin);
+            checkWholeTriplets(h);
+            plugin.onMainThread();
+        }
+        CHECK(impl->uiQueueDropped() == 0);
+        std::size_t checked = 0;
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            if (automatable(*impl, s))
+            {
+                CHECK(impl->uiBaseValue(static_cast<ParamSlot>(s)) == far[s]);
+                ++checked;
+            }
+        }
+        CHECK(checked > 200);
+    }
+    SECTION("a host that never drains gets no more than sendValues sends")
+    {
+        // Undo, redo and undo again with nothing drained in between: the queue holds what the
+        // first batch put in it, however many slots each replay moves.
+        undo->undo();
+        undo->redo();
+        undo->undo();
+        for (int tick = 0; tick < 40; ++tick)
+        {
+            plugin.onMainThread();
+        }
+        CHECK(impl->uiQueueDropped() == 0);
+        // And the latest value wins once the host does drain.
+        for (int tick = 0; tick < 64; ++tick)
+        {
+            drain(plugin);
+            plugin.onMainThread();
+        }
+        CHECK(impl->uiQueueDropped() == 0);
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            if (automatable(*impl, s))
+            {
+                CHECK(impl->uiBaseValue(static_cast<ParamSlot>(s)) == far[s]);
+            }
+        }
+    }
+}
+#endif

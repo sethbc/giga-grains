@@ -5,6 +5,7 @@
 #ifndef GG_UI_LOADERSTRIP_H
 #define GG_UI_LOADERSTRIP_H
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -14,9 +15,20 @@
 
 namespace gg::ui
 {
-/// The instrument's sample loader strip (spec §6.5; component ID "sampleStrip"): "Load…"
-/// ("sampleLoad"), the file name ("sampleName") and status ("sampleStatus"), "Relink…"
-/// ("sampleRelink") while the sample is relinkable, and "Sample folder…" ("sampleFolder").
+/// Whether the strip is the Edit view's row (letter, name, status, Load and Relink) or Perform's
+/// (those, and the memory readout, its cap menu, Collect and Sample folder).
+enum class Compact : uint8_t
+{
+    No,
+    Yes
+};
+
+/// The sample loader strip (spec §6.3, §6.5; component ID "sampleStrip") for one layer at a time,
+/// the selected one (setLayer), in both products: the layer's letter in its color
+/// ("loader.letter"), "Load..." ("sampleLoad"), the file name ("sampleName") and status
+/// ("sampleStatus"), "Relink..." ("sampleRelink") while the sample is relinkable and, unless
+/// compact, the memory readout ("loader.memory", "312 MB of 1 GB"), the cap menu ("loader.cap"),
+/// "Collect..." ("loader.collect") and "Sample folder..." ("sampleFolder").
 ///
 /// - The choosers open in the folder of the last file chosen or dropped here, or at first in
 ///   the settings' last load folder (EditorContext::lastLoadFolder).
@@ -25,11 +37,24 @@ namespace gg::ui
 /// - A notice (a refused drop, the folder saved or not) shows in the status until the sample's
 ///   status changes or the next request.
 /// - A status too long for its label shows whole in a tooltip.
+/// - The readout is polled every 10th refresh (and when the cap is chosen), and drawn in the
+///   palette's notice color while the instance holds more than its cap (nothing is unloaded).
+///   The menu ticks the current cap; a cap that is not one of the choices (a state's) is listed
+///   in order and ticked.
+/// - Collect opens a folder chooser, then EditorContext::collectSamples; the summary is posted
+///   as a notice.
+/// - Narrower than kNarrowWidth (the editor's minimum is 640), "Sample folder..." and "Collect..."
+///   move into a "..." menu ("loader.more") so the name and status keep room; the readout is as
+///   wide as its text, and Relink takes no width while it is hidden.
+/// - Its buttons and menu take the editor's palette, and follow a theme switch.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class LoaderStrip final : public juce::Component
 {
   public:
+    /// Below this width the strip folds Sample folder and Collect into its "..." menu.
+    static constexpr int kNarrowWidth = 900;
+
     /// What a chooser asks for.
     struct Browse
     {
@@ -44,10 +69,13 @@ class LoaderStrip final : public juce::Component
     /// replace it.
     std::function<void(const Browse &, std::function<void(const juce::File &)>)> browse;
 
-    explicit LoaderStrip(const EditorContext &context);
+    LoaderStrip(const EditorContext &context, uint8_t layer, Compact compact);
     ~LoaderStrip() override;
 
-    /// Polls the sample's status (the editor's 30 Hz timer).
+    /// Shows another layer's sample (0 to 3; clamped), dropping a notice about the last.
+    void setLayer(uint8_t layer);
+    uint8_t layer() const noexcept { return layer_; }
+    /// Polls the layer's sample status (the editor's 30 Hz timer), and the memory every 10th time.
     void refresh();
     /// Loads the first of `files` (full paths), or refuses it.
     void filesDropped(const juce::StringArray &files);
@@ -61,17 +89,34 @@ class LoaderStrip final : public juce::Component
     void applyPalette();
     void chooseFile(const juce::String &title, bool relink);
     void chooseSampleFolder();
-    /// Calls `action` with `path` as UTF-8, then shows the new status at once.
-    void request(const std::function<void(const std::string &)> &action, const juce::String &path);
+    void chooseCollectFolder();
+    /// Loads or relinks the layer's sample from `path` (UTF-8 to the context), then shows the new
+    /// status at once.
+    void request(bool relink, const juce::String &path);
+    void pollMemory();
+    void applyMemory();
+    void fillCapMenu(uint32_t capMiB);
     void setNotice(const juce::String &text);
+    /// Whether the strip shows (it and its ancestors below the root visible).
+    bool shownInEditor() const;
+    int memoryTextWidth() const;
+    void showMore();
     void showStatus(const juce::String &text);
     juce::File startFolder() const;
 
     const EditorContext &context_;
-    juce::TextButton loadButton_, relinkButton_, folderButton_;
-    juce::Label name_, status_;
-    juce::File lastFolder_;                      // of the last file chosen or dropped here
-    juce::String notice_;                        // shown in place of the status while it lasts
+    uint8_t layer_;
+    const bool compact_;
+    juce::TextButton loadButton_, relinkButton_, folderButton_, collectButton_, moreButton_;
+    juce::ComboBox capMenu_;
+    juce::Label letter_, name_, status_, memory_;
+    MemoryView memoryView_; // as last polled
+    uint32_t capListed_{0}; // the cap the menu's items were made for
+    uint32_t ticks_{0};
+    bool overCap_{false};
+    int memoryWidth_{0};    // the readout's width: its text's, so it never takes more than it needs
+    juce::File lastFolder_; // of the last file chosen or dropped here
+    juce::String notice_;   // shown in place of the status while it lasts
     juce::String noticeStatus_;                  // the status text when the notice was set
     juce::String statusText_;                    // the status as the loader last gave it
     std::unique_ptr<juce::FileChooser> chooser_; // the open dialog, if any

@@ -13,6 +13,7 @@
 #include <sst/basic-blocks/params/ParamMetadata.h>
 
 #include "../Palette.h"
+#include "gg/core/ParamMap.h"
 #include "gg/ui/LayerColours.h"
 #include "gg/ui/RouteEdits.h"
 #include "gg/ui/Rings.h"
@@ -64,13 +65,14 @@ bool isStep(ParamSlot slot)
     return ref && ref->param >= LayerParam::Step1 && ref->param <= LayerParam::Step16;
 }
 
-/// One cell: a control, its spread beside it, or a menu's caption above it.
+/// One cell: a control, its spread beside it, or a menu's caption above it. `lineStart`: the
+/// cell starts a new line in its panel (Placement::breakBefore).
 class Cell final : public juce::Component
 {
   public:
     Cell(const EditorContext &context, ParamSlot slot, Kind kind, std::optional<ParamSlot> spread,
-         const char *panelTitle)
-        : base_(std::make_unique<ParamControl>(context, slot, kind))
+         const char *panelTitle, bool lineStart)
+        : base_(std::make_unique<ParamControl>(context, slot, kind)), lineStart_(lineStart)
     {
         addAndMakeVisible(*base_);
         if (spread)
@@ -107,6 +109,7 @@ class Cell final : public juce::Component
 
     /// The size the cell wants, whatever a layout has left it at.
     juce::Point<int> natural() const { return natural_; }
+    bool lineStart() const { return lineStart_; }
 
     ParamControl &base() { return *base_; }
     ParamControl *spread() { return spread_.get(); }
@@ -141,6 +144,7 @@ class Cell final : public juce::Component
 
   private:
     std::unique_ptr<ParamControl> base_, spread_;
+    const bool lineStart_;
     juce::String caption_;
     juce::Point<int> natural_;
 };
@@ -180,8 +184,8 @@ struct ParamPanel::Impl
                 continue;
             }
             std::optional<ParamSlot> spread;
-            if (const auto placed = placementOf(slot);
-                placed && placed->pairedSpread != ParamSlot::Count &&
+            const auto placed = placementOf(slot);
+            if (placed && placed->pairedSpread != ParamSlot::Count &&
                 std::find(slots.begin(), slots.end(), placed->pairedSpread) != slots.end())
             {
                 spread = placed->pairedSpread;
@@ -190,7 +194,8 @@ struct ParamPanel::Impl
             const Kind kind = isStep(slot)
                                   ? Kind::VSlider
                                   : ParamControl::kindFor(gg::core::paramMeta(slot, context.mode));
-            auto cell = std::make_unique<Cell>(context, slot, kind, spread, panelName(panel));
+            auto cell = std::make_unique<Cell>(context, slot, kind, spread, panelName(panel),
+                                               placed && placed->breakBefore);
             Entry entry;
             entry.control = &cell->base();
             entry.spread = cell->spread();
@@ -210,6 +215,12 @@ struct ParamPanel::Impl
                     // SP-M9: a Ring Length change is a ring resize, so it is sent once, on release.
                     c->setCommitOnRelease(true);
                     c->setTooltip("Sets on release: the ring resizes once, when you let go");
+                }
+                else if (c->slot() == ParamSlot::ReverbSize)
+                {
+                    // D10 (row 217): a Size move clicks, so the room changes once, on release.
+                    c->setCommitOnRelease(true);
+                    c->setTooltip("Sets on release: the room's size changes in one step");
                 }
                 c->onRingDrag = [this, controlSlot = c->slot()](uint8_t routeSlot, float depth01) {
                     dragRing(controlSlot, routeSlot, depth01);
@@ -233,7 +244,7 @@ struct ParamPanel::Impl
             cells.push_back(std::move(cell));
         }
         owner.setVisible(!cells.empty());
-        refresh();
+        refresh(context.routes ? context.routes() : gg::core::ModRoutes{});
     }
 
     /// A ring dragged to a depth: the route's, in the parameter's own units.
@@ -272,9 +283,12 @@ struct ParamPanel::Impl
     }
 
     /// The spread pair's band on the base knob, in 0..1 of the base's range (spec §6.5): Size ±
-    /// its octaves, Pitch ± its semitones, Position ± Spray on a Sample layer and Position to
-    /// Position + Spray on a Live one (Position and Spray are both 0..1 values, taken as they
-    /// are, as the lane's rectangle does).
+    /// its octaves, Pitch ± its semitones, and Position ± Spray on a layer built as Sample, but
+    /// Position to Position + Spray on one whose grains spray one way, behind a ring's head: built
+    /// as Live or Spectral (gg::core::builtKind of the Source's base value, so Resample reads as
+    /// Live and the unbuilt Oscillator as the product's default kind; the scheduler sprays
+    /// Spectral one-sided, as Live). Position and Spray are both 0..1 values, taken as they are,
+    /// as the lane's rectangle does.
     std::optional<std::pair<float, float>> bandOf(const Entry &e) const
     {
         const auto ref = gg::core::layerOf(e.control->slot());
@@ -288,11 +302,14 @@ struct ParamPanel::Impl
         float low = value - spread, high = value + spread;
         if (ref->param == LayerParam::Position)
         {
-            const float live =
-                context.baseValue
-                    ? context.baseValue(gg::core::layerSlot(LayerParam::Source, e.layer))
-                    : 0.0f;
-            if (std::lround(live) == 1)
+            const ParamSlot source = gg::core::layerSlot(LayerParam::Source, e.layer);
+            gg::core::ParamValues values{};
+            values[static_cast<std::size_t>(source)] =
+                context.baseValue ? context.baseValue(source)
+                                  : gg::core::paramMeta(source, context.mode).defaultVal;
+            const gg::SourceMode built =
+                gg::core::builtKind(gg::core::sourceKindOf(values, e.layer), context.mode);
+            if (built != gg::SourceMode::Sample)
             {
                 low = value;
             }
@@ -308,10 +325,8 @@ struct ParamPanel::Impl
         return std::pair{to01(low), to01(high)};
     }
 
-    void refresh()
+    void refresh(const gg::core::ModRoutes &routes)
     {
-        const gg::core::ModRoutes routes =
-            context.routes ? context.routes() : gg::core::ModRoutes{};
         const Palette &palette = paletteOf(owner);
         for (Entry &e : entries)
         {
@@ -361,33 +376,46 @@ struct ParamPanel::Impl
                           });
     }
 
-    /// Wraps the cells in a `contentWidth` wide area at `origin`, moving them there when `place`;
-    /// returns the extent they take. Measuring (place false) leaves the components alone.
+    /// Lays the cells out in a `contentWidth` wide area at `origin`, moving them there when
+    /// `place`; returns the extent they take. The cells fall into lines, a new one at each cell
+    /// that starts one (Cell::lineStart), stacked top to bottom; each line wraps in the width.
+    /// Measuring (place false) leaves the components alone.
     juce::Point<int> layoutCells(int contentWidth, juce::Point<int> origin, bool place)
     {
-        juce::FlexBox box;
-        box.flexDirection = juce::FlexBox::Direction::row;
-        box.flexWrap = juce::FlexBox::Wrap::wrap;
-        box.justifyContent = juce::FlexBox::JustifyContent::flexStart;
-        box.alignItems = juce::FlexBox::AlignItems::flexStart;
-        box.alignContent = juce::FlexBox::AlignContent::flexStart;
-        for (const auto &cell : cells)
-        {
-            box.items.add(juce::FlexItem(static_cast<float>(cell->natural().x),
-                                         static_cast<float>(cell->natural().y))
-                              .withFlex(0.0f, 0.0f));
-        }
-        box.performLayout(juce::Rectangle<int>(origin.x, origin.y, contentWidth, 100000));
         int right = 0, bottom = 0;
-        for (int i = 0; i < box.items.size(); ++i)
+        std::size_t first = 0;
+        while (first < cells.size())
         {
-            const auto bounds = box.items[i].currentBounds.toNearestInt();
-            if (place)
+            std::size_t end = first + 1;
+            while (end < cells.size() && !cells[end]->lineStart())
             {
-                cells[static_cast<std::size_t>(i)]->setBounds(bounds);
+                ++end;
             }
-            right = std::max(right, bounds.getRight() - origin.x);
-            bottom = std::max(bottom, bounds.getBottom() - origin.y);
+            const int top = origin.y + bottom;
+            juce::FlexBox box;
+            box.flexDirection = juce::FlexBox::Direction::row;
+            box.flexWrap = juce::FlexBox::Wrap::wrap;
+            box.justifyContent = juce::FlexBox::JustifyContent::flexStart;
+            box.alignItems = juce::FlexBox::AlignItems::flexStart;
+            box.alignContent = juce::FlexBox::AlignContent::flexStart;
+            for (std::size_t i = first; i < end; ++i)
+            {
+                box.items.add(juce::FlexItem(static_cast<float>(cells[i]->natural().x),
+                                             static_cast<float>(cells[i]->natural().y))
+                                  .withFlex(0.0f, 0.0f));
+            }
+            box.performLayout(juce::Rectangle<int>(origin.x, top, contentWidth, 100000));
+            for (int i = 0; i < box.items.size(); ++i)
+            {
+                const auto bounds = box.items[i].currentBounds.toNearestInt();
+                if (place)
+                {
+                    cells[first + static_cast<std::size_t>(i)]->setBounds(bounds);
+                }
+                right = std::max(right, bounds.getRight() - origin.x);
+                bottom = std::max(bottom, bounds.getBottom() - origin.y);
+            }
+            first = end;
         }
         return {right, bottom};
     }
@@ -423,7 +451,7 @@ void ParamPanel::setLayer(uint8_t layer)
     resized();
 }
 
-void ParamPanel::refresh() { impl_->refresh(); }
+void ParamPanel::refresh(const gg::core::ModRoutes &routes) { impl_->refresh(routes); }
 
 void ParamPanel::setModMode(bool on)
 {

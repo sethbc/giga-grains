@@ -199,7 +199,7 @@ constexpr std::array<const char *, 4> kViewIds{"header.perform", "header.edit", 
 /// switch restyles in place: sst-jucegui's sheet on the root, the look and feel, the palette
 /// (PaletteOwner), a look-and-feel change sent to every component, a repaint.
 ///
-/// Files dropped anywhere on the editor go to the instrument's loader strip unless a lane takes
+/// Files dropped anywhere on the editor go to the selected layer's loader strip unless a lane takes
 /// them. Its timer is a public base so tests can drive it: at 30 Hz it polls the sample's status,
 /// follows the base values, the undo history and the notice, and shows the frame time.
 class Editor final : public juce::Component,

@@ -1,0 +1,13 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains FX/11 Crystal Keys.ggpreset",
+  "input": {"kind": "file", "path": "phrase-strings.wav"},
+  "notes": [
+    {"time": 3.0, "key": 55, "duration": 1.5},
+    {"time": 5.0, "key": 67, "duration": 2.0}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "product": "fx",
+  "name": "Slow Hours",
+  "author": "Giga Grains",
+  "description": "Reads ever further behind the live input, so whatever you play slows and stretches into a drone that trails the phrase.",
+  "tags": ["texture", "stretch", "drone", "live-input"],
+  "params": {
+    "Mix": 0.7,
+    "Position": 0.258261,
+    "Size": -1.514573,
+    "Density": 4.584963,
+    "Distribution": 0.2,
+    "Spray": 0.283816,
+    "Stereo": 0.5,
+    "A LFO 1 Rate": -3.321928,
+    "A LFO 1 Shape": 2,
+    "Reverb Amount": 0.2,
+    "Reverb Decay": 1.584963
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "Position", "targetLayer": "A", "depth": 0.5, "curve": "Unipolar"}
+  ]
+}
