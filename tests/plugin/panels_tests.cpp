@@ -755,7 +755,8 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     std::vector<std::pair<ParamSlot, float>> undone;
     gg::ui::UndoStack undo{
         {.setValue = [&undone](ParamSlot s, float v) { undone.emplace_back(s, v); },
-         .setRoutes = [](const gg::core::ModRoutes &) {}}};
+         .setRoutes = [](const gg::core::ModRoutes &) {},
+         .setValues = {}}};
     recording.context.undo = &undo;
     gg::ui::ParamControl size(recording.context, ParamSlot::Size, gg::ui::ParamControl::Kind::Knob);
     auto *knob = childOfType<sst::jucegui::components::Knob>(size);

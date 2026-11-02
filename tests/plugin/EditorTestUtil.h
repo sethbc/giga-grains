@@ -299,7 +299,8 @@ struct ModHarness
     explicit ModHarness(gg::core::Mode mode)
         : recording(mode), routes(gg::core::factoryRoutes(mode)),
           undo({.setValue = [](ParamSlot, float) {},
-                .setRoutes = [this](const gg::core::ModRoutes &r) { routes = r; }})
+                .setRoutes = [this](const gg::core::ModRoutes &r) { routes = r; },
+                .setValues = {}})
     {
         recording.context.routes = [this] { return routes; };
         recording.context.setRoutes = [this](const gg::core::ModRoutes &r) { routes = r; };

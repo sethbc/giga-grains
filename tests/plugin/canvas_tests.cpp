@@ -840,7 +840,8 @@ struct UndoCanvas
     RecordingContext recording{gg::core::Mode::Instrument};
     std::vector<std::pair<ParamSlot, float>> undone;
     gg::ui::UndoStack undo{{.setValue = [this](ParamSlot s, float v) { undone.emplace_back(s, v); },
-                            .setRoutes = [](const gg::core::ModRoutes &) {}}};
+                            .setRoutes = [](const gg::core::ModRoutes &) {},
+                            .setValues = {}}};
     std::unique_ptr<juce::Component> editor;
     gg::ui::GrainCanvas *canvas{nullptr};
 
