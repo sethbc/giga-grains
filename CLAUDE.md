@@ -192,6 +192,13 @@ no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CX
 1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
 summary.
 
+**CI's sanitizer jobs** (INTENT §23 #74). ASan + UBSan runs in six shards side by side, each
+running every sixth test (`ctest -I <shard>,,6`; a fixture's setup test joins any shard that needs
+it), and RTSan in a seventh job. `sanitizers (asan, rtsan)`, the check the `main` ruleset requires
+and the release job needs, passes only when all seven pass. ASan leaves out the `slow` tests
+(`-LE slow`) on a pull request and a push to `main`, and runs them on the nightly, a dispatch and a
+tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -I 3,,6 -LE slow`.
+
 **CI caches** (`.github/workflows/ci.yml`; none changes what is built):
 - **The SDK checkouts** (VST3 SDK, AudioUnitSDK, RtAudio, RtMidi, wil): `scripts/fetch-sdks.sh`
   clones each at the tag clap-wrapper's `cmake/base_sdks.cmake` pins into `.sdk-cache`, and
@@ -199,14 +206,15 @@ summary.
   cache is keyed by leg and by the hash of `base_sdks.cmake` and the script. (CPM's own
   `CPM_SOURCE_CACHE` cached nothing: clap-wrapper gives every package a `SOURCE_DIR`, which makes
   CPM skip it.) The VST3-validator step builds from `VST3_SDK_ROOT`.
-- **ccache**, macOS and Linux legs and the sanitizer job only, passed as
+- **ccache**, macOS and Linux legs and the sanitizer jobs only, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
   uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
   two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
-  (the sanitizer job's by the LLVM version and commit), restored by prefix.
-- **The pinned LLVM archive** (sanitizer job), keyed by version and SHA-256. The SHA-256 is checked
-  on a hit too.
-- **The content** (every build leg and the sanitizer job): `scripts/fetch-content.sh` fetches
+  (the sanitizer jobs' by sanitizer, LLVM version and commit; one ASan shard and the RTSan job
+  save), restored by prefix.
+- **The pinned LLVM archive** (sanitizer jobs), keyed by version and SHA-256. The SHA-256 is
+  checked on a hit too.
+- **The content** (every build leg and the sanitizer jobs): `scripts/fetch-content.sh` fetches
   the zip `content/pin.txt` pins into `.content-cache`, and every configure passes
   `-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content`. Keyed by the hash of `content/pin.txt` and
   `scripts/fetch-content.cmake` alone (the content is the same on every leg); a hit downloads
@@ -279,7 +287,7 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
 - **Per preset, in order** (`dev,asan,rtsan` by default):
   1. It configures only when the tree has no `CMakeCache.txt`. For `rtsan` on macOS with
      `GG_LLVM` unset, it uses `/opt/homebrew/opt/llvm` if that exists, and says so.
-  2. It builds `gg-all` for `asan` and `rtsan`, as CI's sanitizer job does, and the default
+  2. It builds `gg-all` for `asan` and `rtsan`, as CI's sanitizer jobs do, and the default
      target otherwise.
   3. It runs `ctest --preset <p>`, passing every `-L` through. Repeated `-L` options must all
      match (see Tests below), so `-L core -L rt` narrows; `-L 'core|rt'` runs both areas.

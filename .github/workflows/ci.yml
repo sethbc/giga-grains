@@ -13,10 +13,11 @@
 #               and on a release tag, and reports its in-process ratios, with a verdict against
 #               the leg's baseline when there is one; report-only until 1.0.0 (ruling 3; INTENT
 #               §23 #60, #61). On a pull request and a push to main it runs --quick, as a smoke
-#               check only (no verdict, no artifact; INTENT §23 #73). The gate turns blocking at 1.0.0, after M5, with the
-#               published §16 headline (INTENT §16, §19).
+#               check only (no verdict, no artifact; INTENT §23 #73). The gate turns blocking
+#               at 1.0.0, after M5, with the published §16 headline (INTENT §16, §19).
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
-#               20.1.8 release) on ubuntu-24.04.
+#               20.1.8 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
+#               by side, then this one check over all seven (INTENT §23 #74).
 #
 # Once the build succeeds, every later check runs even if an earlier one failed, so one run
 # reports them all; any failure still fails the job. The clang-format check is in format.yml.
@@ -899,13 +900,32 @@ jobs:
           rm -f "$RUNNER_TEMP/certs.p12" "$RUNNER_TEMP/AuthKey.p8"
           scripts/release/mac-keychain.sh delete "$RUNNER_TEMP/signing.keychain-db"
 
-  sanitizers:
-    name: sanitizers (asan, rtsan)
+  # The sanitizer tests, in seven jobs side by side (INTENT §23 #74): ASan + UBSan in six shards,
+  # each running every sixth test (ctest -I <shard>,,6; a fixture's setup test joins whichever
+  # shard needs it), and RTSan in one. As one job, ASan's 1,369 tests took 43 minutes of a
+  # 50-to-66-minute job, about 5.5 hours of test time on one 4-core runner; the build is a
+  # ccache hit in seconds, so each shard pays only the setup (about 3.5 minutes) again. The
+  # repository is public, so the extra jobs cost no minutes. ASan leaves out the tests labelled
+  # slow (-LE slow) on a pull request and a push to main, and runs them on the nightly, a
+  # dispatch and a tag; RTSan runs everything everywhere. The job "sanitizers (asan, rtsan)"
+  # below is the one the ruleset requires and the release job needs.
+  sanitizer:
+    name: sanitizer (${{ matrix.sanitizer }}${{ matrix.shard && format(' {0}/6', matrix.shard) || '' }})
     runs-on: ubuntu-24.04
-    # 90, not 60 (INTENT §23 #68, 2026-10-31): main's run took 48 minutes at 1d62946 and M2
-    # sub-project 2's branch about 66, its ring tests under ASan and RTSan. Splitting the job in
-    # two is a carry-over row.
+    # 90, not 60 (INTENT §23 #68, 2026-10-31), from when one job ran both sanitizers; a shard
+    # takes a fraction of it.
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { sanitizer: asan, shard: 1 }
+          - { sanitizer: asan, shard: 2 }
+          - { sanitizer: asan, shard: 3 }
+          - { sanitizer: asan, shard: 4 }
+          - { sanitizer: asan, shard: 5 }
+          - { sanitizer: asan, shard: 6 }
+          - { sanitizer: rtsan, shard: 0 }
     env:
       # LLVM's official 20.1.8 release for Linux x64, checked against its SHA-256 (the digest
       # GitHub publishes for the release asset). RTSan needs upstream clang 20 or newer.
@@ -965,7 +985,7 @@ jobs:
           ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
 
       - name: Save the LLVM archive
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.sanitizer == 'rtsan' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/llvm-archive
@@ -975,8 +995,10 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+          key: ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+          # The last prefix is the one-job cache's, from before the split (both trees in one).
           restore-keys: |
+            ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-
             ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-
 
       # The content, as in the build job (the same key; saved on main alone).
@@ -990,50 +1012,68 @@ jobs:
       - name: Fetch the content
         run: |
           scripts/fetch-content.sh "$CONTENT_CACHE_DIR"
-          echo "### Content cache (sanitizers): hit=${{ steps.content_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Content cache (sanitizer ${{ matrix.sanitizer }} ${{ matrix.shard }}): hit=${{ steps.content_cache.outputs.cache-hit || 'false' }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the content
-        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.content_cache.outputs.cache-hit != 'true' }}
+        if: ${{ matrix.sanitizer == 'rtsan' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.content_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CONTENT_CACHE_DIR }}
           key: ${{ steps.content_cache.outputs.cache-primary-key }}
 
-      - name: ASan + UBSan
+      # The asan preset uses the same clang (CC and CXX); the rtsan preset takes its compilers
+      # from $GG_LLVM.
+      - name: ${{ matrix.sanitizer == 'asan' && format('ASan + UBSan, shard {0} of 6', matrix.shard) || 'RealtimeSanitizer' }}
         env:
           CC: ${{ env.GG_LLVM }}/bin/clang
           CXX: ${{ env.GG_LLVM }}/bin/clang++
         run: |
+          preset=${{ matrix.sanitizer }}
           launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
           ccache --zero-stats
-          cmake --preset asan "${launcher[@]}" "-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content"
-          cmake --build --preset asan --parallel --target gg-all
-          ctest --preset asan --output-on-failure
-
-      - name: RealtimeSanitizer
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: |
-          launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-          cmake --preset rtsan "${launcher[@]}" "-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content"
-          cmake --build --preset rtsan --parallel --target gg-all
-          ctest --preset rtsan --output-on-failure
+          cmake --preset "$preset" "${launcher[@]}" "-DGG_CONTENT_DIR=$CONTENT_CACHE_DIR/content"
+          cmake --build --preset "$preset" --parallel --target gg-all
+          args=(--output-on-failure)
+          if [[ $preset == asan ]]; then
+            args+=(-I "${{ matrix.shard }},,6")
+            if [[ "${{ github.event_name }}" == pull_request || "${{ github.ref }}" == refs/heads/main && "${{ github.event_name }}" == push ]]; then
+              args+=(-LE slow)
+            fi
+          fi
+          echo "ctest --preset $preset ${args[*]}"
+          ctest --preset "$preset" "${args[@]}"
 
       - name: Compiler cache statistics
         if: ${{ !cancelled() }}
         run: |
           {
-            echo "### ccache (sanitizers)"
+            echo "### ccache (sanitizer ${{ matrix.sanitizer }} ${{ matrix.shard }})"
             echo '```'
             ccache --show-stats
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # One ASan shard saves (the six build the same tree), and the RTSan job.
       - name: Save the compiler cache
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && matrix.shard <= 1 && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-sanitizers-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+          key: ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+
+  # The required check (the main ruleset's "sanitizers (asan, rtsan)") and what the release job
+  # needs: it passes only when all seven sanitizer jobs passed.
+  sanitizers:
+    name: sanitizers (asan, rtsan)
+    needs: sanitizer
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every sanitizer job passed
+        run: |
+          echo "sanitizer jobs: ${{ needs.sanitizer.result }}"
+          [[ "${{ needs.sanitizer.result }}" == success ]]
 
   # When the kind isn't none, and only after plan, every build leg and the sanitizers passed (a
   # red sanitizer run blocks a release). The only job that may write to the repository
