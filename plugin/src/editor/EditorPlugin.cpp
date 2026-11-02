@@ -303,6 +303,19 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
     context.setMemoryCapMiB = [this](uint32_t mib) { uiSetMemoryCapMiB(mib); };
 }
 
+void EditorPlugin::pushWholeState(const char *label, const gg::core::ParamValues &vBefore,
+                                  const gg::core::ModRoutes &rBefore) noexcept
+{
+    try
+    {
+        undo_->pushSnapshot(label, vBefore, rBefore, uiValues(), uiRoutes());
+    }
+    catch (...)
+    {
+        // Out of memory for the entry: the change stands, with nothing to undo it.
+    }
+}
+
 void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
 {
     // The preset strip and browser (spec §6.8), main thread. Nothing may throw into JUCE's
@@ -345,7 +358,18 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
         }
         return rows;
     };
-    context.loadPreset = [this](std::size_t index) { return loadCatalogPreset(index); };
+    // A preset recall from the browser or the strip is one undo entry (INTENT §17); a host's
+    // preset load is a state load, which pushes none.
+    context.loadPreset = [this](std::size_t index) {
+        const gg::core::ParamValues before = uiValues();
+        const gg::core::ModRoutes routes = uiRoutes();
+        std::string error = loadCatalogPreset(index);
+        if (error.empty())
+        {
+            pushWholeState("Preset", before, routes);
+        }
+        return error;
+    };
     context.presetName = [this] {
         try
         {
@@ -406,7 +430,12 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
             return false;
         }
     };
-    context.mutate = [this](float amount) { mutate(amount); };
+    context.mutate = [this](float amount) {
+        const gg::core::ParamValues before = uiValues();
+        const gg::core::ModRoutes routes = uiRoutes();
+        mutate(amount);
+        pushWholeState("Mutate", before, routes);
+    };
     context.flushMutate = [this] { flushMutate(); };
     context.mutateLocked = [this](gg::core::ParamSlot slot) { return mutateLocked(slot); };
     context.setMutateLock = [this](gg::core::ParamSlot slot, bool locked) {

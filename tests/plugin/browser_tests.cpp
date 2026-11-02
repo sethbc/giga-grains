@@ -42,6 +42,7 @@
 #include "gg/media/ContentPaths.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/ui/Editor.h"
+#include "gg/ui/UndoStack.h"
 #include "support/Utf8.h"
 
 namespace
@@ -871,6 +872,128 @@ TEST_CASE("EditorContext::sendValues is filled and its values arrive after a dra
     f.plugin.flush(none.list());
     CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Size)) == size);
     CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Pitch)) == pitch);
+}
+
+namespace
+{
+/// Drains the editor's queue as a host would, a params.flush then on_main_thread (which sends
+/// the next batch of a whole-state replay), until every batch is applied.
+void settle(Fixture &f)
+{
+    for (int round = 0; round < 64; ++round)
+    {
+        gg::test::InputEvents in;
+        gg::test::OutputEvents out(8192);
+        f.plugin.flush(in.list(), out.list());
+        CHECK(out.refused() == 0);
+        f.plugin.onMainThread();
+    }
+}
+
+ParamSlot ringSlot(gg::core::LayerParam param) { return gg::core::layerSlot(param, 0); }
+} // namespace
+
+TEST_CASE("a preset load, INIT and a Mutate press are one undo entry each, the rings kept",
+          "[plugin][ui][preset][mutate]")
+{
+    // INTENT §17: whole-state entries for preset recall and Mutate (M2 sub-project 6's D7). A
+    // preset load keeps the five ring parameters and INIT Ring Length, so an entry holds no
+    // Ring Length and an undo never resizes a ring; undoing INIT gives Loop and the rest back.
+    using gg::core::LayerParam;
+    const Machine machine("undo-whole-state");
+    putPresets(machine);
+    Fixture f;
+    REQUIRE(f.plugin.activate(48000.0, 64));
+    const auto &context = f.impl->editorContext();
+    gg::ui::UndoStack *undo = context.undo;
+    REQUIRE(undo != nullptr);
+    REQUIRE(context.mutate);
+
+    // The instance's own capture settings and a macro, set as the editor would.
+    const ParamSlot ring = ringSlot(LayerParam::RingLength);
+    const ParamSlot loop = ringSlot(LayerParam::Loop);
+    const ParamSlot loopLength = ringSlot(LayerParam::LoopLength);
+    const ParamSlot overdub = ringSlot(LayerParam::Overdub);
+    const ParamSlot splice = ringSlot(LayerParam::Splice);
+    context.sendValues({{ring, 3.0},
+                        {loop, 1.0},
+                        {loopLength, -1.0},
+                        {overdub, 0.5},
+                        {splice, 2.0},
+                        {ParamSlot::Macro1, 0.625}});
+    settle(f);
+    const auto mine = [&] {
+        CHECK(f.impl->uiBaseValue(loop) == 1.0f);
+        CHECK(f.impl->uiBaseValue(loopLength) == -1.0f);
+        CHECK(f.impl->uiBaseValue(overdub) == 0.5f);
+        CHECK(f.impl->uiBaseValue(splice) == 2.0f);
+    };
+    REQUIRE(f.impl->uiBaseValue(ring) == 3.0f);
+    mine();
+    REQUIRE(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.625f);
+    REQUIRE_FALSE(undo->canUndo());
+
+    f.openBrowser();
+    f.list().selectRow(1); // FX Test: Macro 1 at 0.25, the rings kept
+    REQUIRE(f.impl->presetName() == "FX Test");
+    CHECK(undo->undoLabel() == "Preset");
+    CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.25f);
+    mine();
+    f.list().selectRow(0); // INIT: Ring Length kept, Loop and the rest at their defaults
+    REQUIRE(f.impl->presetName() == "Init");
+    CHECK(undo->size() == 2);
+    const float loopDefault = f.impl->uiBaseValue(loop);
+    CHECK(loopDefault != 1.0f);
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK_FALSE(f.impl->presetEdited());
+
+    // Undo INIT: the capture settings come back, Ring Length never moved; the values no longer
+    // INIT's, the preset reads edited.
+    undo->undo();
+    settle(f);
+    mine();
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.25f);
+    CHECK(f.impl->presetEdited());
+    // Undo the preset load: the values before it.
+    undo->undo();
+    settle(f);
+    CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.625f);
+    mine();
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK_FALSE(undo->canUndo());
+    // Redo both: INIT's values again, and no longer edited.
+    undo->redo();
+    undo->redo();
+    settle(f);
+    CHECK(f.impl->uiBaseValue(loop) == loopDefault);
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK_FALSE(f.impl->presetEdited());
+
+    // A Mutate press: one entry, whose undo puts every value back.
+    gg::core::ParamValues before{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        before[s] = f.impl->uiBaseValue(static_cast<ParamSlot>(s));
+    }
+    context.mutate(1.0f);
+    CHECK(undo->undoLabel() == "Mutate");
+    settle(f);
+    std::size_t moved = 0;
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        moved += f.impl->uiBaseValue(static_cast<ParamSlot>(s)) != before[s] ? 1 : 0;
+    }
+    CHECK(moved > 0);
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    undo->undo();
+    settle(f);
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        CAPTURE(s);
+        CHECK(f.impl->uiBaseValue(static_cast<ParamSlot>(s)) == before[s]);
+    }
+    CHECK_FALSE(f.impl->presetEdited());
 }
 
 // ---- The fix wave's browser cases (I4, M2, M3, M4, T5) ----

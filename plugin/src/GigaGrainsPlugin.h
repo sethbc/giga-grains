@@ -319,6 +319,11 @@ class GigaGrainsPlugin : public plugHelper_t
     /// latest value. Deterministic: the same seed, locks, values and presses give the same sound.
     /// May leave the values unchanged (amount 0, or all locked).
     void mutate(float amount) noexcept;
+    /// The values the editor's last changes leave each parameter at: a slot's value waiting to
+    /// be sent, else the value last sent while the audio thread may not have applied it, else
+    /// the base value (what a Mutate press starts from). After a preset load, its values. The
+    /// editor's whole-state undo entries take their before and after from it. Main thread.
+    gg::core::ParamValues uiValues() const noexcept { return mutateInput(); }
     /// The safe way to set many parameters at once from the main thread (a preset-sized restore,
     /// an undo): each slot is sent as the editor's gesture, begin, value and end, like Mutate's,
     /// through the same pending set, batches and drain witness (flushMutate), so however many

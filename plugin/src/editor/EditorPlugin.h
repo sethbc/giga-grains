@@ -109,6 +109,13 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     void fillRingContext(gg::ui::EditorContext &context);
     /// Fills the preset strip's and browser's part of `context` (spec §6.8).
     void fillPresetContext(gg::ui::EditorContext &context);
+    /// Pushes a whole-state undo entry (M2 sub-project 6's spec §6.8, INTENT §17) labelled
+    /// `label`, from `vBefore` and `rBefore` to the values and routes now (uiValues, uiRoutes):
+    /// a preset load or INIT from the editor, or a Mutate press. Only what differs is kept, so a
+    /// preset load's kept ring parameters are never in it, and an undo never resizes a ring.
+    /// Main thread.
+    void pushWholeState(const char *label, const gg::core::ParamValues &vBefore,
+                        const gg::core::ModRoutes &rBefore) noexcept;
     /// An editor was created (true) or destroyed (false): publishing is on while any is alive.
     void editorOpened(bool open) noexcept;
 
