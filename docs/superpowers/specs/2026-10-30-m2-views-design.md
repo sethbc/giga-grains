@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **PR 2 pending:** it waits for the program manager's word that wave 2 and sub-project 5 have merged. |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **Built (PR 2), 2026-11-01** (the plan: `docs/superpowers/plans/2026-11-01-m2-views-pr2.md`; PR 2's rulings VW-P2a to VW-P2n are in §16): the Ring, Delay and Limiter panels, the ring's lane menu, the sample strip for every layer in both products, the memory readout and cap, and the plan's undo and hygiene tasks; the text it changed is marked **Amended** in place. The header's split into its own component (row 331) and the preset strip's palette (row 313's rest) wait on sub-project 5's group 2. |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 6 of 7; wave 3, merged second, after sub-project 5. Started with wave 2 (programme design §6, "Wave rules"): the work that needs only wave 1 is built now; the work that needs wave 2's parameters waits until wave 2 has merged and this branch is rebased. |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.6, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them. |
 | **Builds on** | M2 sub-project 1 as built (§23 #65): four layers, the morph law (D1), the Source kind, Pitch and Size Spread, the 48-slot mod matrix and its sources, the 218 parameters, the patch at version 2, the per-layer grain events and live peaks; M1's Perform view (§23 #58): the canvas, `LaneModel`, `LaneState`, `SplatRenderer`, `MacroRow`, `LoaderStrip`, the UI → host gesture path and the audio → UI publish path; sst-jucegui at `22a89ca`. |
@@ -192,7 +192,7 @@ risk by definition, which the programme design's criterion excludes.
 - `gg-bench --canvas` with the four-lane resolve (§6.12);
 - `gg-snap`, the screenshot tool, and the pack (§6.13, §11).
 
-**PR 2 (after wave 2 and sub-project 5 merge, this branch rebased):**
+**PR 2 (after wave 2 and sub-project 5 merge, this branch rebased). Amended (PR 2, built 2026-11-01):** every item below is built, in the plan's tasks, except the header's preset name, which sub-project 5 built in `header.preset` and which moved nothing of ours; rulings VW-P2a to VW-P2n (§16).
 - Edit panels for wave 2's parameters: Quality and anything else sub-project 3 appends; the ring
   length, the memory cap and the per-layer samples of sub-project 2 (the FX's loader strip, drops
   onto lanes B to D, `MEDI` version 2); sub-project 4's Filter and buses panel and Smear;
@@ -232,8 +232,9 @@ and each new ring operation a gesture mapped to sub-project 2's API.
 
 ### 6.3 The Perform view
 
-**Layout** (top to bottom): the instrument's loader strip (as M1; the FX's arrives in PR 2); the
-canvas, four lanes stacked, equal height, each with a header cell at its left (D3); the bottom
+**Layout** (top to bottom): the sample strip (as M1's loader strip; **Amended** (VW-P2f, VW-P2m): PR 2's follows the
+selected layer in both products, and holds the memory readout, the cap menu, Collect and Sample
+folder); the canvas, four lanes stacked, equal height, each with a header cell at its left (D3); the bottom
 row: the XY pad (a square of the row's height) and the macro row (the rest of the width, as M1).
 
 **The lane header** (the layer strip's cell; 120 px wide, the lane's height): the layer's letter
@@ -321,7 +322,9 @@ above 0 (the snapshot's per-lane value).
 **A file dropped onto lane A** in the instrument loads it as the strip's drop does; a file
 dropped on any other lane, or on an FX lane, is refused with the strip's notice ("layer B takes a
 sample after the session format's next version") until PR 2, where every lane takes one through
-sub-project 2's per-layer loader. The lane under a drag is highlighted.
+sub-project 2's per-layer loader. The lane under a drag is highlighted. **Amended** (VW-P2c, VW-P2l, VW-P2k): in PR 2 a file dropped on any lane, in either product, loads into that lane's layer through `loadSampleFor`, and the refusal text is gone. A drop on a Live layer loads the sample and doesn't switch its Source; the notice reads "<L>'s sample is loading: set <L> Source to Sample to play it". A refused drop's notice goes to the header when the strip isn't showing.
+
+**Amended** (PR 2, the ring's lanes: VW-P2a, b, d, g, h, i). **A Live lane spans its ring** (VW-P2d, amended: `RingView::ringFrames / sampleRate`, from the ring's storage, else 16 s, since `LivePeaks::frames()` is always 16 s and never follows Ring Length; the peaks are drawn only over the frames the strip holds). Over a Live lane's peaks the lane draws the loop window while Loop is on, the selected splice outlined, and each mark as a 1 px rule numbered from the oldest in the window. On a Live lane the scan rectangle, its ghost and its body drag reach Position up to the lane's span (`livePositionMax`, capped at `kPositionMax`, 300 s), not 1 (VW-P2g); the Sample lane is unchanged. **The lane menu** (VW-P2a): a right-click on any lane (which selects it, with no drag), or Shift+F10 on the keyboard lane, opens Add splice mark here, Clear splice marks, Loop, Capture to layer A to D, Save capture as... and, on a Sample lane, Load sample.... It is not a drag vocabulary: a menu is discoverable, keyboard-reachable and testable headless. There is no "record" command: the ring records whenever it isn't frozen, so record is the Freeze toggle, and Loop and Overdub are parameters. Splice marks and captures are no undo entries, being commands (VW-P2b); Loop is a gesture, so one entry. A mark takes the engine's anchor (splices numbered from the first mark in storage, Loop ignored), while the lane's outline and numbers follow `MediaSession::spanOf`, which is what Capture takes (VW-P2h; carry-over row 386). The Loop item stays enabled while the plugin is inactive, being a parameter gesture; Add, Clear, Capture and Save are disabled (VW-P2i).
 
 **The XY pad** (`pad`): a square; its corners are the morph's, **A bottom-left (X 0, Y 0), B
 bottom-right, C top-left, D top-right**, Y up, each corner lettered in its layer's colour; the
@@ -403,7 +406,7 @@ and Budget in the FX view's Output panel after Mix (§6.7); PR 2 revisits both w
 design. **Amended** (SP-M7, 2026-10-31): sources' final merge (M2 sub-project 2, INTENT §23 #68)
 brought its five ring parameters, so they take the same smallest placement: Ring Length, Loop,
 Loop Length, Overdub and Splice in the Source panel after Source, rows 1 to 5; PR 2 revisits
-them with the ring's gestures and the memory readout. **Amended** (VW-T3c): the table places each slot once, and a layer's Level is placed in
+them with the ring's gestures and the memory readout. **Amended** (PR 2, VW-P2e, VW-P2f): the panels as built, in the table (`EditLayout.h`): **Source** holds Source alone; a new **Ring** panel after it holds Ring Length, Loop, Loop Length, Overdub and Splice (the ring parameters leave Source); Smear sits before Quality in Grain; the **Filter** panel breaks before each bus's Filter, so Bus 1 and Bus 2 each have a line; the delay and the limiter leave Output for the FX view's own panels (§6.7). The Edit view shows the sample strip as a compact row under the layer strip, following the selected layer (VW-P2f). Edit and the FX view share one panel grid (`layoutPanelGrid`); a layer change rebuilds only a shown view, a hidden one when it shows. **Amended** (VW-T3c): the table places each slot once, and a layer's Level is placed in
 its Space panel, as the table above lists it; the On switches are the strip panel's. The strip
 (the lane headers and the compact row) also shows On, Level, Source and Freeze, as second
 controls with the same `param.<id>`. A parameter may have a control in more than one view, so a
@@ -515,7 +518,7 @@ table: **Reverb** (Reverb Amount, Decay, Size, Damping, Pre-delay, Modulation, D
 the FX), **Output** (Mix in the FX; the master Level is layer A's `Level`, shown in its lane; the
 FX view names no Level; **Amended** (VW-T19a): then the engine's Budget, in both products, a knob
 taking whole steps (its 16,129 values are too many for a menu), so the instrument, which hides
-Mix, shows the Output panel with Budget alone), and in PR 2 **Delay** and **Limiter** as sub-project 4 defines them, and
+Mix, shows the Output panel with Budget alone), and in PR 2 **Delay** and **Limiter** as sub-project 4 defines them (**Amended** (VW-P2e, VW-P2n), as built: the panels follow the signal chain as `core/src/Processor.cpp` runs it, Delay, Reverb, Limiter, Output, checked against it; Output keeps Mix and Budget, and the view wraps in the Edit view's panel grid), and
 Space's panel for the per-layer diffuser stays in Edit (INTENT §14: the diffuser is per layer).
 Decay's text reads "∞" from `kDecayInfinite` up, as the host's does.
 
@@ -1177,3 +1180,34 @@ ledger, not here. The director's decisions are D1–D12 (§8).
 | VW-T19a | §6.5, §6.7 | The controller's ruling at the merge of the engine (PR #16) into PR 1: its new parameters take the smallest placement that keeps every slot reachable now. Quality (A–D) goes in the Grain panel after Texture, a menu; Budget (global) in the FX view's Output panel after Mix, in both products, a knob that rounds to whole steps, since `kindFor` makes a stepped parameter with more than 32 values a knob. The instrument's Output panel, empty before, shows Budget alone. PR 2 revisits both with its own panel design. |
 | VW-T19b | §6.5, §6.7 | The ruling at the merge of M2 sub-project 4 (Extremes) with main, as VW-T19a: its forty parameters take the smallest placement that keeps every slot reachable now. Smear (A–D) goes in the Grain panel after Quality; Bus Split and the two buses' Filter, Cutoff and Resonance (A–D) fill the Filter panel, which is no longer hidden; the delay's five and the limiter's three (globals) follow Budget in the FX view's Output panel, which, with them, no longer fits a 640 × 360 view, so the FX view scrolls vertically as the Edit view does. The pad's shading follows the morph law as amended for carry-over row 301 (`Processor::kMorphFloor`). PR 2 revisits all of it with its Filter, Delay and Limiter design. |
 | SP-M7 | §6.5 | Sources' ruling at its final merge (M2 sub-project 2, INTENT §23 #68), in VW-T19a's form: the five ring parameters take the smallest placement that keeps every slot reachable now, Ring Length, Loop, Loop Length, Overdub and Splice in the Source panel after Source. PR 2 revisits them with its own panel design. |
+
+## 16 (continued). Rulings made during the build (PR 2)
+
+Built 2026-11-01. Each is an engineering ruling, from the plan or made by the controller in the
+build; the text it changed is marked **Amended** where it applies. IDs are `VW-P2<letter>`.
+Rulings about the process (task ownership, merge order, models) are in the build's ledger, not
+here.
+
+| ID | Section | The ruling |
+|---|---|---|
+| VW-P2a | §6.3 | The ring's operations are in a lane menu: a right-click on a lane, or Shift+F10 on the keyboard lane. It is not a drag vocabulary: a menu is discoverable, keyboard-reachable and testable headless. There is no "record" command: the ring records whenever it isn't frozen, so record is the Freeze toggle, and Loop and Overdub are parameters. |
+| VW-P2b | §6.3 | Splice commands and captures are not undoable: they are commands, not parameters. Loop, chosen from the menu, is a gesture, so one undo entry. |
+| VW-P2c | §6.3 | A file dropped on any lane loads into that lane's layer, in both products. A drop on a Live layer loads the sample and does not switch its Source, and the notice says so. |
+| VW-P2d | §6.3 | **Amended.** A Live lane spans `ringFrames / sampleRate` seconds (`RingView::ringFrames`, from the ring's storage), else 16 s, since `LivePeaks::frames()` is always 16 s and never follows Ring Length; the peaks are drawn only over the frames the strip holds. The plan's rule (`LivePeaks::frames() / sampleRate`) would have kept every lane at 16 s. |
+| VW-P2e | §6.5, §6.7 | The FX view's panels follow the signal chain: Delay, Reverb, Limiter, Output. The Edit view gains a Ring panel after Source, and the Filter panel puts each bus on its own line. |
+| VW-P2f | §6.3, §6.5 | The sample strip (`LoaderStrip`) follows the selected layer in both products: in Perform as M1's strip did, and in Edit as a row under the layer strip. It holds the memory readout, the cap menu and Collect. Changing the cap is no undo entry: it is a setting. |
+| VW-P2g | §6.3 | On a Live lane the scan rectangle, its ghost and its body drag reach Position up to the lane's span (`livePositionMax`, capped at `kPositionMax` = 300 s), not 1; the Sample lane is unchanged, and a 16 s lane behaves as M1's did. |
+| VW-P2h | §6.3 | A lane-menu splice mark takes the engine's anchor (splices numbered from the first mark in storage, Loop ignored), while the lane's outline and numbers follow `MediaSession::spanOf`, what Capture takes. The two disagree when Loop is on and a mark is older than the loop (carry-over row 386). |
+| VW-P2i | §6.3 | The lane menu's Loop item stays enabled while the plugin is inactive (a parameter gesture); Add, Clear, Capture and Save are disabled. |
+| VW-P2j | §6.3, §6.6 | The layer strip's Source menu button and the Mod strip's Freeze label show a short form when the full text doesn't fit ("Resamp", "Spec", "Osc"); the popup, the tooltip and the accessibility value keep the full names, so every strip control reads at 640 x 360. |
+| VW-P2k | §6.3 | Below 900 px the sample strip folds "Sample folder..." and "Collect..." into a "..." menu (`loader.more`), so its name and status keep 120 px; a refused drop's notice goes to the header when the strip isn't showing. |
+| VW-P2l | §6.3 | The Live-drop notice reads "<L>'s sample is loading: set <L> Source to Sample to play it", since a drop only requests the load; the plan's "is loaded" claimed more. |
+| VW-P2m | §6.3 | `showSampleLoader` is true in both products, the FX's strip following its selected layer. |
+| VW-P2n | §6.7 | The FX view's chain order was checked against `core/src/Processor.cpp`: Delay, Reverb, Limiter, Output. VW-P2e stands. |
+
+**The carry-over (PR 2).** Closed here: rows 312, 314, 315, 316, 318 to 329, 332, 334 to 337 (the
+commits are in `docs/m2-carry-over.md`). Closed in part: 313 (the sample strip is on the palette;
+the preset strip, the browser and the Mutate panel are sub-project 5's, by the program manager's
+ruling of 2026-11-01) and 330 (a half-built row is kept and a hidden target named). Open: 331 (the
+header's split waits for sub-project 5's group 2), 333 (the director's checklist), 338 (the final
+verification). New rows 383 to 387 hold the minors deferred.
