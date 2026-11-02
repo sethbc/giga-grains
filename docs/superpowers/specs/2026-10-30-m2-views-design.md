@@ -247,7 +247,7 @@ draws its track alone, with no label (its tooltip and accessibility name give th
 full name), so the cell fits at 640 × 360. The header column is chrome, not lane: it follows
 the theme, painted in the theme's background, while the lanes stay dark in both themes (D9).
 
-**Amended** (VW-P2j): the Source menu button shows a short form where its full text doesn't fit ("Sample", "Live", "Resamp", "Spec", "Osc"), and in a narrow cell Freeze takes from On and Source from Level; the popup list, the tooltip and the accessibility value keep the full names, so every strip control reads at 640 × 360.
+**Amended** (VW-P2j): only the Source menu button shows a short form, and only where its full text doesn't fit ("Resamp", "Spec" and "Osc"; "Sample" and "Live" keep their names); Freeze never shortens, and in a narrow cell it takes width from On, and Source from Level; the popup list, the tooltip and the accessibility value keep the full names, so every strip control reads at 640 × 360.
 
 **The lane's body.** Each lane is M1's lane for its own layer, by that layer's **built kind**
 (`builtKind` of the Source's base value, ruling FR-6's rule):
@@ -448,7 +448,7 @@ the accessibility name. Parameter names are unchanged.
 
 ### 6.6 The Mod view and the route path
 
-**Amended** (VW-P2j): the Mod view's layer strip is the strip of §6.3, so its Freeze label shows a short form when the full text doesn't fit at 640 × 360 (the tooltip and accessibility name keep the full one).
+**Amended** (VW-P2j): the Mod view's layer strip is the strip of §6.3, so its Source button shows the same short forms, and Freeze keeps its label and takes width from On, at 640 × 360.
 
 **Shape** (D6): the layer strip; a **source strip** of 24 chips in five groups (Macros 1–8 ·
 LFO 1, LFO 2, Env 1, Env 2, Random 1, Random 2, Step · Wheel, Aftertouch, Bend, Velocity, Key ·
@@ -1203,7 +1203,7 @@ here.
 | VW-P2g | §6.3 | On a Live lane the scan rectangle, its ghost and its body drag reach Position up to the lane's span (`livePositionMax`, capped at `kPositionMax` = 300 s), not 1; the Sample lane is unchanged, and a 16 s lane behaves as M1's did. |
 | VW-P2h | §6.3 | A lane-menu splice mark takes the engine's anchor (splices numbered from the first mark in storage, Loop ignored), while the lane's outline and numbers follow `MediaSession::spanOf`, what Capture takes. The two disagree when Loop is on and a mark is older than the loop (carry-over row 386). |
 | VW-P2i | §6.3 | The lane menu's Loop item stays enabled while the plugin is inactive (a parameter gesture); Add, Clear, Capture and Save are disabled. |
-| VW-P2j | §6.3, §6.6 | The layer strip's Source menu button and the Mod strip's Freeze label show a short form when the full text doesn't fit ("Resamp", "Spec", "Osc"); the popup, the tooltip and the accessibility value keep the full names, so every strip control reads at 640 x 360. |
+| VW-P2j | §6.3, §6.6 | The layer strip's Source menu button (the Mod strip's is the same strip) shows a short form ("Resamp", "Spec", "Osc") where the full text doesn't fit; the popup, the tooltip and the accessibility value keep the full names. Freeze never shortens: in a narrow cell it keeps its label and takes width from On, and Source takes width from Level. So every strip control reads at 640 x 360. |
 | VW-P2k | §6.3 | Below 900 px the sample strip folds "Sample folder..." and "Collect..." into a "..." menu (`loader.more`), so its name and status keep 120 px; a refused drop's notice goes to the header when the strip isn't showing. |
 | VW-P2l | §6.3 | The Live-drop notice reads "<L>'s sample is loading: set <L> Source to Sample to play it", since a drop only requests the load; the plan's "is loaded" claimed more. |
 | VW-P2m | §6.3 | `showSampleLoader` is true in both products, the FX's strip following its selected layer. |

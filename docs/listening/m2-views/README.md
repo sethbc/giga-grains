@@ -41,7 +41,7 @@ both sizes, from the universal Release build.
 | Giga Grains, dark | [inst-perform-dark](snapshots/inst-perform-dark-960x600.png) | [inst-edit-dark](snapshots/inst-edit-dark-960x600.png) | [inst-mod-dark](snapshots/inst-mod-dark-960x600.png) | [inst-fx-dark](snapshots/inst-fx-dark-960x600.png) |
 | Giga Grains, light | [inst-perform-light](snapshots/inst-perform-light-960x600.png) | [inst-edit-light](snapshots/inst-edit-light-960x600.png) | [inst-mod-light](snapshots/inst-mod-light-960x600.png) | [inst-fx-light](snapshots/inst-fx-light-960x600.png) |
 
-Reading the pictures: the pale grey, full-width band in a Sample lane (lane B in both products, and lane A in the instrument) is the sample's outline, here the peaks of a constant-amplitude 0.5 sine, so it is a flat band, not a waveform. In the Mod view the two vertical scrollbars are the Edit panels' viewport (content below the fold) and the route list's own, not a doubled one.
+Reading the pictures: the pale gray, full-width band in a Sample lane (lane B in both products, and lane A in the instrument) is the sample's outline, here the peaks of a constant-amplitude 0.5 sine, so it is a flat band, not a waveform. In the Mod view the two vertical scrollbars are the Edit panels' viewport (content below the fold) and the route list's own, not a doubled one.
 
 Look for: the four lanes in the layer colors (Okabe-Ito: A orange, B sky blue, C green, D pink),
 the pad's corners (A, B, C, D) and handle, the macro row, undo and redo and the theme switch in the
