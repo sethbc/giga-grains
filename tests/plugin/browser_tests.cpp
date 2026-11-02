@@ -961,6 +961,9 @@ TEST_CASE("a preset load, INIT and a Mutate press are one undo entry each, the r
     CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.625f);
     mine();
     CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    // Undo leaves the name alone; the values differ from the preset's, so it reads edited
+    // (carry-over row 402).
+    CHECK(f.impl->presetEdited());
     CHECK_FALSE(undo->canUndo());
     // Redo both: INIT's values again, and no longer edited.
     undo->redo();

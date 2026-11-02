@@ -434,6 +434,8 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
         const gg::core::ParamValues before = uiValues();
         const gg::core::ModRoutes routes = uiRoutes();
         mutate(amount);
+        // uiValues() reads the pending set, which mutate() fills synchronously: the entry's
+        // "after" is the pressed values. A change that batches the press must update this.
         pushWholeState("Mutate", before, routes);
     };
     context.flushMutate = [this] { flushMutate(); };
