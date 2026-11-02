@@ -1,0 +1,49 @@
+{
+  "product": "instrument",
+  "name": "Gong Abyss",
+  "author": "Giga Grains",
+  "description": "A soft gong and a timpani roll an octave down, stretched into two-second grains that bloom slowly and crawl through the strike into a vast dark room; hold low chords.",
+  "tags": ["extreme", "drone", "stretch", "dark", "reverb", "sample"],
+  "params": {
+    "Level": -3.5,
+    "A Position": 0.3,
+    "A Size": 1.0,
+    "A Density": 4.584963,
+    "A Pitch": -12,
+    "A Spray": 1.0,
+    "A Stereo": 1.0,
+    "A Smear": 0.6,
+    "A LFO 1 Rate": -5.643856,
+    "A LFO 1 Shape": 2,
+    "A Env 1 Attack": 0.0,
+    "A Env 1 Decay": 0.0,
+    "A Env 1 Sustain": 1.0,
+    "A Env 1 Release": 1.0,
+    "Layer B On": 1,
+    "Level B": -5.5,
+    "B Position": 0.4,
+    "B Size": 0.584963,
+    "B Density": 4.0,
+    "B Pitch": -12,
+    "B Spray": 0.875703,
+    "B Stereo": 0.8,
+    "B LFO 1 Rate": -5.643856,
+    "B LFO 1 Shape": 2,
+    "B Env 1 Attack": 0.0,
+    "B Env 1 Decay": 0.0,
+    "B Env 1 Sustain": 1.0,
+    "B Env 1 Release": 1.0,
+    "Reverb Amount": 0.6,
+    "Reverb Decay": 3.584963,
+    "Reverb Size": 0.9,
+    "Reverb Damping": 0.5
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 1", "target": "Level", "targetLayer": "all", "depth": 10.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "LFO 1", "target": "Position", "targetLayer": "all", "depth": 0.4, "curve": "Unipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Mallets/gong-soft.flac",
+    "B": "Samples/Textures/timpani-roll.flac"
+  }
+}

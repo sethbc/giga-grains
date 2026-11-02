@@ -1,0 +1,51 @@
+{
+  "product": "instrument",
+  "name": "Kalimba Steps",
+  "author": "Giga Grains",
+  "description": "Mbira and kalimba plucked in a steady, quick pulse that an eight-step sequence turns into an arpeggio; hold a note or a chord.",
+  "tags": ["rhythmic", "pluck", "percussive", "sample"],
+  "params": {
+    "Level": 9.5,
+    "A Position": 0.0,
+    "A Size": -2.321928,
+    "A Density": 3.0,
+    "A Distribution": 0.0,
+    "A Pitch": 13,
+    "A Stereo": 0.6,
+    "A Bus 1 Filter": 1,
+    "A Bus 1 Cutoff": 11.773139,
+    "A Step Rate": 3.0,
+    "A Step Length": 8,
+    "A Step 1": 0.0,
+    "A Step 2": 0.5,
+    "A Step 3": 0.291667,
+    "A Step 4": 0.5,
+    "A Step 5": 0.208333,
+    "A Step 6": 0.291667,
+    "A Step 7": 0.583333,
+    "A Step 8": 0.291667,
+    "Layer B On": 1,
+    "Level B": 7.5,
+    "B Position": 0.0,
+    "B Size": -2.0,
+    "B Density": 2.0,
+    "B Distribution": 0.0,
+    "B Pitch": 13,
+    "B Stereo": 0.3,
+    "B Bus 1 Filter": 1,
+    "B Bus 1 Cutoff": 11.773139,
+    "Reverb Amount": 0.2,
+    "Reverb Decay": 1.0,
+    "Delay Amount": 0.2,
+    "Delay Time": -1.415037,
+    "Delay Feedback": 0.3
+  },
+  "mod": [
+    {"slot": 13, "source": "Step", "sourceLayer": "A", "target": "Pitch", "targetLayer": "all", "depth": 24.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Velocity", "target": "Level", "targetLayer": "all", "depth": 6.0, "curve": "Bipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Plucked/mbira-b2.flac",
+    "B": "Samples/Plucked/kalimba-b1.flac"
+  }
+}

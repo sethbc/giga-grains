@@ -1,0 +1,51 @@
+{
+  "product": "instrument",
+  "name": "Hall of Mirrors",
+  "author": "Giga Grains",
+  "description": "A bowed psaltery and a rising sweep, and a third layer that granulates the instrument's own output an octave up, so every note echoes back changed.",
+  "tags": ["extreme", "glitch", "wide", "reverb", "sample"],
+  "params": {
+    "Level": 3.5,
+    "A Position": 0.4,
+    "A Size": -1.736966,
+    "A Density": 4.584963,
+    "A Spray": 0.47267,
+    "A Stereo": 0.6,
+    "A Env 1 Attack": -2.321928,
+    "A Env 1 Decay": 0.0,
+    "A Env 1 Sustain": 1.0,
+    "A Env 1 Release": 0.0,
+    "Layer B On": 1,
+    "Level B": 1.5,
+    "B Source": 2,
+    "B Position": 0.45,
+    "B Size": -2.321928,
+    "B Density": 4.906891,
+    "B Pitch": 12,
+    "B Spray": 0.59099,
+    "B Stereo": 1.0,
+    "B Random 1 Rate": 0.0,
+    "B Random 1 Smooth": 0.5,
+    "Layer C On": 1,
+    "Level C": -4.5,
+    "C Position": 0.5,
+    "C Size": -3.321928,
+    "C Density": 4.321928,
+    "C Spray": 0.752101,
+    "C Stereo": 1.0,
+    "C Env 1 Attack": -2.321928,
+    "C Env 1 Decay": 0.0,
+    "C Env 1 Sustain": 1.0,
+    "C Env 1 Release": 0.0,
+    "Reverb Amount": 0.35,
+    "Reverb Decay": 2.0
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 1", "target": "Level", "targetLayer": "A", "depth": 8.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Random 1", "target": "Position", "targetLayer": "B", "depth": 0.15, "curve": "Bipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Strings/psaltery-c4-bowed.flac",
+    "C": "Samples/Generated/sweep-up.flac"
+  }
+}
