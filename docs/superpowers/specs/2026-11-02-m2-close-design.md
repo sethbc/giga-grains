@@ -229,8 +229,13 @@ row 353's path returns nothing. Phase B treats it as a bug, by superpowers:syste
   conditions (a relaxed atomic increment on a branch that is never taken in a correct run) is read
   by the tests that flaked and fails them with its diagnostic. The exit-case test
   (`engine_tests.cpp:2153`) compares its stolen and dropped counts before its samples, so a
-  recurrence says which diverged. Run 41499519821's fault is added to the row. The row stays open
-  as a watch row until a recurrence names the fault.
+  recurrence says which diverged. Run 41499519821's fault is added to the row, and so is a second
+  `fx-sine` block-1 event-log fault on `main` (dispatch run 41543261855 at `0189dc9`, shard 2 of 3).
+  **Chased as a bug, like row 403** (the program manager, 2026-11-02): superpowers:systematic-debugging,
+  `fx-sine` at block 1 looped under `arch -x86_64` in a local `mac-universal` tree with the machine
+  loaded as the three shards load it, the counter and the event logs' first differing line naming the
+  layer and frame; the cause fixed with a test that fails without the fix. Only if no run in the
+  plan's budget reproduces it does the row stay as a watch row, its diagnostics in place.
 - **The local auval fault** (`LSRegisterURL` error -10811 for the installed dev component): under
   the AU lock, unregister the stale component (`lsregister -u`), remove it, reinstall from
   `release`, restart the registrar, and run the three `auval` identities; `docs/releasing.md`'s
@@ -497,7 +502,7 @@ which §6.3 uses, and each pack's open gate questions, which §6.7 uses). They a
 | 218 | KEEP-BLOCKED | clap-wrapper's AUv2 `SupportsTail()` still returns false; we can't override the wrapper's class | – |
 | 232 | FIX | Our workaround: `EditorPlugin::guiDestroy` replaces the shim when it kept an editor it never showed | I |
 | 233 | KEEP-BLOCKED | clap-validator 0.4.1 is still its latest release and still demands a leading `/`. Unblocked by a release that accepts `C:\...` | – |
-| 234 | FIX | The asserts and the always-on counter (§6.5); run 41499519821 recorded; the row then stays as a watch row | J |
+| 234 | FIX | The asserts and the always-on counter, and the fault chased as a bug (§6.5; two `fx-sine` block-1 faults in a day, runs 41122974832 and 41543261855); a watch row only if it never reproduces | J |
 | 302 | FIX | Still clicks (`kReverbOnset` still exempts it): fade the reverb's input in over 10 ms; delete `kReverbOnset` | C |
 | 303 | FIX | `kGuardFrames` now has three copies of 15 and `unit` two: one public constant, one `unit`, the copies deleted | C |
 | 304 | FIX | Delete the stale SSE-era EPYC 9V74 entry; re-added only from three runs (or with row 144) | G |
