@@ -36,7 +36,10 @@ AGPL-3.0-or-later.
   the rings' mip pyramids on sub-project 3's half-band. Sub-project 4, Extremes and the FX chain,
   is built too (INTENT §23 #69): Smear, the Spectral kind, two filtered grain buses per layer, a
   global delay and limiter, forty parameters (283 in all with sub-project 2's twenty) and thirteen
-  remote-controls pages. M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as unpublished draft
+  remote-controls pages. Sub-project 5, Presets and content, is built (INTENT §23 #70; PRs #17
+  and #25): the `.ggpreset` file, INIT, CLAP preset discovery, the browser and Mutate, content
+  v2 (51 CC0 files, VSCO 2: CE strings and brass beside VCSL), content-relative preset samples,
+  the 48 factory presets and their 48 goldens (108 in all). M2, M3 and M4 are tagged 0.2.0, 0.3.0 and 0.4.0 as unpublished draft
   releases; nothing is public and there are no betas before M5, whose `0.5.0-beta.N` are the first
   public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark

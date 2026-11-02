@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70); group 2 (Tasks 14–18 and content v2) goes in a new branch and pull request. (Earlier: group 1 built 2026-10-30, Tasks 1 to 13 plus 10b, on `m2-presets`; PR #17, draft), **group 2 pending** (§6.12: wave 2's merge, then the voicing of the 48 presets). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.8, §6.9, §6.11, §10 and §12 |
+| **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70); group 2 (Tasks 14–18 and content v2) goes in a new branch and pull request. (Earlier: group 1 built 2026-10-30, Tasks 1 to 13 plus 10b, on `m2-presets`; PR #17, draft), group 2 was pending then (§6.12: wave 2's merge, then the voicing of the 48 presets). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters, INIT included) is in the §6.2 bullet on what a load keeps |
 | **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
 | **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets`; `docs/m2-carry-over.md` with **11 open rows** |
@@ -392,6 +392,15 @@ tools/                      the gg-render specs and the shell script that make t
   > generated. §11's "voice-and-strings phrase" therefore has no voice to play. The proposal is
   > option 1: a strings-and-mallets phrase from v1, and the `voice` tag goes unused until a
   > content release has a voice. Not decided; group 2 waits on the answer.
+
+  > **Amended 2026-11-01 (group 2, Task C2; the director's decision):** the answer was a content
+  > release with strings and brass. **Release `v2`** (`giga-grains-content-v2.zip`, 51 files, 48,200,259
+  > bytes) adds VSCO 2: Community Edition (CC0) strings and brass, with full provenance, beside
+  > VCSL; it is a **strict superset of `v1`** (v1's 37 files byte-identical at the same paths; the
+  > `v1` tag untouched), pinned by `content/pin.txt`. VSCO 2: CE's readme asks for credit and that
+  > the samples not be sold directly; neither binds under CC0, and `PROVENANCE.md` credits it.
+  > Files are named by measured sounding pitch (C4 is middle C), not by VSCO's names. The `voice`
+  > tag stays unused: the new content is orchestral strings and brass, not voices.
 - **The pin** in this repository, `content/pin.txt`: the tag, the asset URL and the zip's SHA-256.
   `scripts/fetch-content.sh <dir>` downloads the asset to `<dir>/giga-grains-content-<tag>.zip`,
   checks the SHA-256 (refusing a mismatch), unpacks it to `<dir>/content/` and writes
@@ -486,7 +495,7 @@ only if sub-project 6 widens the slot.
     `<user presets>/<name>.ggpreset` (a name that would overwrite asks first) and reloads the list;
     "Delete" on a user preset, with a confirm; factory presets can't be deleted;
   - **Content folder…:** sets the settings' `contentFolder` (a folder chooser) and rescans;
-  - a line at the bottom: the content release found ("Factory content v1 in
+  - a line at the bottom: the content release found ("Factory content v2 in
     /Library/Application Support/sethbc/Giga Grains") or "No factory content found: install it, or
     choose a Content folder".
 - **The list is the plugin's,** built on the main thread by the browser's model
@@ -931,7 +940,7 @@ length, what it is and what to listen for; the host checklist) and `specs/`:
 
 Fifty renders, deterministic on one platform. The README's host checklist for the close's sitting
 in Live and Bitwig: install from the PKG and the EXE (and unpack the tarball) and confirm the
-browser says "Factory content v1 in …"; the 24 presets per product in the browser, in order;
+browser says "Factory content v2 in …"; the 24 presets per product in the browser, in order;
 the VST3 program list and its selector following the browser in Live and Bitwig; the AU factory
 presets in Live (and Logic, best effort); a `midi` preset with a MIDI track routed; Save as… and
 a reopen; a favorite surviving a restart; Mutate recorded as automation; an M1 session reopening
