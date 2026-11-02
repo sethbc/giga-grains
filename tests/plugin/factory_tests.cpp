@@ -1326,6 +1326,10 @@ TEST_CASE("a refused drop is told in the header when the strip is hidden", "[plu
     CHECK(findDeep(*editor, "header.notice")->isVisible());
     CHECK(labelText(*editor, "header.notice") ==
           "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
+    // Either separator gives the name, on every OS.
+    target->filesDropped({"C:\\drops\\more.txt"}, 0, 0);
+    CHECK(labelText(*editor, "header.notice") ==
+          "can't load more.txt: not a WAV, AIFF, FLAC or MP3 file");
 }
 
 TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
