@@ -232,7 +232,9 @@ jobs:
     name: build (${{ matrix.preset }})
     needs: plan
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # 120, not 90 (INTENT §23 #73): a full-length benchmark (the nightly, a dispatch, a tag) now
+    # takes more than 30 minutes a leg, after up to 22 minutes of build and tests.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -632,12 +634,14 @@ jobs:
       # uploads; sub-project 6 makes it blocking. Anything else still fails the job, as before: a
       # crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or the timeout. The
       # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
-      # the no-verdict line for a model the baseline lacks. A full run is time-boxed: about 6
-      # minutes on every leg; a quick one takes under a minute.
+      # the no-verdict line for a model the baseline lacks. A full run is time-boxed at 60
+      # minutes: about 6 minutes a leg at M1, it outgrew the old 30 once M2's cases joined (the
+      # nightly of 2026-11-02 finished only warm-up and round 1 of 5 in 30; INTENT §23 #73); a
+      # quick one takes under a minute.
       - name: Benchmark (full length on the nightly, dispatch and tags, else --quick; not gated until 1.0.0)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           out="${{ matrix.build_dir }}/gg-bench"
           baseline="tools/gg-bench/baselines/${{ matrix.preset }}.json"

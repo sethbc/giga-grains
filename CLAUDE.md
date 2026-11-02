@@ -945,8 +945,9 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   minutes of timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined, 48
   before M2 sub-project 2's `engine-live-long` and M2 sub-project 4's four), plus
   `engine-live-long`'s three 300 s warm-ups, a few minutes more of wall time; a CI leg's benchmark
-  step took about 6 minutes before the layer cases added one, and hasn't been timed with the later
-  cases yet.
+  step took about 6 minutes before the layer cases added one; with the later cases, Linux's EPYC
+  7763 spent 30 minutes on the warm-ups and round 1 alone (the nightly of 2026-11-02), so the step's
+  limit is 60 minutes (INTENT §23 #73).
   `--canvas` times 240 frames after a 20-frame warm-up, or 30 with `--quick`.
 - **`--canvas`** times the canvas's CPU renderer headless: a 3200 × 1200 canvas (1600 × 600 at
   2×) of four lanes, M0's stress workload at 4,096, 8,192 and 16,384 grains, each frame's
@@ -996,7 +997,8 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   verdict per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
   `gg-bench.txt`). On a pull request and a push to `main` each leg runs `--quick` as a smoke
   check only (INTENT §23 #73): it checks no baseline, prints no verdict and uploads nothing, but
-  a crash or exit 1 or 2 still fails the job.
+  a crash or exit 1 or 2 still fails the job. A full run is limited to 60 minutes a leg, the
+  build job to 120: it outgrew 30 once M2's cases joined.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
