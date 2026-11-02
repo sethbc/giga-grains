@@ -63,11 +63,13 @@
     {
       "name": "windows-clangcl",
       "inherits": "base",
-      "displayName": "Windows (Visual Studio 2022, ClangCL, x64, Release)",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "toolset": "ClangCL",
-      "binaryDir": "${sourceDir}/build/windows"
+      "displayName": "Windows (Ninja, clang-cl, x64, Release; from a VS 2022 x64 developer shell)",
+      "binaryDir": "${sourceDir}/build/windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
     },
     {
       "name": "linux-gcc13",
