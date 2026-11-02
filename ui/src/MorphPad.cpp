@@ -63,13 +63,14 @@ struct MorphPad::Impl
     /// Opens the gesture on both parameters, and the undo group. The pad opens the two undo
     /// gestures itself, before the values do, so the entry is labelled "Morph"; the values close
     /// them (ParamValue).
-    void begin()
+    void begin(bool nudge = false)
     {
         if (UndoStack *undo = context.undo)
         {
+            const UndoStack::GestureOptions options{.nudge = nudge, .timeSeconds = wallSeconds()};
             undo->beginGroup();
-            undo->beginGesture(ParamSlot::MorphX, x.value(), kUndoLabel);
-            undo->beginGesture(ParamSlot::MorphY, y.value(), kUndoLabel);
+            undo->beginGesture(ParamSlot::MorphX, x.value(), kUndoLabel, options);
+            undo->beginGesture(ParamSlot::MorphY, y.value(), kUndoLabel, options);
         }
         grouped = context.undo != nullptr;
         x.begin();
@@ -94,10 +95,10 @@ struct MorphPad::Impl
         grouped = false;
     }
 
-    /// One whole gesture to `p`.
-    void gestureTo(PadPoint p)
+    /// One whole gesture to `p`; an arrow key's is a nudge.
+    void gestureTo(PadPoint p, bool nudge = false)
     {
-        begin();
+        begin(nudge);
         set(p);
         end();
     }
@@ -267,7 +268,7 @@ bool MorphPad::keyPressed(const juce::KeyPress &key)
         return false;
     }
     const PadPoint p = value();
-    impl_->gestureTo({std::clamp(p.x + dx, 0.0f, 1.0f), std::clamp(p.y + dy, 0.0f, 1.0f)});
+    impl_->gestureTo({std::clamp(p.x + dx, 0.0f, 1.0f), std::clamp(p.y + dy, 0.0f, 1.0f)}, true);
     repaint();
     return true;
 }

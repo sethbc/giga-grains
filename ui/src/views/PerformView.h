@@ -44,7 +44,7 @@ class PerformView final : public juce::Component
     void refresh();
 
     GrainCanvas &canvas() noexcept;
-    /// The instrument's loader strip; null in the FX.
+    /// The loader strip, following the selected layer; null without showSampleLoader.
     LoaderStrip *loaderStrip() noexcept;
 
     void resized() override;

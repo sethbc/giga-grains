@@ -78,13 +78,14 @@ add_executable(gg-tests
         tools/preset_source_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
+        ui/edit_layout_tests.cpp
         ui/lane_model_tests.cpp
+        ui/memory_text_tests.cpp
+        ui/pad_model_tests.cpp
         ui/rings_tests.cpp
         ui/route_edits_tests.cpp
-        ui/edit_layout_tests.cpp
-        ui/undo_stack_tests.cpp
-        ui/pad_model_tests.cpp
         ui/splat_tests.cpp
+        ui/undo_stack_tests.cpp
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -167,20 +168,24 @@ if (GG_BUILD_PLUGINS)
             plugin/persist_tests.cpp
             plugin/preset_tests.cpp
             plugin/process_tests.cpp
-            plugin/rt_tests.cpp
             plugin/routes_tests.cpp
+            plugin/rt_tests.cpp
             plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
 # The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
 # notices_tests.cpp checks the texts embedded into gg-ui, which only the editor builds;
-# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys).
+# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys);
+# canvas_tests.cpp, panels_tests.cpp and mod_view_tests.cpp the parts factory_tests.cpp used to hold.
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
-    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/editor_frame_tests.cpp)
+    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/canvas_tests.cpp
+            plugin/editor_frame_tests.cpp plugin/mod_view_tests.cpp plugin/panels_tests.cpp)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
     # The preset strip and browser (M2 sub-project 5's spec §6.8), through the editor.
     target_sources(gg-tests PRIVATE plugin/browser_tests.cpp)
+    # The editor's media and ring API (M2 sub-project 6, PR 2).
+    target_sources(gg-tests PRIVATE plugin/editor_media_tests.cpp)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
@@ -704,6 +709,12 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
     # About 66 s in Debug: `slow`, so -LE slow leaves it out.
     set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 300)
+    # Bad usage (an unknown option, no folder, a malformed size) exits 2 with the usage; fast.
+    add_test(NAME snap_cli_usage
+            COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli_usage
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap-usage.cmake)
+    set_tests_properties(snap_cli_usage PROPERTIES LABELS "plugin" TIMEOUT 60)
 endif ()
 
 # The installers (spec §6), label `installer`. installer_build_products builds gg-products (not
@@ -855,6 +866,17 @@ foreach (case IN ITEMS allowed other-target-source other-target-include other-ta
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
     set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()
+
+# The embed script (cmake/embed-text.cmake, carry-over row 319): its escaping over a fixture of a
+# quote, a backslash, control characters, UTF-8, a 40,000-byte line and an empty file, and its
+# refusal of unpaired lists. A mismatch reports the first differing byte offset.
+foreach (case IN ITEMS escapes long-line empty unpaired)
+    add_test(NAME embed_text_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/embed_text_${case}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-text/run.cmake)
+    set_tests_properties(embed_text_${case} PROPERTIES LABELS "build;ui")
 endforeach ()
 
 # The version (cmake/version.cmake, spec §6.1): gg_compose_version joins the numeric part and the

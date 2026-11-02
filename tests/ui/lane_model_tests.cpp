@@ -15,6 +15,7 @@
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -22,6 +23,7 @@
 
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
+#include "gg/core/Processor.h"
 #include "gg/core/Rng.h"
 #include "gg/ui/LaneModel.h"
 #include "gg/ui/LaneState.h"
@@ -80,8 +82,16 @@ LaneGeometry atTop(LaneGeometry g, float top)
     return g;
 }
 
-/// The FX taper's inverse, in double: the Position value for `seconds` behind the head.
-double fxPositionValue(double seconds) { return std::log2(1.0 + 255.0 * seconds / 16.0) / 8.0; }
+/// gg-core's seconds behind the head for an FX Position value (ParamMap's Live taper,
+/// toCloudParams), so no test keeps its own copy of the taper.
+double fxPositionSeconds(float position)
+{
+    gg::core::ParamValues values{};
+    values[static_cast<std::size_t>(gg::core::ParamSlot::Position)] = position;
+    values[static_cast<std::size_t>(gg::core::ParamSlot::Source)] =
+        static_cast<float>(gg::core::SourceKind::Live);
+    return gg::core::toCloudParams(values, gg::core::Mode::Fx).position;
+}
 } // namespace
 
 TEST_CASE("the fx lane puts the head at the right edge", "[ui]")
@@ -185,7 +195,6 @@ TEST_CASE("rate maps to y", "[ui]")
         REQUIRE_THAT(capsule->y, WithinAbs(c.y, 1e-4));
         REQUIRE(capsule->radius == 3.0f);
     }
-    grain.rate = 1.0f;
 
     // The radius is 3 px at the pixel scale, at least 1.5 px.
     grain.rate = 1.0f / 16.0f; // four octaves down: the lane's bottom edge less the radius
@@ -358,8 +367,8 @@ TEST_CASE("positionValueAtX inverts scanWindow across the lane", "[ui]")
 
     // The FX value matches the taper's inverse, and Position stays the window's right edge
     // whatever the Spray.
-    REQUIRE_THAT(gg::ui::positionValueAtX(1575.0f, fxLane()),
-                 WithinAbs(fxPositionValue(0.25), 1e-6));
+    REQUIRE_THAT(fxPositionSeconds(gg::ui::positionValueAtX(1575.0f, fxLane())),
+                 WithinAbs(0.25, 1e-6));
     REQUIRE_THAT(gg::ui::positionValueAtX(gg::ui::scanWindow(0.5f, 0.8f, fxLane()).x1, fxLane()),
                  WithinAbs(0.5, 1e-5));
 
@@ -763,6 +772,24 @@ TEST_CASE("hitTestRect names every region", "[ui]")
               {150.0f, 211.0f, None, "below the bottom edge's tolerance"},
               {100.0f, 194.0f, LeftEdge, "the top-left corner of the grown body"},
           });
+    // The same band on the FX lane: the same grown body and edges, and its right side the body
+    // (Position), whose corners take the top and bottom edges.
+    check(fx, {100.0f, 200.0f, 200.0f, 200.0f},
+          {
+              {150.0f, 200.0f, Body, "the band"},
+              {150.0f, 195.0f, Body, "the grown body's top row"},
+              {150.0f, 205.0f, Body, "the grown body's bottom row"},
+              {150.0f, 194.0f, TopEdge, "just above the grown body"},
+              {150.0f, 190.0f, TopEdge, "the top edge's last row"},
+              {150.0f, 189.0f, None, "above the top edge's tolerance"},
+              {150.0f, 206.0f, BottomEdge, "just below the grown body"},
+              {150.0f, 210.0f, BottomEdge, "the bottom edge's last row"},
+              {150.0f, 211.0f, None, "below the bottom edge's tolerance"},
+              {200.0f, 200.0f, Body, "the right side, on the band"},
+              {205.0f, 194.0f, TopEdge, "the top-right corner of the grown body"},
+              {205.0f, 206.0f, BottomEdge, "the bottom-right corner of the grown body"},
+              {100.0f, 194.0f, LeftEdge, "the top-left corner of the grown body"},
+          });
     // A short rectangle (6 px) is grown to the same 10 px body, centred on it.
     check(inst, {100.0f, 200.0f, 200.0f, 206.0f},
           {
@@ -1104,4 +1131,302 @@ TEST_CASE("live grains drop the oldest when full", "[ui]")
     grains.prune(11);
     CHECK(grains.size() == n - 1);
     CHECK(startPositions(grains).front() == 4.0);
+}
+
+// The Live lane's ring (M2 sub-project 6's spec §6.3, PR 2): the lane spans its layer's ring,
+// head at the right edge, and draws the ring's marks, its selected splice and its loop window.
+
+namespace
+{
+/// A ring of `seconds` at 48 kHz whose head is `headSeconds` in, with `marks` (ring frames,
+/// ascending).
+gg::ui::RingView ringOf(double seconds, double headSeconds, std::initializer_list<int64_t> marks)
+{
+    gg::ui::RingView ring;
+    ring.valid = true;
+    ring.head = static_cast<int64_t>(headSeconds * kRate);
+    ring.ringFrames = static_cast<int64_t>(seconds * kRate);
+    ring.windowFrames = ring.ringFrames;
+    for (const int64_t m : marks)
+    {
+        ring.splices[ring.spliceCount++] = m;
+    }
+    return ring;
+}
+
+int64_t frames(double seconds) { return static_cast<int64_t>(seconds * kRate); }
+} // namespace
+
+TEST_CASE("ringFrameX maps the head and the span's ends", "[ui]")
+{
+    const LaneGeometry g = fxLane(); // 1600 px for 16 s: 100 px a second
+    const int64_t head = frames(600.0);
+    const int64_t span = frames(16.0);
+    const auto x = [&](const LaneGeometry &lane, int64_t frame) {
+        return gg::ui::ringFrameX(lane, head, frame, kRate);
+    };
+    REQUIRE(x(g, head).has_value());
+    CHECK(*x(g, head) == 1600.0f);
+    REQUIRE(x(g, head - span).has_value());
+    CHECK_THAT(*x(g, head - span), WithinAbs(0.0, 1e-3));
+    REQUIRE(x(g, head - frames(8.0)).has_value());
+    CHECK_THAT(*x(g, head - frames(8.0)), WithinAbs(800.0, 1e-3));
+    // A frame the ring hasn't written, and one older than the lane's span, aren't on the lane.
+    CHECK_FALSE(x(g, head + 1).has_value());
+    CHECK_FALSE(x(g, head - span - 1).has_value());
+
+    // A 60 s ring: the lane spans it, so 30 s back is the middle.
+    LaneGeometry wide = g;
+    wide.ringSeconds = 60.0;
+    REQUIRE(x(wide, head - frames(30.0)).has_value());
+    CHECK_THAT(*x(wide, head - frames(30.0)), WithinAbs(800.0, 1e-3));
+    REQUIRE(x(wide, head - frames(60.0)).has_value());
+    CHECK_FALSE(x(wide, head - frames(60.0) - 1).has_value());
+
+    // ringFrameAt inverts it within a pixel, and clamps to the span.
+    for (const LaneGeometry &lane : {g, wide, fxLane(317.0f)})
+    {
+        const int64_t laneSpan = std::llround(lane.ringSeconds * kRate);
+        for (int i = 0; i <= 100; ++i)
+        {
+            const float px = lane.width * static_cast<float>(i) / 100.0f;
+            INFO(lane.width << " px for " << lane.ringSeconds << " s, x " << px);
+            const int64_t f = gg::ui::ringFrameAt(lane, head, px, kRate);
+            REQUIRE(f >= head - laneSpan);
+            REQUIRE(f <= head);
+            const auto back = x(lane, f);
+            REQUIRE(back.has_value());
+            CHECK_THAT(*back, WithinAbs(px, 1.0));
+        }
+    }
+    CHECK(gg::ui::ringFrameAt(g, head, -50.0f, kRate) == head - span);
+    CHECK(gg::ui::ringFrameAt(g, head, 2000.0f, kRate) == head);
+    CHECK(gg::ui::ringFrameAt(g, head, std::numeric_limits<float>::quiet_NaN(), kRate) == head);
+    // A lane that can't place anything places no frame.
+    CHECK_FALSE(gg::ui::ringFrameX(fxLane(0.0f), head, head, kRate).has_value());
+    CHECK_FALSE(gg::ui::ringFrameX(g, head, head, 0.0).has_value());
+}
+
+TEST_CASE("spliceSpan numbers from the oldest mark", "[ui]")
+{
+    // MediaSession::spanOf, line for line (D6): lo = max(0, head − N), with Loop on
+    // max(lo, head − max(1, loopFrames)); the marks in [lo, head); splice 0 or no marks is
+    // [lo, head); splice k is from the k-th mark to the next, the last to the head, a k past the
+    // count the last.
+    const int64_t head = frames(100.0);
+    const int64_t m0 = head - frames(20.0); // older than the 16 s ring: never numbered
+    const int64_t m1 = head - frames(12.0);
+    const int64_t m2 = head - frames(8.0);
+    const int64_t m3 = head - frames(2.0);
+    gg::ui::RingView ring = ringOf(16.0, 100.0, {m0, m1, m2, m3});
+    const auto span = [&](bool loop, int64_t loopFrames, uint32_t k) {
+        return gg::ui::spliceSpan(ring, loop, loopFrames, k);
+    };
+    const auto is = [](gg::ui::RingSpan s, int64_t from, int64_t to) {
+        INFO("[" << s.from << ", " << s.to << ") against [" << from << ", " << to << ")");
+        CHECK(s.from == from);
+        CHECK(s.to == to);
+    };
+    is(span(false, 0, 0), head - frames(16.0), head);
+    is(span(false, 0, 1), m1, m2);
+    is(span(false, 0, 2), m2, m3);
+    is(span(false, 0, 3), m3, head);
+    is(span(false, 0, 9), m3, head);
+    // The ring's length is N, RingView::ringFrames, not the window in effect: a selected
+    // splice's short windowFrames changes nothing.
+    ring.windowFrames = m3 - m2;
+    is(span(false, 0, 1), m1, m2);
+    // Loop on, 10 s: the window is the newest 10 s, so m1 is outside it and m2 is splice 1.
+    is(span(true, frames(10.0), 0), head - frames(10.0), head);
+    is(span(true, frames(10.0), 1), m2, m3);
+    is(span(true, frames(10.0), 2), m3, head);
+    // A loop of no length is one frame long (max(1, loopFrames)).
+    is(span(true, 0, 0), head - 1, head);
+    is(span(true, 0, 1), head - 1, head);
+    // No marks inside the window: every k is the window.
+    ring = ringOf(16.0, 100.0, {m0});
+    is(span(false, 0, 2), head - frames(16.0), head);
+    // A young ring: lo is never below 0; a mark at the head isn't inside the window.
+    ring = ringOf(16.0, 5.0, {frames(1.0), frames(5.0)});
+    is(span(false, 0, 0), 0, frames(5.0));
+    is(span(false, 0, 1), frames(1.0), frames(5.0));
+    is(span(false, 0, 2), frames(1.0), frames(5.0));
+    // A count past kMaxSplices reads kMaxSplices marks.
+    ring = ringOf(16.0, 100.0, {m1});
+    ring.spliceCount = 1000;
+    is(span(false, 0, 1), m1, head); // the zeros after m1 are older than the window
+}
+
+TEST_CASE("a splice mark's seconds round-trip", "[ui]")
+{
+    // Processor::applyCommands (core/src/Processor.cpp) marks anchor − llround(clamp(value ×
+    // sampleRate, 0, anchor − oldest)), the anchor the head or a selected splice's end, and the
+    // value a float. spliceSeconds is the editor's side: (anchor − frame) / sampleRate.
+    const int64_t anchor = frames(400.0);
+    const int64_t oldest = anchor - frames(300.0);
+    for (int64_t behind = 0; behind <= frames(300.0); behind += 9973)
+    {
+        INFO("behind " << behind);
+        const float s = gg::ui::spliceSeconds(anchor, anchor - behind, kRate);
+        const int64_t f = gg::ui::splicedFrame(anchor, oldest, s, kRate);
+        // A float's half-ulp is 0.37 frames below 256 s at 48 kHz: exact. From 256 to 300 s it
+        // is 0.73 frames: within one.
+        if (behind < frames(256.0))
+        {
+            CHECK(f == anchor - behind);
+        }
+        else
+        {
+            CHECK(std::abs(f - (anchor - behind)) <= 1);
+        }
+    }
+    // A frame past the anchor is 0 s, the anchor itself; one older than the window clamps to it.
+    CHECK(gg::ui::spliceSeconds(anchor, anchor + 100, kRate) == 0.0f);
+    CHECK(gg::ui::splicedFrame(anchor, oldest, 0.0f, kRate) == anchor);
+    CHECK(gg::ui::splicedFrame(anchor, oldest, -1.0f, kRate) == anchor);
+    CHECK(gg::ui::splicedFrame(anchor, oldest, 400.0f, kRate) == oldest);
+
+    // And the Processor itself: a mark asked for at a frame lands on it, with no splice selected
+    // (the anchor is the head) and with splice 1 selected (the anchor is its end, the next mark).
+    gg::core::Processor p({kRate, 512, 7, gg::core::Mode::Fx});
+    const auto run = [&p](uint32_t n, std::span<const gg::core::ParamEvent> events,
+                          std::span<const gg::core::CommandEvent> commands) {
+        std::vector<float> left(n), right(n);
+        float *out[2] = {left.data(), right.data()};
+        p.process(nullptr, 0, out, 2, n, events, {}, {}, commands);
+    };
+    for (int i = 0; i < 10 * 48000 / 512; ++i)
+    {
+        run(512, {}, {});
+    }
+    const int64_t head = p.ringMeta(0).head;
+    REQUIRE(head > frames(9.0));
+    const int64_t first = head - frames(3.5) - 17;
+    const std::array<gg::core::CommandEvent, 1> mark{
+        {{0, gg::core::CommandKind::AddSplice, 0, gg::ui::spliceSeconds(head, first, kRate)}}};
+    run(32, {}, mark);
+    REQUIRE(p.ringMeta(0).spliceCount == 1);
+    CHECK(p.ringMeta(0).splices[0] == first);
+    const int64_t second = head - frames(1.25) + 3;
+    const std::array<gg::core::CommandEvent, 1> mark2{
+        {{0, gg::core::CommandKind::AddSplice, 0,
+          gg::ui::spliceSeconds(head + 32, second, kRate)}}};
+    run(32, {}, mark2);
+    REQUIRE(p.ringMeta(0).spliceCount == 2);
+    CHECK(p.ringMeta(0).splices[1] == second);
+    // Splice 1, [first, second), selected: from the next write its end is the anchor.
+    const std::array<gg::core::ParamEvent, 1> select{
+        {{0, gg::core::layerSlot(gg::core::LayerParam::Splice, 0), false, 1.0}}};
+    run(32, select, {});
+    run(32, {}, {});
+    gg::ui::RingView ring;
+    ring.valid = true;
+    ring.head = p.ringMeta(0).head;
+    ring.ringFrames = p.ringRead(0).storage->frames();
+    ring.spliceCount = 2;
+    ring.splices[0] = first;
+    ring.splices[1] = second;
+    const gg::ui::RingSpan selected = gg::ui::spliceSpan(ring, false, 0, 1);
+    REQUIRE(selected.to == second);
+    const int64_t between = first + frames(0.5) + 5;
+    const std::array<gg::core::CommandEvent, 1> mark3{
+        {{0, gg::core::CommandKind::AddSplice, 0,
+          gg::ui::spliceSeconds(selected.to, between, kRate)}}};
+    run(32, {}, mark3);
+    REQUIRE(p.ringMeta(0).spliceCount == 3);
+    CHECK(p.ringMeta(0).splices[1] == between);
+
+    // Loop on (1 s) with splice 1 still selected: the engine numbers the splices from the first
+    // mark in storage and ignores Loop (LiveSource::spliceAt), so its anchor is still splice 1's
+    // end, `between`, though no mark is inside the loop, where a capture's numbering looks
+    // (spliceSpan with Loop on gives the loop's window).
+    const std::array<gg::core::ParamEvent, 2> loopOn{
+        {{0, gg::core::layerSlot(gg::core::LayerParam::Loop, 0), false, 1.0},
+         {0, gg::core::layerSlot(gg::core::LayerParam::LoopLength, 0), false, 0.0}}};
+    run(32, loopOn, {});
+    run(32, {}, {});
+    ring.head = p.ringMeta(0).head;
+    ring.spliceCount = 3;
+    ring.splices[0] = first;
+    ring.splices[1] = between;
+    ring.splices[2] = second;
+    REQUIRE(second < ring.head - frames(1.0)); // every mark is older than the loop
+    CHECK(gg::ui::spliceSpan(ring, true, frames(1.0), 1).to == ring.head);
+    REQUIRE(gg::ui::spliceAnchor(ring, 1) == between);
+    const int64_t inSplice = first + frames(0.25);
+    const std::array<gg::core::CommandEvent, 1> mark4{
+        {{0, gg::core::CommandKind::AddSplice, 0,
+          gg::ui::spliceSeconds(gg::ui::spliceAnchor(ring, 1), inSplice, kRate)}}};
+    run(32, {}, mark4);
+    REQUIRE(p.ringMeta(0).spliceCount == 4);
+    CHECK(p.ringMeta(0).splices[1] == inSplice);
+}
+
+TEST_CASE("spliceAnchor numbers from the first mark in storage", "[ui]")
+{
+    // LiveSource::anchorAt: the head with no splice selected or no mark in storage
+    // ([head − N, head)); else the selected splice's end, the last one's the head, Loop ignored.
+    const int64_t head = frames(100.0);
+    const int64_t m0 = head - frames(20.0); // left storage
+    const int64_t m1 = head - frames(12.0);
+    const int64_t m2 = head - frames(8.0);
+    const gg::ui::RingView ring = ringOf(16.0, 100.0, {m0, m1, m2});
+    CHECK(gg::ui::spliceAnchor(ring, 0) == head);
+    CHECK(gg::ui::spliceAnchor(ring, 1) == m2);
+    CHECK(gg::ui::spliceAnchor(ring, 2) == head);
+    CHECK(gg::ui::spliceAnchor(ring, 9) == head);
+    CHECK(gg::ui::spliceAnchor(ringOf(16.0, 100.0, {m0}), 1) == head);
+    CHECK(gg::ui::anyMarkIn(ring, m1, m2));
+    CHECK_FALSE(gg::ui::anyMarkIn(ring, m1 + 1, m2));
+}
+
+TEST_CASE("a Live lane past 16 s reaches Position past 1", "[ui]")
+{
+    // Live Position runs to kPositionMax (300 s): on a lane spanning more than 16 s, the scan
+    // window and a body drag reach past 1, up to the Position of the lane's span.
+    LaneGeometry wide = fxLane(1600.0f); // 60 s across 1600 px
+    wide.ringSeconds = 60.0;
+    const float top = gg::ui::livePositionMax(wide);
+    CHECK(top > 1.0f);
+    CHECK_THAT(fxPositionSeconds(top), WithinAbs(60.0, 1e-3));
+    CHECK(gg::ui::livePositionMax(fxLane()) == 1.0f);
+    CHECK(gg::ui::livePositionMax(instrumentLane(96000)) == 1.0f);
+    LaneGeometry longest = wide;
+    longest.ringSeconds = 300.0;
+    CHECK_THAT(gg::ui::livePositionMax(longest), WithinAbs(gg::core::kPositionMax, 1e-6));
+    longest.ringSeconds = 1000.0;
+    CHECK(gg::ui::livePositionMax(longest) == gg::core::kPositionMax);
+
+    // The window's seconds are ParamMap's, past 1 too; past the span it pins to the left edge.
+    for (const float v : {0.5f, 1.0f, 1.1f, 1.2f})
+    {
+        INFO("position " << v);
+        const auto w = gg::ui::scanWindow(v, 0.0f, wide);
+        CHECK_THAT((1600.0 - w.x1) / 1600.0 * 60.0, WithinAbs(fxPositionSeconds(v), 1e-3));
+        CHECK_THAT(gg::ui::positionValueAtX(w.x1, wide), WithinAbs(v, 1e-5));
+    }
+    CHECK_THAT(gg::ui::scanWindow(1.0f, 0.0f, wide).x1,
+               WithinAbs(1600.0 * (1.0 - 16.0 / 60.0), 1e-2));
+    CHECK_THAT(gg::ui::scanWindow(top, 0.0f, wide).x1, WithinAbs(0.0, 1e-2));
+    CHECK(gg::ui::scanWindow(1.5f, 0.0f, wide).x1 == gg::ui::scanWindow(top, 0.0f, wide).x1);
+    // A drag past the left edge pins Position to the span's, not to 1.
+    CHECK(gg::ui::positionValueAtX(0.0f, wide) == top);
+    CHECK(gg::ui::positionValueAtX(-500.0f, wide) == top);
+    CHECK(gg::ui::positionValueAtX(-std::numeric_limits<float>::infinity(), wide) == top);
+    for (int i = 0; i <= 100; ++i)
+    {
+        const float x = 16.0f * static_cast<float>(i);
+        INFO("x " << x);
+        const float v = gg::ui::positionValueAtX(x, wide);
+        REQUIRE(v >= 0.0f);
+        REQUIRE(v <= top);
+        REQUIRE_THAT(gg::ui::scanWindow(v, 0.0f, wide).x1, WithinAbs(x, 1e-2));
+    }
+    // The ghost follows: an effective Position past 1 draws past 16 s.
+    const auto ghost = gg::ui::ghostWindow({1.0f, 0.0f}, {1.2f, 0.0f}, wide);
+    REQUIRE(ghost.has_value());
+    CHECK(ghost->x1 < gg::ui::scanWindow(1.0f, 0.0f, wide).x1);
+    // The instrument's lane still stops at 1, the file's end.
+    CHECK(gg::ui::scanWindow(1.3f, 0.0f, instrumentLane(96000)).x1 ==
+          gg::ui::scanWindow(1.0f, 0.0f, instrumentLane(96000)).x1);
 }

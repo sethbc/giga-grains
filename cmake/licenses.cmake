@@ -12,6 +12,7 @@
 # so call them from cmake/products.cmake (included after it), not from ui/.
 
 set(GG_EMBED_TEXT_SCRIPT ${CMAKE_CURRENT_LIST_DIR}/embed-text.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/pair-up.cmake)
 
 # gg_license_files(<out_files> <out_names>): the license texts' source paths and, paired with
 # them, the names gg-products publishes them under, in the installer's order:
@@ -53,20 +54,7 @@ function(gg_license_files out_files out_names)
         list(APPEND names ASIO-SDK-LICENSE.txt)
     endif ()
 
-    # ZIP_LISTS pads the shorter list with empty items, so a name without its file (or a file
-    # without its name) would slip through as an empty one: the two lists must pair up exactly.
-    list(LENGTH files file_count)
-    list(LENGTH names name_count)
-    if (NOT file_count EQUAL name_count)
-        message(FATAL_ERROR "gg_license_files: ${file_count} license texts but ${name_count} "
-                "names; each license text needs one name")
-    endif ()
-    foreach (source name IN ZIP_LISTS files names)
-        if (NOT EXISTS "${source}")
-            message(FATAL_ERROR "gg_license_files: the license text '${source}' (${name}) "
-                    "doesn't exist")
-        endif ()
-    endforeach ()
+    gg_check_pairs(gg_license_files "${files}" "${names}")
 
     set(${out_files} "${files}" PARENT_SCOPE)
     set(${out_names} "${names}" PARENT_SCOPE)
@@ -88,7 +76,7 @@ function(gg_add_notices target)
     add_custom_command(OUTPUT ${out}
             COMMAND ${CMAKE_COMMAND} "-DOUT=${out}" "-DFILES=${files}" "-DNAMES=${names}"
             -P ${GG_EMBED_TEXT_SCRIPT}
-            DEPENDS ${files} ${GG_EMBED_TEXT_SCRIPT}
+            DEPENDS ${files} ${GG_EMBED_TEXT_SCRIPT} ${CMAKE_CURRENT_LIST_DIR}/pair-up.cmake
             COMMENT "Embedding the license set into ${target} (Notices.cpp)"
             VERBATIM
             )

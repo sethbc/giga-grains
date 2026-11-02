@@ -18,6 +18,7 @@
 #include "NoticeSink.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LivePeaks.h"
+#include "gg/core/ParamMap.h"
 #include "gg/source/SourceMode.h"
 #include "gg/ui/UndoStack.h"
 
@@ -37,6 +38,12 @@ constexpr float kOffAlpha = 0.4f;
 
 /// The most grains the stress seam draws, whatever the variable says.
 constexpr uint32_t kMaxStressGrains = 1u << 20;
+
+/// A loop window's shade, and a selected splice's outline.
+constexpr float kLoopAlpha = 0.10f;
+constexpr float kSpliceAlpha = 0.8f;
+/// A lane this high or more numbers its marks.
+constexpr float kMarkNumberMinHeight = 40.0f;
 
 constexpr std::array<LayerParam, 5> kHeldParams{LayerParam::Position, LayerParam::Spray,
                                                 LayerParam::Pitch, LayerParam::PitchSpread,
@@ -86,6 +93,24 @@ GrainCanvas::GrainCanvas(const EditorContext &context) : context_(context)
     {
         stress_.resize(stressCount_);
     }
+    for (std::vector<float> &marks : marks_)
+    {
+        marks.reserve(gg::core::kMaxSplices); // a paint never grows them
+    }
+    showMenu = [this](juce::PopupMenu menu) {
+        menu.showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(menuArea_));
+    };
+    browse = [this](const Browse &b, std::function<void(const juce::File &)> done) {
+        chooser_ = std::make_unique<juce::FileChooser>(b.title, b.initial, b.patterns);
+        const int flags = juce::FileBrowserComponent::canSelectFiles |
+                          (b.save ? juce::FileBrowserComponent::saveMode |
+                                        juce::FileBrowserComponent::warnAboutOverwriting
+                                  : juce::FileBrowserComponent::openMode);
+        chooser_->launchAsync(flags, [done = std::move(done)](const juce::FileChooser &chooser) {
+            done(chooser.getResult());
+        });
+    };
 }
 
 GrainCanvas::~GrainCanvas()
@@ -165,20 +190,13 @@ bool GrainCanvas::liveLane(uint8_t layer) const
     {
         return snapshot_.lanes[layer].builtKind == static_cast<uint8_t>(gg::SourceMode::Live);
     }
-    // Inactive: the Source base value. A kind that isn't built draws as the product's default.
-    const float source = context_.baseValue
-                             ? context_.baseValue(gg::core::layerSlot(LayerParam::Source, layer))
-                             : 0.0f;
-    const int kind = std::isfinite(source) ? juce::roundToInt(source) : 0;
-    if (kind == static_cast<int>(gg::core::SourceKind::Sample))
-    {
-        return false;
-    }
-    if (kind == static_cast<int>(gg::core::SourceKind::Live))
-    {
-        return true;
-    }
-    return context_.mode == gg::core::Mode::Fx;
+    // Inactive: the kind the Source base value builds (gg::core::builtKind; carry-over row 336).
+    const ParamSlot slot = gg::core::layerSlot(LayerParam::Source, layer);
+    const float source = context_.baseValue ? context_.baseValue(slot) : 0.0f;
+    gg::core::ParamValues values{};
+    values[static_cast<std::size_t>(slot)] = std::isfinite(source) ? source : 0.0f;
+    return gg::core::builtKind(gg::core::sourceKindOf(values, layer), context_.mode) ==
+           gg::SourceMode::Live;
 }
 
 bool GrainCanvas::laneOn(uint8_t layer) const
@@ -197,7 +215,91 @@ bool GrainCanvas::laneFrozen(uint8_t layer, double now)
 
 SampleWaveform GrainCanvas::waveformOf(uint8_t layer) const
 {
-    return context_.sampleWaveformFor ? context_.sampleWaveformFor(layer) : SampleWaveform{};
+    if (layer >= kLaneCount)
+    {
+        return {};
+    }
+    std::optional<SampleWaveform> &wave = waves_[layer];
+    if (!wave)
+    {
+        wave = context_.sampleWaveformFor ? context_.sampleWaveformFor(layer) : SampleWaveform{};
+    }
+    return *wave;
+}
+
+RingView GrainCanvas::ringOf(uint8_t layer) const
+{
+    if (layer >= kLaneCount)
+    {
+        return {};
+    }
+    std::optional<RingView> &ring = rings_[layer];
+    if (!ring)
+    {
+        ring = context_.ringView ? context_.ringView(layer) : RingView{};
+    }
+    return *ring;
+}
+
+void GrainCanvas::forgetFrame() noexcept
+{
+    for (std::size_t layer = 0; layer < kLaneCount; ++layer)
+    {
+        waves_[layer].reset();
+        rings_[layer].reset();
+    }
+}
+
+double GrainCanvas::ringSecondsOf(uint8_t layer) const
+{
+    const RingView ring = ringOf(layer);
+    const double rate = context_.sampleRate;
+    if (ring.valid && ring.ringFrames > 0 && std::isfinite(rate) && rate > 0.0)
+    {
+        return static_cast<double>(ring.ringFrames) / rate;
+    }
+    return kFallbackRingSeconds;
+}
+
+gg::core::RingParams GrainCanvas::ringParamsOf(uint8_t layer) const
+{
+    gg::core::ParamValues values{};
+    for (const LayerParam p : {LayerParam::RingLength, LayerParam::Loop, LayerParam::LoopLength,
+                               LayerParam::Overdub, LayerParam::Splice})
+    {
+        const ParamSlot slot = gg::core::layerSlot(p, layer);
+        values[static_cast<std::size_t>(slot)] =
+            context_.baseValue ? context_.baseValue(slot)
+                               : gg::core::paramMeta(slot, context_.mode).defaultVal;
+    }
+    return gg::core::toRingParams(values, layer);
+}
+
+int64_t GrainCanvas::loopFramesOf(const gg::core::RingParams &ring,
+                                  double sampleRate) const noexcept
+{
+    const double frames = std::min(ring.loopSeconds * sampleRate, 0x1.0p40);
+    return std::isfinite(frames) ? std::max<int64_t>(1, std::llround(frames)) : 1;
+}
+
+int64_t GrainCanvas::laneHead(uint8_t layer, const RingView &ring) const noexcept
+{
+    return haveSnapshot_ && context_.clock != nullptr ? head_[layer] : ring.head;
+}
+
+float GrainCanvas::spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const
+{
+    if (!frame)
+    {
+        return 0.0f; // the keyboard's: at the anchor
+    }
+    RingView ring = ringOf(layer);
+    ring.head = laneHead(layer, ring);
+    const LaneGeometry lane = geometry(layer, 1.0f);
+    // The anchor as the engine takes it (Processor.h's CommandEvent, LiveSource::anchorAt): the
+    // head, or the selected splice's end, numbered from the first mark in storage, Loop ignored.
+    const int64_t anchor = spliceAnchor(ring, ringParamsOf(layer).splice);
+    return spliceSeconds(anchor, *frame, lane.sampleRate);
 }
 
 LaneGeometry GrainCanvas::geometry(uint8_t layer, float scale) const
@@ -209,7 +311,7 @@ LaneGeometry GrainCanvas::geometry(uint8_t layer, float scale) const
                    .pixelScale = scale,
                    .fxLane = liveLane(layer),
                    .sampleRate = kFallbackRate,
-                   .ringSeconds = kRingSeconds,
+                   .ringSeconds = kFallbackRingSeconds,
                    .sourceFrames = 0,
                    .top = static_cast<float>(begin)};
     if (g.fxLane)
@@ -218,6 +320,7 @@ LaneGeometry GrainCanvas::geometry(uint8_t layer, float scale) const
         {
             g.sampleRate = context_.sampleRate;
         }
+        g.ringSeconds = ringSecondsOf(layer); // its ring's length (VW-P2d, amended)
     }
     else
     {
@@ -283,6 +386,7 @@ ScanRectValues GrainCanvas::shownValues(uint8_t layer, double now)
 
 void GrainCanvas::renderFrame()
 {
+    forgetFrame(); // a new frame fetches each lane's outline and ring view once
     // The engine's side: null while the plugin is inactive. The stress seam replaces it.
     const std::atomic<int64_t> *clock = stressMode() ? nullptr : context_.clock;
     if (clock != clockSource_)
@@ -461,6 +565,7 @@ void GrainCanvas::paint(juce::Graphics &g)
 
 void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
 {
+    marks_[layer].clear(); // what this paint draws, even when it draws nothing
     const juce::Rectangle<int> b = laneBounds(layer);
     if (b.isEmpty())
     {
@@ -499,6 +604,10 @@ void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
     else
     {
         drawPeaks(g, layer, lane, pal);
+        if (lane.fxLane)
+        {
+            drawRing(g, layer, lane, pal);
+        }
         const juce::Colour colour = pal.layers[layer];
         const WindowRect rect = scanRect(shownValues(layer, now), lane);
         drawRect(g, rect, false, lane.fxLane, colour);
@@ -589,13 +698,14 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         const bool same = strip.valid && strip.source == source && strip.key == key &&
                           strip.top == static_cast<int>(lane.top) && strip.width == columns &&
                           strip.height == static_cast<int>(lane.height) &&
-                          strip.rate == lane.sampleRate;
+                          strip.rate == lane.sampleRate && strip.span == lane.ringSeconds;
         strip.source = source;
         strip.key = key;
         strip.top = static_cast<int>(lane.top);
         strip.width = columns;
         strip.height = static_cast<int>(lane.height);
         strip.rate = lane.sampleRate;
+        strip.span = lane.ringSeconds;
         strip.valid = true;
         return !same;
     };
@@ -612,8 +722,10 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         // Frames head − span .. head across the lane (peakColumnFrames), but none past the last
         // published block (written) and none older than the strip's oldest whole bucket. That
         // is measured from head, at least written and nearer the writer, which may since have
-        // overwritten the buckets just older than written − frames(). Those columns stay empty.
-        const double framesPerColumn = kRingSeconds * lane.sampleRate / columns;
+        // overwritten the buckets just older than written − frames(). Those columns stay empty,
+        // as do those of a ring longer than the strip holds (its newest frames(); the grains
+        // still draw there).
+        const double framesPerColumn = lane.ringSeconds * lane.sampleRate / columns;
         const int64_t head = head_[layer];
         if (stale(peaks,
                   static_cast<int64_t>(std::floor(static_cast<double>(head) / framesPerColumn))))
@@ -670,6 +782,85 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
     }
     g.setColour(pal.peaks.withAlpha(0.55f));
     g.fillRectList(strip.bars);
+}
+
+void GrainCanvas::drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane,
+                           const Palette &pal)
+{
+    RingView ring = ringOf(layer);
+    if (!ring.valid || !usable(lane))
+    {
+        return;
+    }
+    // Spans that end at the head end at the head the lane draws at (the grains'), not at the
+    // last published one.
+    const int64_t head = laneHead(layer, ring);
+    ring.head = head;
+    headDrawn_[layer] = head;
+    const double rate = lane.sampleRate;
+    const gg::core::RingParams params = ringParamsOf(layer);
+    const int64_t loopFrames = loopFramesOf(params, rate);
+    const int64_t span = std::llround(lane.ringSeconds * rate);
+    const auto xOf = [&](int64_t frame) {
+        return ringFrameX(lane, head, std::clamp(frame, head - span, head), rate).value_or(0.0f);
+    };
+    const float top = lane.top;
+    const float height = lane.height;
+    const RingSpan window = spliceSpan(ring, params.loop, loopFrames, 0);
+    // 1. The loop window, while Loop is on.
+    if (params.loop)
+    {
+        const float x0 = xOf(window.from);
+        g.setColour(pal.window.withAlpha(kLoopAlpha));
+        g.fillRect(juce::Rectangle<float>(x0, top, std::max(xOf(window.to) - x0, 1.0f), height));
+    }
+    // 2. The selected splice, while marks inside the window make it one: outlined, as a capture
+    // of it takes it (MediaSession::spanOf, Loop included).
+    const uint32_t count = std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices);
+    if (params.splice >= 1 && anyMarkIn(ring, window.from, window.to))
+    {
+        const RingSpan selected = spliceSpan(ring, params.loop, loopFrames, params.splice);
+        const float x0 = xOf(selected.from);
+        g.setColour(pal.window.withAlpha(kSpliceAlpha));
+        g.drawRect(juce::Rectangle<float>(x0, top + 1.0f, std::max(xOf(selected.to) - x0, 1.0f),
+                                          std::max(height - 2.0f, 1.0f)),
+                   1.5f);
+    }
+    // 3. Each mark on the lane: a 1 px rule, numbered from the oldest inside the window (D6).
+    const bool numbered = height >= kMarkNumberMinHeight;
+    g.setFont(juce::FontOptions(10.0f));
+    uint32_t number = 0;
+    for (uint32_t k = 0; k < count; ++k)
+    {
+        const int64_t mark = ring.splices[k];
+        const bool inside = mark >= window.from && mark < window.to;
+        number += inside ? 1u : 0u;
+        const std::optional<float> x = ringFrameX(lane, head, mark, rate);
+        if (!x)
+        {
+            continue; // in the future (a stale head) or older than the lane
+        }
+        marks_[layer].push_back(*x);
+        g.setColour(pal.laneRule);
+        g.fillRect(juce::Rectangle<float>(*x, top, 1.0f, height));
+        if (numbered && inside)
+        {
+            g.setColour(pal.laneText);
+            g.drawText(juce::String(number),
+                       juce::Rectangle<float>(*x + 2.0f, top + 1.0f, 20.0f, 12.0f),
+                       juce::Justification::centredLeft, false);
+        }
+    }
+}
+
+std::vector<float> GrainCanvas::marksDrawn(uint8_t layer) const
+{
+    return layer < kLaneCount ? marks_[layer] : std::vector<float>{};
+}
+
+int64_t GrainCanvas::headDrawn(uint8_t layer) const noexcept
+{
+    return layer < kLaneCount ? headDrawn_[layer] : 0;
 }
 
 void GrainCanvas::drawRect(juce::Graphics &g, const WindowRect &r, bool ghost, bool oneSided,
@@ -743,9 +934,37 @@ void GrainCanvas::mouseMove(const juce::MouseEvent &e)
 
 void GrainCanvas::mouseDown(const juce::MouseEvent &e)
 {
+    forgetFrame(); // what the press lands on, as of now
+    if (e.mods.isPopupMenu())
+    {
+        // The lane menu (VW-P2a): it selects the lane and begins no drag.
+        const int found = laneAt(e.position.x, e.position.y);
+        if (found < 0 || drag_ != DragTarget::None)
+        {
+            return;
+        }
+        const auto layer = static_cast<uint8_t>(found);
+        setSelectedLayer(layer);
+        if (onSelectLayer)
+        {
+            onSelectLayer(layer);
+        }
+        const LaneGeometry lane = geometry(layer, 1.0f);
+        const RingView ring = ringOf(layer);
+        std::optional<int64_t> frame;
+        if (lane.fxLane && usable(lane) && ring.valid)
+        {
+            frame =
+                ringFrameAt(lane, laneHead(layer, ring),
+                            e.position.x - static_cast<float>(kLaneHeaderWidth), lane.sampleRate);
+        }
+        menuArea_ = juce::Rectangle<int>(e.getScreenX(), e.getScreenY(), 1, 1);
+        openLaneMenu(layer, frame);
+        return;
+    }
     if (!e.mods.isLeftButtonDown())
     {
-        return; // only the primary button drags; a right-click is no gesture
+        return; // only the primary button drags
     }
     if (drag_ != DragTarget::None)
     {
@@ -831,11 +1050,12 @@ void GrainCanvas::beginDragGesture(Held which)
     }
 }
 
-void GrainCanvas::recordBegin(ParamSlot slot, float before)
+void GrainCanvas::recordBegin(ParamSlot slot, float before, bool nudge)
 {
     if (context_.undo != nullptr)
     {
-        context_.undo->beginGesture(slot, before, gg::core::paramMeta(slot, context_.mode).name);
+        context_.undo->beginGesture(slot, before, gg::core::paramMeta(slot, context_.mode).name,
+                                    {.nudge = nudge, .timeSeconds = wallSeconds()});
     }
 }
 
@@ -847,11 +1067,12 @@ void GrainCanvas::recordEnd(ParamSlot slot, float after)
     }
 }
 
-void GrainCanvas::gestureTo(uint8_t layer, Held which, float before, float value, double now)
+void GrainCanvas::gestureTo(uint8_t layer, Held which, float before, float value, double now,
+                            bool nudge)
 {
     const ParamSlot slot = slotOf(layer, which);
     HeldValue &held = held_[layer][which];
-    recordBegin(slot, before);
+    recordBegin(slot, before, nudge);
     held.begin();
     if (context_.beginGesture)
     {
@@ -966,10 +1187,20 @@ bool GrainCanvas::endDragIfAny()
 
 bool GrainCanvas::keyPressed(const juce::KeyPress &key)
 {
+    forgetFrame();
     const int code = key.getKeyCode();
     if (code == juce::KeyPress::escapeKey)
     {
         return endDragIfAny();
+    }
+    if (code == juce::KeyPress::F10Key && key.getModifiers().isShiftDown() &&
+        drag_ == DragTarget::None)
+    {
+        // The keyboard lane's menu (VW-P2a): its marks go at the anchor.
+        menuArea_ = getScreenBounds().getIntersection(
+            laneBounds(selected_).translated(getScreenX(), getScreenY()));
+        openLaneMenu(selected_, std::nullopt);
+        return true;
     }
     const bool horizontal = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
     const bool vertical = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
@@ -990,7 +1221,7 @@ bool GrainCanvas::keyPressed(const juce::KeyPress &key)
     const float before = shown(selected_, which, now);
     const float value = std::clamp(before + sign * ((meta.maxVal - meta.minVal) / 100.0f),
                                    meta.minVal, meta.maxVal);
-    gestureTo(selected_, which, before, value, now);
+    gestureTo(selected_, which, before, value, now, true);
     repaint();
     return true;
 }
@@ -1001,6 +1232,7 @@ void GrainCanvas::focusLost(FocusChangeType) { repaint(); }
 
 void GrainCanvas::mouseDoubleClick(const juce::MouseEvent &e)
 {
+    forgetFrame();
     if (!e.mods.isLeftButtonDown())
     {
         return;
@@ -1068,13 +1300,19 @@ void GrainCanvas::filesDropped(const juce::StringArray &files, int x, int y)
         postNotice(*this, context_, notSampleFileNotice(files[0]).toStdString());
         return;
     }
-    const std::string path = files[0].toStdString();
-    if (context_.loadSampleFor && context_.loadSampleFor(layer, path))
+    // Every lane takes a sample, in both products (VW-P2c).
+    forgetFrame();
+    const bool live = liveLane(layer); // the kind built before the load
+    if (!context_.loadSampleFor || !context_.loadSampleFor(layer, files[0].toStdString()))
     {
         return;
     }
-    postNotice(*this, context_,
-               std::string("layer ") + kLayerLetters[layer] +
-                   " takes a sample after the session format's next version");
+    if (live)
+    {
+        // A Live layer keeps reading its ring: the drop doesn't switch its Source.
+        const std::string letter(1, kLayerLetters[layer]);
+        postNotice(*this, context_,
+                   letter + "'s sample is loading: set " + letter + " Source to Sample to play it");
+    }
 }
 } // namespace gg::ui

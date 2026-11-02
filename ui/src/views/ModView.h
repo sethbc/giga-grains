@@ -27,7 +27,8 @@ DropResult dropSourceOn(juce::Component &target, const EditorContext &context,
 
 /// The Mod view (M2 sub-project 6's spec §6.6; component ID "view.mod"): the compact layer
 /// strip, the source strip of 24 chips, the selected layer's Edit panels in mod mode, and the
-/// route list at the right (240 px).
+/// route list at the right (240 px). A layer change while the view is hidden rebuilds the Edit
+/// panels when it is shown (EditView, row 335).
 ///
 /// The view is a drag-and-drop container for its chips. A chip dropped on a control routes it
 /// (dropSourceOn, with the control's layer): one setRoutes and one undo entry, or a notice when
@@ -53,6 +54,7 @@ class ModView final : public juce::Component, public juce::DragAndDropContainer
     /// 30 Hz: the strip, the panels' controls and rings, and the list.
     void refresh();
 
+    void visibilityChanged() override;
     void resized() override;
 
   private:

@@ -5,10 +5,13 @@
 #include "AboutBox.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <string_view>
 
-#include "Palette.h"
 #include "gg/core/Version.h"
 #include "gg/ui/Notices.h"
+
+#include "Palette.h"
 
 namespace gg::ui
 {
@@ -130,8 +133,8 @@ AboutBox::AboutBox(const std::string &productName, const std::string &formatName
     addAndMakeVisible(close_);
 
     applyPalette();
+    // Selecting the first row calls selectNotice(0), which shows it: once, here.
     list_.selectRow(0, true, true);
-    showSelected();
 }
 
 AboutBox::~AboutBox() = default;

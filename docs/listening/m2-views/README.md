@@ -10,7 +10,7 @@ the record now and used at M2's close (sub-project 7). It has three parts:
 - a **host checklist** for Ableton Live 12 and Bitwig Studio.
 
 The spec is `docs/superpowers/specs/2026-10-30-m2-views-design.md`: the frame and Perform view are
-its §6.2 and §6.3, the Edit, Mod and FX views §6.4 to §6.7, the screenshots §6.13 and this pack §11.
+its §6.2 and §6.3, the Edit, Mod and FX views §6.4 to §6.7, the screenshots §6.13 and this pack §11; PR 2's additions (the ring's lane menu, the sample strip and the memory readout) are in §6.3 and §16.
 
 ## The screenshots
 
@@ -23,8 +23,9 @@ build/release/tools/gg-snap/gg-snap build/release/snapshots [--sizes 960x600,640
 
 For each product (`fx`, `inst`), view (`perform`, `edit`, `mod`, `fx`), theme (`dark`, `light`) and
 size it writes `<product>-<view>-<theme>-<w>x<h>.png`: 32 files with the default two sizes. What
-the pictures show: the instrument has a generated 2 s sine loaded; layers B and C are on in both
-products; one route (LFO 1 to layer A's Pitch) is added to the factory routes; 200 blocks have
+the pictures show: the instrument has a generated 2 s sine on layer A, and both products one on
+layer B (the FX's layer B reads it); the FX's layer A has Loop on and two splice marks; layers B
+and C are on in both products; one route (LFO 1 to layer A's Pitch) is added to the factory routes; 200 blocks have
 run, so the canvas has grains, and it draws the synthetic 2,048-grain workload (`GG_STRESS_GRAINS`)
 rather than the product's own grains. The per-machine settings are a scratch file, so it never
 touches yours. It exits 0, 1 with a message, or 2 for bad usage.
@@ -40,12 +41,13 @@ both sizes, from the universal Release build.
 | Giga Grains, dark | [inst-perform-dark](snapshots/inst-perform-dark-960x600.png) | [inst-edit-dark](snapshots/inst-edit-dark-960x600.png) | [inst-mod-dark](snapshots/inst-mod-dark-960x600.png) | [inst-fx-dark](snapshots/inst-fx-dark-960x600.png) |
 | Giga Grains, light | [inst-perform-light](snapshots/inst-perform-light-960x600.png) | [inst-edit-light](snapshots/inst-edit-light-960x600.png) | [inst-mod-light](snapshots/inst-mod-light-960x600.png) | [inst-fx-light](snapshots/inst-fx-light-960x600.png) |
 
+Reading the pictures: the pale gray, full-width band in a Sample lane (lane B in both products, and lane A in the instrument) is the sample's outline, here the peaks of a constant-amplitude 0.5 sine, so it is a flat band, not a waveform. In the Mod view the two vertical scrollbars are the Edit panels' viewport (content below the fold) and the route list's own, not a doubled one.
+
 Look for: the four lanes in the layer colors (Okabe-Ito: A orange, B sky blue, C green, D pink),
 the pad's corners (A, B, C, D) and handle, the macro row, undo and redo and the theme switch in the
 header; and in the light theme, which parts stay dark by design (the lanes, D9) and whether
-everything else reads. The instrument's lanes B
-to D say "Load a sample, or drop one here" (they take a sample only after the session format's next
-version).
+everything else reads. The instrument's lanes C
+and D say "Load a sample, or drop one here"; any lane takes a dropped file (PR 2).
 
 ## Rendering the files
 
@@ -103,5 +105,19 @@ and VST3 and AU in Live. Note the host and format of anything that fails.
 - [ ] **The theme switch,** and a second instance following it; the light theme's legibility.
 - [ ] **The keyboard:** Tab through a view; arrows on a knob, on the pad and on the canvas.
 - [ ] **The About box:** the version, the notices scroll, the license texts.
-- [ ] The memory readout, the FX's loader strip and lanes B to D's drops, record, capture and splice
-  marks (PR 2's, added to the list when PR 2 lands).
+- [ ] **PR 2's panels:** the Ring panel (Length, Loop, Loop Length, Overdub, Splice) in Edit, and
+  the FX view's Delay, Reverb, Limiter and Output panels in the chain's order; the Filter panel's
+  two bus lines.
+- [ ] **The memory readout and cap:** "N MB of 1 GB" in Perform's strip; a lower cap from its
+  menu shows the usage over it in the notice color and refuses the next load; the cap survives
+  save and reload and is no undo entry.
+- [ ] **The sample strip for every layer in both products:** it follows the selected layer in
+  Perform and Edit, in the instrument and in the FX; Load, Relink, Sample folder and Collect work;
+  below 900 px the last two sit in the "..." menu.
+- [ ] **Drops on lanes B to D:** a file dropped on each lane loads into that lane's layer; on a
+  Live layer the notice says to set its Source to Sample; a non-sample file gives the notice.
+- [ ] **The lane menu** (right-click on a lane, or Shift+F10 on the keyboard lane): Add splice
+  mark here, Clear splice marks, Loop, Capture to layer A to D and Save capture as...; the marks
+  draw numbered over a Live lane, the loop window shows while Loop is on, and a Capture plays on
+  its layer; Loop is one undo entry, a mark or a capture none.
+- [ ] **Held arrow keys** on a knob, the pad and the canvas make one undo entry, not a flood.

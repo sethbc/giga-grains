@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include "UiSettings.h"
+#include "SettingsPath.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -14,25 +15,6 @@ namespace gg::plugin
 {
 namespace
 {
-/// The per-machine settings file: $GG_SETTINGS_FILE when set and not empty, else the user's
-/// (gg::media::defaultSettingsPath), as GigaGrainsPlugin.cpp's settingsFile() finds it for the
-/// loader. Empty when neither can be found.
-std::filesystem::path settingsFile()
-{
-#if defined(_WIN32)
-    if (const wchar_t *file = ::_wgetenv(L"GG_SETTINGS_FILE"); file != nullptr && *file != 0)
-    {
-        return std::filesystem::path(file);
-    }
-#else
-    if (const char *file = std::getenv("GG_SETTINGS_FILE"); file != nullptr && *file != 0)
-    {
-        return std::filesystem::path(file);
-    }
-#endif
-    return gg::media::defaultSettingsPath();
-}
-
 constexpr const char *kLight = "light";
 constexpr const char *kDark = "dark";
 } // namespace
