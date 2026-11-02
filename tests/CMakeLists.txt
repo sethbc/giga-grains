@@ -191,8 +191,13 @@ include(Catch)
 # A case tagged [serial] measures time (or memory) and must not run beside the others: it is
 # discovered on its own, with RUN_SERIAL (CLAUDE.md, "Tests run in parallel").
 catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
-catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+catch_discover_tests(gg-tests TEST_SPEC "[serial]~[crawl48]" ADD_TAGS_AS_LABELS
         PROPERTIES RUN_SERIAL TRUE)
+# The crawl of the 48 packed factory presets (M2 sub-project 5's spec §10) measures time and reads
+# the presets the fixture presets_built packs (golden/presets/presets-built.cmake), so it is
+# serial and requires that fixture: it can't pass on an empty folder (it asserts 48 were seen).
+catch_discover_tests(gg-tests TEST_SPEC "[crawl48]" ADD_TAGS_AS_LABELS
+        PROPERTIES RUN_SERIAL TRUE FIXTURES_REQUIRED presets_built)
 
 # GG_FORCE_SSE (M2 engine spec §6.12): the hidden case "GG_FORCE_SSE in the environment forces the
 # 4-wide table", alone in a process whose environment sets the variable, so dispatch() resolves
@@ -602,6 +607,8 @@ add_test(NAME presets_built
         -P ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/presets-built.cmake)
 set_tests_properties(presets_built PROPERTIES LABELS "golden;presets"
         FIXTURES_REQUIRED content FIXTURES_SETUP presets_built)
+# Where the fixture leaves the packed presets, for the plugin crawl test (plugin/discovery_tests.cpp).
+target_compile_definitions(gg-tests PRIVATE GG_BUILT_PRESETS_DIR="${GG_GOLDEN_MEDIA_DIR}/presets")
 file(GLOB GG_PRESET_GOLDEN_SPECS CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/cases/*.json)
 if (NOT GG_PRESET_GOLDEN_SPECS)
