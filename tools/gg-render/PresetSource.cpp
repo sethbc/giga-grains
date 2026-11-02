@@ -15,9 +15,13 @@
 #include "Render.h"
 #include "SpecReaders.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/Mutate.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Preset.h"
+#include "gg/core/PresetInfo.h"
 #include "gg/core/SessionState.h"
+#include "gg/media/ContentPaths.h"
+#include "gg/media/Sample.h"
 
 namespace gg::render
 {
@@ -105,10 +109,20 @@ PresetSource readSource(const json &j)
         {
             for (const auto &item : params.items())
             {
-                if (!paramSlotNamedIn(item.key(), *product))
+                const auto slot = paramSlotNamedIn(item.key(), *product);
+                if (!slot)
                 {
                     throw SpecError(fmt::format("params.{} is not a parameter of {}", item.key(),
                                                 productName(*product)));
+                }
+                // A preset load keeps the instance's ring parameters (the program manager's
+                // ruling), so a source setting one would mean nothing.
+                if (gg::core::isRingParam(*slot))
+                {
+                    throw SpecError(fmt::format(
+                        "params.{} is a ring parameter, which a preset doesn't set (a load keeps "
+                        "the instance's)",
+                        item.key()));
                 }
             }
         }
@@ -148,14 +162,6 @@ std::string packPreset(const PresetSource &source,
                        const std::optional<std::filesystem::path> &contentDir, std::string &error)
 {
     error.clear();
-    // Task 14 resolves the samples against contentDir into MEDI version 2's content-relative
-    // entries (spec §6.6, §6.12).
-    static_cast<void>(contentDir);
-    if (!source.samples.empty())
-    {
-        error = "samples need MEDI version 2 (after sub-project 2 merges)";
-        return {};
-    }
     const gg::core::Mode mode = source.info.product;
     gg::core::SessionState state = gg::core::initState(mode);
     for (const auto &[name, value] : source.params)
@@ -176,6 +182,74 @@ std::string packPreset(const PresetSource &source,
         error = e.what();
         return {};
     }
+    // Each sample by its content-relative reference (MEDI version 2's, spec §6.6, §6.12): the
+    // file under contentDir, checked and read for its fingerprint, format, channels, rate and
+    // frames; no absolute or sample-folder path, which would be this machine's.
+    for (const auto &[layer, reference] : source.samples)
+    {
+        const char letter = static_cast<char>('A' + layer);
+        if (!contentDir)
+        {
+            error =
+                fmt::format("the samples need --content-dir (layer {}'s is {})", letter, reference);
+            return {};
+        }
+        if (!gg::media::isContentRelativePath(reference))
+        {
+            error =
+                fmt::format("layer {}'s sample {} isn't a valid content-relative path (relative, "
+                            "with / separators, no .. segment, no backslash)",
+                            letter, reference);
+            return {};
+        }
+        const std::filesystem::path roots[] = {*contentDir};
+        const auto file = gg::media::resolveContentPath(reference, roots);
+        if (!file)
+        {
+            error = fmt::format("layer {}'s sample {} was not found under --content-dir {}", letter,
+                                reference, utf8FromPath(*contentDir));
+            return {};
+        }
+        gg::media::LoadedSample loaded =
+            gg::media::loadSample(*file, {}, gg::media::kDefaultDecodeBound);
+        if (!loaded.decoded)
+        {
+            error = fmt::format("layer {}'s sample {}: {}", letter, reference, loaded.error);
+            return {};
+        }
+        gg::core::MediaEntry entry = std::move(loaded.entry);
+        entry.absolutePath.clear();
+        entry.relativePath.clear();
+        entry.contentPath = reference;
+        entry.layer = layer;
+        state.samples[layer] = std::move(entry);
+    }
     return gg::core::encodePreset(source.info, state);
+}
+
+std::string mutatePreset(std::string_view bytes, float amount, uint32_t counter, std::string &error)
+{
+    error.clear();
+    if (!(amount >= 0.0f && amount <= 1.0f))
+    {
+        error = fmt::format("the amount must be from 0 to 1, not {}", amount);
+        return {};
+    }
+    gg::core::PresetInfo info;
+    if (!gg::core::presetInfoOf(bytes, info))
+    {
+        error = "it isn't a preset file this version reads";
+        return {};
+    }
+    const gg::core::Mode mode = info.product;
+    gg::core::SessionState state;
+    if (!gg::core::readPreset(bytes, mode, info, state))
+    {
+        error = "the preset doesn't load";
+        return {};
+    }
+    const gg::core::LockSet locks = gg::core::defaultMutateLocks(state.values, mode);
+    gg::core::mutate(state.values, locks, amount, 0, counter, mode, state.values);
+    return gg::core::encodePreset(info, state);
 }
 } // namespace gg::render

@@ -126,6 +126,16 @@ void ModView::refresh()
     m.list.refresh();
 }
 
+void ModView::visibilityChanged()
+{
+    // The Edit panels waited for the view to show if a layer change came while it was hidden
+    // (row 335): their own visibility didn't change, so they are told here.
+    if (isVisible())
+    {
+        impl_->edit.refresh();
+    }
+}
+
 void ModView::resized()
 {
     Impl &m = *impl_;

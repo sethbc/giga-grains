@@ -5,7 +5,9 @@
 // gg-render's preset sources and their packer (PresetSource.h; M2 sub-project 5's spec §6.6), and
 // renders through a packed preset (the spec's "preset" key, §6.10).
 
+#include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,10 +27,13 @@
 #include "Render.h"
 #include "RenderSpec.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/Mutate.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
 #include "gg/core/SessionState.h"
+#include "gg/media/Sha256.h"
+#include "media/AudioFixtures.h"
 #include "support/Utf8.h"
 
 using Catch::Matchers::ContainsSubstring;
@@ -122,6 +127,64 @@ nlohmann::json fxSpecJson()
 bool bitIdentical(const std::vector<float> &a, const std::vector<float> &b)
 {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+/// The content-relative reference of the test sample contentWith writes.
+constexpr const char *kToneRef = "Samples/Test/tone.wav";
+
+/// A scratch content root of this file's own holding kToneRef: 1 s of makeTestAudio's stereo
+/// sines at 44.1 kHz, 24-bit (so a render at 48 kHz converts it). Generated, never committed.
+std::filesystem::path contentWith(const std::string &name)
+{
+    const auto root = scratch(name) / "content";
+    const auto file = root / "Samples" / "Test" / "tone.wav";
+    std::filesystem::create_directories(file.parent_path());
+    gg::test::writeFile(file, gg::test::wavBytes(gg::test::makeTestAudio(2, 44100, 44100),
+                                                 gg::test::SampleFormat::Int24));
+    return root;
+}
+
+/// `source` packed with `contentDir`, which must succeed.
+std::string packWith(const PresetSource &source, const std::filesystem::path &contentDir)
+{
+    std::string error;
+    std::string bytes = gg::render::packPreset(source, contentDir, error);
+    INFO(error);
+    REQUIRE(error.empty());
+    REQUIRE_FALSE(bytes.empty());
+    return bytes;
+}
+
+/// The instrument's test source with layer A's sample kToneRef (and layer C's too when
+/// `twoLayers`).
+PresetSource instWithSample(bool twoLayers = false)
+{
+    auto j = nlohmann::json::parse(readText(fixture("inst-test.json")));
+    j["samples"] = {{"A", kToneRef}};
+    if (twoLayers)
+    {
+        j["samples"]["C"] = kToneRef;
+    }
+    std::string error;
+    auto source = gg::render::parsePresetSource(j.dump(), error);
+    INFO(error);
+    REQUIRE(source.has_value());
+    return std::move(*source);
+}
+
+/// What render() throws as BadInput for `spec` with `options`; fails the test if it doesn't.
+std::string badInputOf(const nlohmann::json &j, const gg::render::RenderOptions &options = {})
+{
+    try
+    {
+        gg::render::render(parseSpec(j), nullptr, options);
+    }
+    catch (const gg::render::BadInput &e)
+    {
+        return std::string(e.what());
+    }
+    FAIL("render() didn't throw BadInput");
+    return std::string();
 }
 } // namespace
 
@@ -277,19 +340,187 @@ TEST_CASE("a packed preset reads back as its source", "[render]")
     }
 }
 
-TEST_CASE("a preset source naming samples doesn't pack before MEDI version 2", "[render]")
+TEST_CASE("a packed preset names its samples by their content-relative reference", "[render]")
 {
-    auto j = fxTestJson();
-    j["samples"] = {{"A", "Samples/Voices/alto-ah.flac"}};
-    std::string error;
-    const auto source = gg::render::parsePresetSource(j.dump(), error);
-    REQUIRE(source.has_value());
-    for (const auto &contentDir :
-         {std::optional<std::filesystem::path>{}, std::optional{scratch("content")}})
+    // Spec §6.6, §6.12: with --content-dir the packer checks each sample exists and fills its
+    // MEDI version 2 entry from the file: the reference, the fingerprint, format, channels, rate
+    // and frames; no absolute or sample-folder path (they are the packing machine's).
+    const auto root = contentWith("pack-samples");
+    const PresetSource source = instWithSample(true);
+    const std::string bytes = packWith(source, root);
+    const auto hash = gg::media::hashFile(root / "Samples" / "Test" / "tone.wav");
+    REQUIRE(hash.has_value());
+
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    REQUIRE(gg::core::readPreset(bytes, Mode::Instrument, info, state));
+    for (const uint8_t layer : {uint8_t{0}, uint8_t{2}})
     {
-        CHECK(gg::render::packPreset(*source, contentDir, error).empty());
-        CHECK(error == "samples need MEDI version 2 (after sub-project 2 merges)");
+        INFO("layer " << int{layer});
+        REQUIRE(state.samples[layer].has_value());
+        const gg::core::MediaEntry &entry = *state.samples[layer];
+        CHECK(entry.contentPath == kToneRef);
+        CHECK(entry.sha256Hex == hash->sha256Hex);
+        CHECK(entry.fileSize == hash->size);
+        CHECK(entry.format == "wav");
+        CHECK(entry.channels == 2u);
+        CHECK(entry.sampleRate == 44100.0);
+        CHECK(entry.frames == 44100);
+        CHECK(entry.layer == layer);
+        CHECK(entry.absolutePath.empty());
+        CHECK(entry.relativePath.empty());
+        CHECK_FALSE(entry.embed);
+        CHECK(entry.audioId == 0u);
     }
+    CHECK_FALSE(state.samples[1].has_value());
+    CHECK_FALSE(state.samples[3].has_value());
+    // The same bytes on every pack (nothing of the machine's in them).
+    CHECK(packWith(source, root) == bytes);
+}
+
+TEST_CASE("a preset source's samples need --content-dir and a file under it", "[render]")
+{
+    const PresetSource source = instWithSample();
+    std::string error;
+    CHECK(gg::render::packPreset(source, std::nullopt, error).empty());
+    CHECK_THAT(error, ContainsSubstring("--content-dir"));
+    CHECK_THAT(error, ContainsSubstring(kToneRef));
+
+    const auto empty = scratch("pack-missing") / "content";
+    std::filesystem::create_directories(empty);
+    CHECK(gg::render::packPreset(source, empty, error).empty());
+    CHECK_THAT(error, ContainsSubstring(kToneRef));
+    CHECK_THAT(error, ContainsSubstring("not found"));
+
+    // A reference may not leave its root.
+    auto j = nlohmann::json::parse(readText(fixture("inst-test.json")));
+    j["samples"] = {{"A", "../content/Samples/Test/tone.wav"}};
+    const auto outside = gg::render::parsePresetSource(j.dump(), error);
+    REQUIRE(outside.has_value());
+    CHECK(gg::render::packPreset(*outside, contentWith("pack-outside"), error).empty());
+    CHECK_THAT(error, ContainsSubstring("isn't a valid content-relative path"));
+}
+
+TEST_CASE("a preset source may not set a ring parameter", "[render]")
+{
+    // The program manager's ruling: a preset load keeps each layer's ring parameters, so a
+    // factory source sets none.
+    for (const char *name :
+         {"A Ring Length", "A Loop", "B Loop", "C Loop Length", "D Overdub", "A Splice"})
+    {
+        INFO(name);
+        auto j = fxTestJson();
+        j["params"][name] = 1;
+        const std::string error = rejection(j);
+        CHECK_THAT(error, ContainsSubstring(std::string("params.") + name));
+        CHECK_THAT(error, ContainsSubstring("ring parameter"));
+    }
+}
+
+TEST_CASE("a render through a preset loads its samples from --content-dir", "[render]")
+{
+    // Spec §6.10: the preset's samples are resolved against --content-dir alone, loaded and
+    // converted as a spec's file sample is: the same bytes as the spec that names the file.
+    const auto root = contentWith("render-samples");
+    const auto dir = scratch("render-samples");
+    const auto withSample = dir / "with-sample.ggpreset";
+    writeBytes(withSample, packWith(instWithSample(), root));
+    const auto without = dir / "without.ggpreset";
+    writeBytes(without, pack(parseFixture("inst-test.json")));
+
+    auto viaPreset = nlohmann::json::parse(readText(renderFixture("render-inst-preset.json")));
+    viaPreset.erase("sample"); // layer A's is the preset's
+    viaPreset["preset"] = utf8(withSample);
+    auto viaSpec = nlohmann::json::parse(readText(renderFixture("render-inst-preset.json")));
+    viaSpec["preset"] = utf8(without);
+    viaSpec["sample"] = {{"kind", "file"}, {"path", utf8(root / "Samples" / "Test" / "tone.wav")}};
+
+    const gg::render::RenderOptions options{
+        .contentDir = utf8(root), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}};
+    std::vector<std::string> presetEvents, specEvents;
+    const auto a = gg::render::render(parseSpec(viaPreset), &presetEvents, options);
+    const auto b = gg::render::render(parseSpec(viaSpec), &specEvents, options);
+    REQUIRE(a.channels.size() == 2);
+    float level = 0.0f;
+    for (const float v : a.channels[0])
+    {
+        level = std::max(level, std::abs(v));
+    }
+    CHECK(level > 0.01f);
+    CHECK(bitIdentical(a.channels[0], b.channels[0]));
+    CHECK(bitIdentical(a.channels[1], b.channels[1]));
+    CHECK(presetEvents == specEvents);
+
+    // Without --content-dir, or with one that lacks the file, it is bad input naming the
+    // reference.
+    CHECK_THAT(badInputOf(viaPreset), ContainsSubstring(kToneRef));
+    CHECK_THAT(badInputOf(viaPreset), ContainsSubstring("--content-dir"));
+    const auto empty = scratch("render-samples-empty");
+    const auto missing = badInputOf(
+        viaPreset,
+        {.contentDir = utf8(empty), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}});
+    CHECK_THAT(missing, ContainsSubstring(kToneRef));
+    CHECK_THAT(missing, ContainsSubstring("not found"));
+    // A file of other content under the reference has changed.
+    const auto other = scratch("render-samples-other") / "content";
+    std::filesystem::create_directories(other / "Samples" / "Test");
+    gg::test::writeFile(
+        other / "Samples" / "Test" / "tone.wav",
+        gg::test::wavBytes(gg::test::makeTestAudio(1, 44100, 4410), gg::test::SampleFormat::Int16));
+    CHECK_THAT(
+        badInputOf(
+            viaPreset,
+            {.contentDir = utf8(other), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}}),
+        ContainsSubstring("changed"));
+}
+
+TEST_CASE("an instrument spec without a sample needs a preset that names layer A's", "[render]")
+{
+    // The review's Minor 2: "sample" may be left out beside a preset only when the preset gives
+    // layer A one; else the render would be silent, so it is bad input.
+    const auto dir = scratch("render-no-sample");
+    const auto without = dir / "without.ggpreset";
+    writeBytes(without, pack(parseFixture("inst-test.json")));
+    auto j = nlohmann::json::parse(readText(renderFixture("render-inst-preset.json")));
+    j.erase("sample");
+    j["preset"] = utf8(without);
+    const std::string message = badInputOf(j);
+    CHECK_THAT(message, ContainsSubstring("the instrument has no sample"));
+    CHECK_THAT(message, ContainsSubstring("layer A"));
+}
+
+TEST_CASE("a render through a preset keeps the defaults' ring parameters", "[render]")
+{
+    // The program manager's ruling, on gg-render's preset path as in the plugins: a preset's ring
+    // parameters are ignored (an old file may hold them), and the spec's own params still set
+    // them.
+    const auto dir = scratch("ring-params");
+    gg::core::SessionState state = gg::core::initState(Mode::Fx);
+    const auto at = [](gg::core::ParamSlot s) { return static_cast<std::size_t>(s); };
+    state.values[at(gg::core::ParamSlot::RingLength)] = 1.0f;
+    state.values[at(gg::core::ParamSlot::B_Loop)] = 1.0f;
+    state.values[at(gg::core::ParamSlot::C_Overdub)] = 0.5f;
+    state.values[at(gg::core::ParamSlot::Size)] = -1.0f;
+    const auto preset = dir / "rings.ggpreset";
+    writeBytes(preset, gg::core::encodePreset(parseFixture("fx-test.json").info, state));
+
+    auto spec = fxSpecJson();
+    spec["preset"] = utf8(preset);
+    spec["params"] = {{"D Splice", 2}};
+    const auto saved = dir / "saved.ggst";
+    gg::render::render(
+        parseSpec(spec), nullptr,
+        {.contentDir = {}, .capturesDir = {}, .saveStatePath = utf8(saved), .mediaDir = {}});
+    gg::core::SessionState out;
+    REQUIRE(gg::core::decodeState(readText(saved), Mode::Fx, out));
+    const gg::core::SessionState defaults = gg::core::initState(Mode::Fx);
+    for (const auto s : {gg::core::ParamSlot::RingLength, gg::core::ParamSlot::B_Loop,
+                         gg::core::ParamSlot::C_Overdub})
+    {
+        CHECK(out.values[at(s)] == defaults.values[at(s)]);
+    }
+    CHECK(out.values[at(gg::core::ParamSlot::Size)] == -1.0f);
+    CHECK(out.values[at(gg::core::ParamSlot::D_Splice)] == 2.0f);
 }
 
 TEST_CASE("a render through a preset equals one that spells its values", "[render]")
@@ -378,7 +609,8 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
     fx["preset"] = utf8(junk);
     CHECK_THAT(badInput(fx), ContainsSubstring("isn't a preset file"));
 
-    // A preset naming a sample: gg-render reads none yet (presets' group 2 resolves them).
+    // A preset naming a sample by its absolute path alone: gg-render reads only content-relative
+    // references (spec §6.4: it never searches).
     gg::core::SessionState withSample = gg::core::initState(Mode::Fx);
     withSample.samples[0] = gg::core::MediaEntry{.sha256Hex = std::string(64, 'a'),
                                                  .fileSize = 4,
@@ -395,5 +627,77 @@ TEST_CASE("a preset for the other product, or that isn't one, is bad input", "[r
     const auto sampled = dir / "sampled.ggpreset";
     writeBytes(sampled, gg::core::encodePreset(parseFixture("fx-test.json").info, withSample));
     fx["preset"] = utf8(sampled);
-    CHECK_THAT(badInput(fx), ContainsSubstring("names a sample"));
+    CHECK_THAT(badInput(fx), ContainsSubstring("no content-relative reference"));
+}
+
+TEST_CASE("mutatePreset is one Mutate press of seed 0 under the default locks", "[render][mutate]")
+{
+    // gg-render --mutate-preset (the listening pack's ladder, spec §11): the preset's values as
+    // the plugin's press would move them, with seed 0 and the default locks; the metadata, the
+    // routes and the samples as they were.
+    const auto content = contentWith("mutate-preset");
+    for (const bool withSample : {false, true})
+    {
+        INFO("withSample " << withSample);
+        const PresetSource source = withSample ? instWithSample() : parseFixture("fx-test.json");
+        const Mode mode = source.info.product;
+        const std::string bytes = withSample ? packWith(source, content) : pack(source);
+        gg::core::PresetInfo inInfo;
+        gg::core::SessionState in;
+        REQUIRE(gg::core::readPreset(bytes, mode, inInfo, in));
+
+        std::string error;
+        const std::string mutated = gg::render::mutatePreset(bytes, 0.3f, 2, error);
+        INFO(error);
+        REQUIRE(error.empty());
+        REQUIRE_FALSE(mutated.empty());
+        CHECK(mutated != bytes);
+        // Deterministic: the same input, amount and counter give the same bytes.
+        CHECK(gg::render::mutatePreset(bytes, 0.3f, 2, error) == mutated);
+        // Another counter is another press.
+        CHECK(gg::render::mutatePreset(bytes, 0.3f, 3, error) != mutated);
+
+        gg::core::PresetInfo info;
+        gg::core::SessionState out;
+        REQUIRE(gg::core::readPreset(mutated, mode, info, out));
+        CHECK(info == inInfo);
+        CHECK(out.routes == in.routes);
+        CHECK(out.samples == in.samples);
+        gg::core::ParamValues expected{};
+        gg::core::mutate(in.values, gg::core::defaultMutateLocks(in.values, mode), 0.3f, 0, 2, mode,
+                         expected);
+        for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+        {
+            INFO("slot " << s);
+            CHECK(std::bit_cast<uint32_t>(out.values[s]) == std::bit_cast<uint32_t>(expected[s]));
+        }
+    }
+}
+
+TEST_CASE("mutatePreset at amount 0 rewrites the preset byte for byte", "[render][mutate]")
+{
+    const std::string bytes = pack(parseFixture("fx-test.json"));
+    std::string error;
+    CHECK(gg::render::mutatePreset(bytes, 0.0f, 1, error) == bytes);
+    CHECK(error.empty());
+}
+
+TEST_CASE("mutatePreset refuses a bad amount and a file that isn't a preset", "[render][mutate]")
+{
+    const std::string bytes = pack(parseFixture("fx-test.json"));
+    for (const float amount : {-0.01f, 1.01f, std::nanf("")})
+    {
+        INFO("amount " << amount);
+        std::string error;
+        CHECK(gg::render::mutatePreset(bytes, amount, 1, error).empty());
+        CHECK_THAT(error, Catch::Matchers::ContainsSubstring("amount"));
+    }
+    std::string error;
+    CHECK(gg::render::mutatePreset("not a preset", 0.1f, 1, error).empty());
+    CHECK_THAT(error, Catch::Matchers::ContainsSubstring("isn't a preset file"));
+    // A session state is not a preset.
+    CHECK(gg::render::mutatePreset(gg::core::encodeState(gg::core::initState(Mode::Fx)), 0.1f, 1,
+                                   error)
+              .empty());
+    CHECK_THAT(error, Catch::Matchers::ContainsSubstring("isn't a preset file"));
 }

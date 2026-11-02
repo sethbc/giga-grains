@@ -22,9 +22,11 @@ enum class View : uint8_t
     Fx
 };
 
-/// The panels a view lays its controls out in (spec §6.5, §6.7). Source to Step are the Edit
-/// view's (and the Mod view's), one layer's at a time; Reverb and Output are the FX view's; Strip
-/// (the layers' On switches), Pad (the morph) and Macros are the Perform view's.
+/// The panels a view lays its controls out in (spec §6.5, §6.7). Source to Step, and Ring, are the
+/// Edit view's (and the Mod view's), one layer's at a time; Reverb, Output, Delay and Limiter are
+/// the FX view's; Strip (the layers' On switches), Pad (the morph) and Macros are the Perform
+/// view's. Ring, Delay and Limiter came with M2 sub-project 6's PR 2, appended, so the earlier
+/// panels keep their values.
 enum class Panel : uint8_t
 {
     Source,
@@ -45,18 +47,23 @@ enum class Panel : uint8_t
     Strip,
     Pad,
     Macros,
+    Ring,
+    Delay,
+    Limiter,
     Count
 };
 
-/// Where a parameter's control is: its view, its panel, its position in the panel (0 first), and
-/// the spread drawn beside it as one picture (spec §6.5: Size with Size Spread, Position with
-/// Spray, Pitch with Pitch Spread), ParamSlot::Count if none.
+/// Where a parameter's control is: its view, its panel, its position in the panel (0 first), the
+/// spread drawn beside it as one picture (spec §6.5: Size with Size Spread, Position with Spray,
+/// Pitch with Pitch Spread), ParamSlot::Count if none, and whether its cell starts a new line in
+/// the panel (the Filter panel's Bus 1 Filter and Bus 2 Filter: each bus on a line of its own).
 struct Placement
 {
     View view;
     Panel panel;
     uint8_t order;
     gg::core::ParamSlot pairedSpread;
+    bool breakBefore{false};
 };
 
 /// The pinned table's row for `slot` (spec §6.5): every parameter below ParamSlot::Count has one.
@@ -64,10 +71,11 @@ struct Placement
 /// layer A's does, its pairedSpread in its own layer. Nothing for ParamSlot::Count.
 std::optional<Placement> placementOf(gg::core::ParamSlot slot) noexcept;
 
-/// The slots a panel draws, in order. A layer's panel (Source to Step, and Space's Level, and
-/// the Strip's On switch) draws layer `layer`'s (0 to 3, A to D); a global panel (Reverb, Output,
-/// Pad, Macros) ignores it. Empty for a panel with no rows (none since M2 sub-project 4 filled
-/// Filter) and for Panel::Count.
+/// The slots a panel draws, in order. A layer's panel (Source to Step and Ring, and Space's Level,
+/// and the Strip's On switch) draws layer `layer`'s (0 to 3, A to D); a global panel (Reverb,
+/// Output, Delay, Limiter, Pad, Macros) ignores it. Empty for a `layer` of 4 or more (kLayers and
+/// up), whatever the panel, for a panel with no rows (none since M2 sub-project 4 filled Filter)
+/// and for Panel::Count.
 std::vector<gg::core::ParamSlot> slotsIn(Panel panel, uint8_t layer);
 
 /// The panel's title as the views show it ("LFO 1", "Random 2"); "" for Panel::Count.

@@ -129,17 +129,16 @@ TEST_CASE("the hidden slots", "[ui]")
 
 TEST_CASE("the panel order is the spec's", "[ui]")
 {
+    CHECK(gg::ui::slotsIn(Panel::Source, 0) == std::vector<ParamSlot>{ParamSlot::Source});
+    // Smear sits beside Texture, before Quality (M2 sub-project 6's PR 2).
     CHECK(gg::ui::slotsIn(Panel::Grain, 0) ==
           std::vector<ParamSlot>{ParamSlot::Size, ParamSlot::SizeSpread, ParamSlot::Position,
-                                 ParamSlot::Spray, ParamSlot::Texture, ParamSlot::Quality,
-                                 ParamSlot::Smear});
-    // The engine's Budget follows Mix in the Output panel (ruling VW-T19a), then the global delay
-    // and limiter (M2 sub-project 4; ruling VW-T19b, until PR 2's Delay and Limiter sections).
+                                 ParamSlot::Spray, ParamSlot::Texture, ParamSlot::Smear,
+                                 ParamSlot::Quality});
+    // The engine's Budget follows Mix in the Output panel (ruling VW-T19a); the delay and the
+    // limiter have panels of their own since PR 2.
     CHECK(gg::ui::slotsIn(Panel::Output, 0) ==
-          std::vector<ParamSlot>{
-              ParamSlot::Mix, ParamSlot::Budget, ParamSlot::DelayAmount, ParamSlot::DelayTime,
-              ParamSlot::DelayFeedback, ParamSlot::DelayDamping, ParamSlot::DelayPingPong,
-              ParamSlot::LimiterMode, ParamSlot::LimiterCeiling, ParamSlot::LimiterRelease});
+          std::vector<ParamSlot>{ParamSlot::Mix, ParamSlot::Budget});
     CHECK(gg::ui::placementOf(ParamSlot::C_Quality)->panel == Panel::Grain);
     CHECK(gg::ui::placementOf(ParamSlot::Budget)->view == gg::ui::View::Fx);
     std::vector<ParamSlot> step{ParamSlot::StepRate, ParamSlot::StepLength};
@@ -154,12 +153,15 @@ TEST_CASE("the panel order is the spec's", "[ui]")
     CHECK(gg::ui::slotsIn(Panel::Space, 1) ==
           std::vector<ParamSlot>{ParamSlot::B_Stereo, ParamSlot::B_Diffusion, ParamSlot::B_Feedback,
                                  ParamSlot::LevelB});
-    // The bus split and the buses' filters (M2 sub-project 4; ruling VW-T19b).
+    // The bus split, then each bus on a line of its own (M2 sub-project 4; PR 2).
     CHECK(gg::ui::slotsIn(Panel::Filter, 2) ==
           std::vector<ParamSlot>{ParamSlot::C_BusSplit, ParamSlot::C_Bus1Filter,
                                  ParamSlot::C_Bus1Cutoff, ParamSlot::C_Bus1Resonance,
                                  ParamSlot::C_Bus2Filter, ParamSlot::C_Bus2Cutoff,
                                  ParamSlot::C_Bus2Resonance});
+    CHECK(std::string(gg::ui::panelName(Panel::Ring)) == "Ring");
+    CHECK(std::string(gg::ui::panelName(Panel::Delay)) == "Delay");
+    CHECK(std::string(gg::ui::panelName(Panel::Limiter)) == "Limiter");
     CHECK(std::string(gg::ui::panelName(Panel::Lfo1)) == "LFO 1");
     CHECK(std::string(gg::ui::panelName(Panel::Random2)) == "Random 2");
     // Each panel's slots are in their placements' order, and every placed slot's view is the
@@ -181,6 +183,60 @@ TEST_CASE("the panel order is the spec's", "[ui]")
     CHECK(gg::ui::placementOf(ParamSlot::ReverbSize)->view == View::Fx);
     CHECK(gg::ui::placementOf(ParamSlot::MorphX)->view == View::Perform);
     CHECK(gg::ui::placementOf(ParamSlot::B_Lfo1Rate)->view == View::Edit);
+}
+
+TEST_CASE("the ring parameters are the Ring panel's", "[ui]")
+{
+    // M2 sub-project 2's ring parameters, placed in the Source panel until PR 2 gave them a panel
+    // of their own (rulings SP-M7, VW-T19a).
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        INFO("layer " << int(layer));
+        const auto at = [layer](LayerParam p) { return gg::core::layerSlot(p, layer); };
+        CHECK(gg::ui::slotsIn(Panel::Ring, layer) ==
+              std::vector<ParamSlot>{at(LayerParam::RingLength), at(LayerParam::Loop),
+                                     at(LayerParam::LoopLength), at(LayerParam::Overdub),
+                                     at(LayerParam::Splice)});
+        CHECK(gg::ui::placementOf(at(LayerParam::Splice))->view == View::Edit);
+    }
+    // A layer past D draws nothing.
+    CHECK(gg::ui::slotsIn(Panel::Ring, gg::core::kLayers).empty());
+}
+
+TEST_CASE("the Filter panel breaks before each bus", "[ui]")
+{
+    for (std::size_t i = 0; i < gg::core::kParamCount; ++i)
+    {
+        const auto slot = static_cast<ParamSlot>(i);
+        INFO(nameOf(slot));
+        const auto ref = gg::core::layerOf(slot);
+        const bool busStart =
+            ref && (ref->param == LayerParam::Bus1Filter || ref->param == LayerParam::Bus2Filter);
+        REQUIRE(gg::ui::placementOf(slot).has_value());
+        CHECK(gg::ui::placementOf(slot)->breakBefore == busStart);
+    }
+}
+
+TEST_CASE("Delay and Limiter are the FX view's", "[ui]")
+{
+    CHECK(gg::ui::slotsIn(Panel::Delay, 0) ==
+          std::vector<ParamSlot>{ParamSlot::DelayAmount, ParamSlot::DelayTime,
+                                 ParamSlot::DelayFeedback, ParamSlot::DelayDamping,
+                                 ParamSlot::DelayPingPong});
+    CHECK(gg::ui::slotsIn(Panel::Limiter, 0) == std::vector<ParamSlot>{ParamSlot::LimiterMode,
+                                                                       ParamSlot::LimiterCeiling,
+                                                                       ParamSlot::LimiterRelease});
+    for (const Panel panel : {Panel::Delay, Panel::Limiter})
+    {
+        INFO(gg::ui::panelName(panel));
+        // Global: every layer's list is the same.
+        CHECK(gg::ui::slotsIn(panel, 3) == gg::ui::slotsIn(panel, 0));
+        for (const ParamSlot slot : gg::ui::slotsIn(panel, 0))
+        {
+            CHECK(gg::ui::placementOf(slot)->view == View::Fx);
+            CHECK(gg::ui::placementOf(slot)->panel == panel);
+        }
+    }
 }
 
 TEST_CASE("the layer colours are Okabe-Ito's", "[ui]")

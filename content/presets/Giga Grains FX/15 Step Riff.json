@@ -1,0 +1,31 @@
+{
+  "product": "fx",
+  "name": "Step Riff",
+  "author": "Giga Grains",
+  "description": "Repitches the grains to an eight-step figure at four steps a second, so a held chord or a line turns into a riff.",
+  "tags": ["rhythmic", "glitch", "percussive", "live-input"],
+  "params": {
+    "Mix": 0.6,
+    "Position": 0.192782,
+    "Size": -3.473931,
+    "Density": 5,
+    "Spray": 0.148233,
+    "Stereo": 0.5,
+    "A Step Length": 8,
+    "A Step 1": 0.5,
+    "A Step 2": 0.791667,
+    "A Step 3": 1,
+    "A Step 4": 0.625,
+    "A Step 5": 0.708333,
+    "A Step 6": 0.5,
+    "A Step 7": 0.291667,
+    "A Step 8": 0.791667,
+    "Delay Amount": 0.2,
+    "Delay Time": -1.415037,
+    "Delay Feedback": 0.35,
+    "Delay Ping-pong": 1
+  },
+  "mod": [
+    {"slot": 13, "source": "Step", "target": "Pitch", "targetLayer": "A", "depth": 12, "curve": "Bipolar"}
+  ]
+}

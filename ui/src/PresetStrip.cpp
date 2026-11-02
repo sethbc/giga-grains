@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "Theme.h"
+#include "PresetColours.h"
 
 namespace gg::ui
 {
@@ -25,11 +25,6 @@ void styleButton(juce::TextButton &button, const char *id, const juce::String &t
 {
     button.setComponentID(id);
     button.setButtonText(text);
-    button.setColour(juce::TextButton::buttonColourId, theme::kBackground);
-    button.setColour(juce::TextButton::buttonOnColourId, theme::kAccent.withAlpha(0.35f));
-    button.setColour(juce::TextButton::textColourOffId, theme::kDimText);
-    button.setColour(juce::TextButton::textColourOnId, theme::kText);
-    button.setColour(juce::ComboBox::outlineColourId, theme::kOutline);
 }
 } // namespace
 
@@ -55,6 +50,20 @@ juce::String elideMiddle(const juce::String &text, const juce::Font &font, float
     return ellipsis;
 }
 
+void PresetStrip::applyPalette()
+{
+    const Palette &palette = paletteOf(*this);
+    for (juce::TextButton *button : {&prev_, &name_, &next_})
+    {
+        colourButton(*button, palette);
+    }
+    name_.setColour(juce::TextButton::textColourOffId, palette.text);
+}
+
+void PresetStrip::parentHierarchyChanged() { applyPalette(); }
+
+void PresetStrip::lookAndFeelChanged() { applyPalette(); }
+
 PresetStrip::PresetStrip(const EditorContext &context) : context_(context)
 {
     setComponentID("header.preset");
@@ -62,7 +71,7 @@ PresetStrip::PresetStrip(const EditorContext &context) : context_(context)
     styleButton(prev_, "preset.prev", juce::String::fromUTF8("\xe2\x80\xb9"));
     styleButton(name_, "preset.name", "Init");
     styleButton(next_, "preset.next", juce::String::fromUTF8("\xe2\x80\xba"));
-    name_.setColour(juce::TextButton::textColourOffId, theme::kText);
+    applyPalette();
     name_.setTooltip("The preset: click to browse");
     prev_.setTooltip("Previous preset");
     next_.setTooltip("Next preset");

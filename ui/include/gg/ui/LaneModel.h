@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <optional>
 
+#include "gg/ui/MediaViews.h" // RingView
+
 namespace gg::ui
 {
 /// The canvas's lane geometry (spec §6.2–6.3; M2 Views' spec §6.3): where each playing grain's
@@ -22,9 +24,11 @@ namespace gg::ui
 /// - **The vertical axis is pitch** (D1): a grain at rate r lies 12·log2(r) semitones from the
 ///   lane's centre, ±kLaneSemitones across its height less the capsule's radius, higher pitches
 ///   higher up (pitchY).
-/// - **FX lane:** the live ring, with the write head fixed at the right edge as "now". A ring
-///   frame `pos` with the head at `head` lies at x = width × (1 − behind / ringSeconds), with
-///   behind = (head − pos) / sampleRate seconds: history scrolls left as the head moves on.
+/// - **Live (FX) lane:** the layer's ring, with the write head fixed at the right edge as "now".
+///   A ring frame `pos` with the head at `head` lies at x = width × (1 − behind / ringSeconds),
+///   with behind = (head − pos) / sampleRate seconds: history scrolls left as the head moves on.
+///   The lane spans the ring's length (ruling VW-P2d, amended: RingView::ringFrames / sampleRate,
+///   16 s while there is no ring).
 /// - **Instrument lane:** static. Source frame `pos` lies at x = width × pos / sourceFrames.
 struct LaneGeometry
 {
@@ -33,7 +37,7 @@ struct LaneGeometry
     float pixelScale;     ///< Physical pixels per logical pixel.
     bool fxLane;          ///< The FX's live-ring lane, or the instrument's sample lane.
     double sampleRate;    ///< The engine's sample rate, Hz.
-    double ringSeconds;   ///< FX: the seconds the lane spans (the live ring's 16).
+    double ringSeconds;   ///< FX: the seconds the lane spans (the layer's ring's length).
     int64_t sourceFrames; ///< Instrument: the loaded sample's length in frames.
     float top{0.0f};      ///< The lane's top in pixels: where it sits in the stacked canvas.
 };
@@ -97,7 +101,9 @@ struct Window
 ///   [0, 1) (CloudScheduler): from Position to Position + Spray seconds behind the head. Position
 ///   is 16/255 × (2^(8v) − 1) seconds behind the head, so x1, the window's newer (right) edge, is
 ///   Position's x, width × (1 − seconds / ringSeconds), and x0 lies Spray's pixels further left.
-///   The lane is relative to the head, so the window doesn't move as the head does.
+///   The lane is relative to the head, so the window doesn't move as the head does. Position is
+///   clamped to 0 .. livePositionMax(geometry), not 0..1: its range runs past 1 to kPositionMax
+///   (300 s), and a lane spanning more than 16 s reaches past 1.
 /// - Instrument: ±Spray around Position, as the engine spreads a sample grain's spray either
 ///   side. Position is the fraction of the file, so the centre is at width × v.
 Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geometry) noexcept;
@@ -120,11 +126,17 @@ inline constexpr float kGhostThreshold = 1.0e-4f;
 std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effective,
                                   const LaneGeometry &geometry) noexcept;
 
+/// The highest Position a Live lane shows: the value whose seconds are the lane's span,
+/// min(kPositionMax, log2(1 + 255 × ringSeconds / 16) / 8), so 1 for the 16 s lane. 1 for an
+/// instrument lane, and for a lane whose ringSeconds isn't positive and finite.
+float livePositionMax(const LaneGeometry &geometry) noexcept;
+
 /// The Position value whose window is anchored at x, scanWindow's inverse, for a body drag: the
-/// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1, so
-/// a drag past either end of the lane pins Position to that end (left of the FX lane is 1, the
-/// oldest audio; left of the instrument lane is 0), infinities included. A NaN x or a
-/// degenerate lane gives 0.
+/// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1 on
+/// the instrument's lane and to 0 .. livePositionMax on the FX lane, so a drag past either end of
+/// the lane pins Position to that end (left of the FX lane is its span's Position, the oldest
+/// audio, 1 on the 16 s lane; left of the instrument lane is 0), infinities included. A NaN x or
+/// a degenerate lane gives 0.
 float positionValueAtX(float x, const LaneGeometry &geometry) noexcept;
 
 /// The Spray value whose window has the extent extentPx, scanWindow's inverse, for an edge drag:
@@ -237,6 +249,54 @@ enum class DragAxis
 /// Horizontal. The caller decides once and keeps the answer until release. A NaN movement counts
 /// as no movement; a NaN threshold never decides.
 DragAxis decideAxis(float dx, float dy, float thresholdPx) noexcept;
+
+/// The x of ring frame `frame` on a Live lane whose head is `head`: width × (1 − (head − frame) /
+/// (sampleRate × ringSeconds)), so the head is at width and head − the span at 0. nullopt if the
+/// frame is in the future (past the head) or older than the lane's span, or the lane can't place
+/// anything (its width, ringSeconds or `sampleRate` not positive and finite).
+std::optional<float> ringFrameX(const LaneGeometry &g, int64_t head, int64_t frame,
+                                double sampleRate) noexcept;
+
+/// The ring frame a Live lane shows at x: ringFrameX's inverse, rounded to the nearest frame and
+/// clamped to the span [head − round(ringSeconds × sampleRate), head]. A NaN x, or a lane that
+/// can't place anything, gives the head.
+int64_t ringFrameAt(const LaneGeometry &g, int64_t head, float x, double sampleRate) noexcept;
+
+/// A span of ring frames, [from, to).
+struct RingSpan
+{
+    int64_t from, to;
+};
+
+/// The span of splice k (1-based) of `ring`, as MediaSession::spanOf gives it (D6), with N the
+/// ring's length (ring.ringFrames, not the window in effect, windowFrames): the window is
+/// [lo, head) with lo = max(0, head − N), and while `loop` is on max(lo, head − max(1,
+/// loopFrames)); the marks inside it (the first min(spliceCount, kMaxSplices), lo <= m < head)
+/// are numbered from the oldest; splice k runs from the k-th to the next, the last to the head;
+/// a k past the count is the last. k = 0, or no mark inside the window, gives the window.
+RingSpan spliceSpan(const RingView &ring, bool loop, int64_t loopFrames, uint32_t k) noexcept;
+
+/// Whether any of `ring`'s marks (the first min(spliceCount, kMaxSplices)) lies in [from, to).
+bool anyMarkIn(const RingView &ring, int64_t from, int64_t to) noexcept;
+
+/// The anchor of an AddSplice on `ring` with Splice `k` selected, as the engine takes it
+/// (LiveSource::anchorAt, windowEnd and spliceAt): the head when k is 0 or no mark is in
+/// storage, [head − ringFrames, head); otherwise the end of splice k numbered from the first mark
+/// in storage, Loop ignored, the last splice's end the head (spliceSpan(ring, false, 0, k).to).
+/// It differs from the engine only for a mark exactly at the head, which the engine counts.
+int64_t spliceAnchor(const RingView &ring, uint32_t k) noexcept;
+
+/// The value of an AddSplice command (gg::core::CommandEvent) that marks ring frame `frame`, the
+/// command's anchor (the head, or a selected splice's end) at `anchor`: the seconds from the
+/// frame back to the anchor, (anchor − frame) / sampleRate, and 0 for a frame past the anchor (or
+/// a sample rate that isn't positive and finite). As a float, it marks the frame exactly (see
+/// splicedFrame) up to 256 s behind the anchor at 48 kHz, and within one frame beyond.
+float spliceSeconds(int64_t anchor, int64_t frame, double sampleRate) noexcept;
+
+/// The frame Processor::applyCommands marks for an AddSplice of `seconds`, its window's oldest
+/// frame `oldest`: anchor − llround(clamp(seconds × sampleRate, 0, max(0, anchor − oldest))).
+/// The editor's copy of the Processor's rule, which the tests pin against the Processor.
+int64_t splicedFrame(int64_t anchor, int64_t oldest, float seconds, double sampleRate) noexcept;
 } // namespace gg::ui
 
 #endif // GG_UI_LANEMODEL_H

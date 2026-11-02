@@ -1,0 +1,9 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains FX/21 Event Horizon.ggpreset",
+  "input": {"kind": "file", "path": "loop-48k.wav"}
+}

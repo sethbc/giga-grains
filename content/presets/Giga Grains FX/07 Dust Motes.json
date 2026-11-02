@@ -1,0 +1,27 @@
+{
+  "product": "fx",
+  "name": "Dust Motes",
+  "author": "Giga Grains",
+  "description": "Sparse, tiny, pitched-up specks scattered across the stereo field and bounced by a ping-pong delay; sprinkle it over anything.",
+  "tags": ["texture", "bright", "wide", "live-input"],
+  "params": {
+    "Mix": 0.5,
+    "Size": -4.836501,
+    "Density": 3.321928,
+    "Distribution": 1,
+    "Spray": 0.784516,
+    "Stereo": 1,
+    "Pitch": 12,
+    "A Pitch Spread": 12,
+    "A Random 1 Rate": 1.584963,
+    "Delay Amount": 0.3,
+    "Delay Time": -1.599462,
+    "Delay Feedback": 0.45,
+    "Delay Ping-pong": 1,
+    "Reverb Amount": 0.3,
+    "Reverb Decay": 2
+  },
+  "mod": [
+    {"slot": 13, "source": "Random 1", "target": "Density", "targetLayer": "A", "depth": 1.5, "curve": "Bipolar"}
+  ]
+}

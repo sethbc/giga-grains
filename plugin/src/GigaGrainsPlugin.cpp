@@ -1111,10 +1111,35 @@ float GigaGrainsPlugin::uiBaseValue(ParamSlot slot) const noexcept
 
 void GigaGrainsPlugin::uiSetRoutes(const gg::core::ModRoutes &routes) noexcept
 {
+    if (routes == routes_)
+    {
+        return; // unchanged (a ring drag sends the same array): nothing to push or mark (row 316)
+    }
     routes_ = routes; // what stateSave writes from now on
     if (processor_ != nullptr)
     {
         uiRoutesPending_.push(routes_); // never allocates; inactive, activate() hands routes_ over
+    }
+    if (_host.canUseState())
+    {
+        _host.stateMarkDirty();
+    }
+}
+
+void GigaGrainsPlugin::uiSetMemoryCapMiB(uint32_t mib) noexcept
+{
+    try
+    {
+        const uint32_t before = media_->memoryCapMiB();
+        media_->setMemoryCapMiB(mib);
+        if (media_->memoryCapMiB() == before)
+        {
+            return;
+        }
+    }
+    catch (...)
+    {
+        return;
     }
     if (_host.canUseState())
     {
@@ -1442,7 +1467,7 @@ bool GigaGrainsPlugin::stateLoad(const clap_istream *stream) noexcept
     }
 }
 
-void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
+void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind, bool init)
 {
     // The allocations left before the state takes effect, made before anything changes: room in
     // each exchange for the offers below, a source's and a ring's (SourceExchange::reserve),
@@ -1452,6 +1477,26 @@ void GigaGrainsPlugin::applyState(gg::core::SessionState &&state, LoadKind kind)
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
             processor_->sources(layer).reserve();
+        }
+    }
+    // A preset file load keeps each layer's ring parameters, as it keeps the seed (the program
+    // manager's ruling): no preset load resizes a ring or changes what it records. INIT keeps
+    // Ring Length alone (D8: a fresh instance; only Ring Length is memory) and gives Loop, Loop
+    // Length, Overdub and Splice their defaults. Kept ones are then the loaded values.
+    if (kind == LoadKind::Preset)
+    {
+        gg::core::ParamValues current{};
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            current[s] = values_[s].load(std::memory_order_relaxed);
+        }
+        if (init)
+        {
+            gg::core::keepRingLengths(current, state.values);
+        }
+        else
+        {
+            gg::core::keepRingParams(current, state.values);
         }
     }
     // What the state sets beside its media, taken before restore() takes the state.
@@ -1749,6 +1794,11 @@ bool GigaGrainsPlugin::presetEdited() const noexcept
     }
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
+        // A preset load ignores the ring parameters, so reloading wouldn't undo a change.
+        if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+        {
+            continue;
+        }
         if (std::bit_cast<uint32_t>(values_[s].load(std::memory_order_relaxed)) !=
             std::bit_cast<uint32_t>(presetValues_[s]))
         {
@@ -1840,7 +1890,7 @@ bool GigaGrainsPlugin::loadPresetFile(const std::filesystem::path &file, std::st
 void GigaGrainsPlugin::loadInit()
 {
     std::string key = "plugin:" + std::string(gg::core::kInitLoadKey);
-    applyState(gg::core::initState(mode()), LoadKind::Preset);
+    applyState(gg::core::initState(mode()), LoadKind::Preset, true);
     presetKey_ = std::move(key);
 }
 

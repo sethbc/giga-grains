@@ -1,0 +1,22 @@
+{
+  "product": "fx",
+  "name": "Soft Focus",
+  "author": "Giga Grains",
+  "description": "A soft halo of overlapping grains around whatever you play into it, drifting gently; lovely on pads, keys and guitars.",
+  "tags": ["texture", "pad", "wide", "live-input"],
+  "params": {
+    "Mix": 0.45,
+    "Size": -2.184425,
+    "Density": 4.807355,
+    "Spray": 0.435678,
+    "Stereo": 0.7,
+    "Diffusion": 0.25,
+    "Reverb Amount": 0.22,
+    "Reverb Decay": 1.321928,
+    "Reverb Size": 0.6
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 2", "target": "Position", "targetLayer": "all", "depth": 0.04, "curve": "Bipolar"},
+    {"slot": 14, "source": "Random 2", "target": "Stereo", "targetLayer": "all", "depth": 0.2, "curve": "Bipolar"}
+  ]
+}

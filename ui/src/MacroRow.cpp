@@ -100,9 +100,12 @@ struct ChipTarget : juce::DragAndDropTarget
 /// sst-jucegui's step by 1/40 and know no Left or Right.
 struct MacroKnob final : jcmp::Knob, ChipTarget
 {
+    ParamValue *value{nullptr}; ///< the macro's, set at construction
+
     bool keyPressed(const juce::KeyPress &key) override
     {
-        return stepByArrowKey(*this, key) || jcmp::Knob::keyPressed(key);
+        return (value != nullptr && stepByArrowKey(*this, key, *value)) ||
+               jcmp::Knob::keyPressed(key);
     }
 };
 
@@ -156,6 +159,7 @@ MacroRow::MacroRow(const EditorContext &context) : impl_(std::make_unique<Impl>(
         knob->slot = slot;
         KnobSource *source = impl_->knobSources[i].get();
         knob->setSource(source);
+        knob->value = &source->macro;
         knob->onBeginEdit = [source] { source->macro.begin(); };
         knob->onEndEdit = [source] { source->macro.end(); };
         knob->setComponentID(id);

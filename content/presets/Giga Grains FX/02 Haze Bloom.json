@@ -1,0 +1,32 @@
+{
+  "product": "fx",
+  "name": "Haze Bloom",
+  "author": "Giga Grains",
+  "description": "Long, blurred grains bloom into a wide wash, with a faint octave shimmer that swells and fades on its own; play slow chords into it.",
+  "tags": ["texture", "pad", "reverb", "wide", "live-input"],
+  "params": {
+    "Mix": 0.6,
+    "Size": -1.058894,
+    "A Size Spread": 1.0,
+    "Density": 4.321928,
+    "Spray": 0.629865,
+    "Stereo": 0.9,
+    "Texture": 0.2,
+    "Layer B On": 1,
+    "B Pitch": 12,
+    "B Size": -1.736966,
+    "B Density": 3.584963,
+    "B Spray": 0.661828,
+    "B Stereo": 1,
+    "B LFO 1 Rate": -3.836501,
+    "Level B": -9,
+    "Reverb Amount": 0.45,
+    "Reverb Decay": 2.584963,
+    "Reverb Size": 0.8,
+    "Reverb Damping": 0.5,
+    "Reverb Pre-delay": 0.04
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "Level", "targetLayer": "B", "depth": 6, "curve": "Bipolar"}
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "product": "instrument",
+  "name": "Felt Mallets",
+  "author": "Giga Grains",
+  "description": "Soft vibraphone and marimba, in tune, each note reading its strike and ring as it decays; play melodies and chords, harder for louder.",
+  "tags": ["playable", "keys", "percussive", "sample"],
+  "params": {
+    "Level": 1.0,
+    "A Position": 0.5,
+    "A Size": -3.058894,
+    "A Density": 6.0,
+    "A Distribution": 0.3,
+    "A Pitch": 1,
+    "A Spray": 0.126794,
+    "A Stereo": 0.4,
+    "A Diffusion": 0.2,
+    "A Env 1 Attack": -9.965784,
+    "A Env 1 Decay": 1.584963,
+    "A Env 1 Sustain": 0.0,
+    "A Env 1 Release": 0.0,
+    "Layer B On": 1,
+    "Level B": -1.0,
+    "B Position": 0.6,
+    "B Size": -3.321928,
+    "B Density": 6.0,
+    "B Distribution": 0.3,
+    "B Pitch": 24,
+    "B Spray": 0.126794,
+    "B Stereo": 0.4,
+    "B Env 1 Attack": -9.965784,
+    "B Env 1 Decay": 0.584963,
+    "B Env 1 Sustain": 0.0,
+    "B Env 1 Release": -0.321928,
+    "Reverb Amount": 0.2,
+    "Reverb Decay": 1.0
+  },
+  "mod": [
+    {"slot": 13, "source": "Velocity", "target": "Level", "targetLayer": "all", "depth": 8.0, "curve": "Bipolar"},
+    {"slot": 14, "source": "Pitch Bend", "target": "Pitch", "targetLayer": "all", "depth": 2.0, "curve": "Bipolar"},
+    {"slot": 15, "source": "Env 1", "target": "Position", "targetLayer": "A", "depth": -0.5, "curve": "Unipolar"},
+    {"slot": 16, "source": "Env 1", "target": "Position", "targetLayer": "B", "depth": -0.6, "curve": "Unipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Mallets/vibraphone-b3-soft-mallet.flac",
+    "B": "Samples/Mallets/marimba-c2.flac"
+  }
+}

@@ -106,7 +106,8 @@ class PresetCatalog
     /// Whether anything the last rescan read may have changed on disk (M4, the browser's 30 Hz
     /// poll): the modification time, or the existence, of the settings file, the favorites file,
     /// each content root's Presets folder or the user presets folder, or the number of entries
-    /// directly in a folder (a coarse file system clock can give two writes one time). Only stats
+    /// directly in a folder (a coarse file system clock can give two writes one time), counted to
+    /// kMaxFilesPerFolder + 1 at most (past that, the time alone shows a change). Only stats
     /// and lists them, reading no file. A change inside a subfolder alone doesn't move its folder's
     /// time: it shows at the next rescan (the browser's opening, a save, a delete).
     bool changedOnDisk() const;

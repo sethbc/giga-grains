@@ -1,0 +1,15 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "preset": "presets/Giga Grains/03 Ember Field.ggpreset",
+  "notes": [
+    {"time": 0.25, "key": 48, "duration": 1.0},
+    {"time": 1.5, "key": 55, "duration": 1.25},
+    {"time": 3.0, "key": 48, "duration": 2.0},
+    {"time": 3.0, "key": 51, "duration": 2.0},
+    {"time": 3.0, "key": 55, "duration": 2.0}
+  ]
+}

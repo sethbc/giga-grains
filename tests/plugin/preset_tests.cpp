@@ -10,6 +10,7 @@
 // GG_TEST_OUTPUT_DIR/plugin-sample-<name>/ with a settings file of its own.
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -27,6 +28,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <clap/clap.h>
+#include <nlohmann/json.hpp>
 
 #include "PluginHarness.h"
 #include "support/StateContainer.h"
@@ -822,4 +824,417 @@ TEST_CASE("an instrument active load arms Freeze under its own routes, as an ina
     CAPTURE(active, inactive);
     // The active one ran its 40 blocks after the reset, the inactive one after activation.
     CHECK(active == inactive);
+}
+
+// ---- Group 2: factory samples by their content-relative reference (spec §6.4, §6.12) ----
+
+namespace
+{
+/// Points the content roots at `root` alone: GG_CONTENT_DIR, and the install roots' test seam
+/// (GG_SYSTEM_CONTENT_DIR) at an empty folder beside it, so the machine's installed content never
+/// joins. Each test case runs in its own process.
+void useContentRoot(const fs::path &root)
+{
+    const fs::path system = root.parent_path() / "system";
+    fs::create_directories(root);
+    fs::create_directories(system);
+#if defined(_WIN32)
+    _wputenv_s(L"GG_CONTENT_DIR", root.c_str());
+    _wputenv_s(L"GG_SYSTEM_CONTENT_DIR", system.c_str());
+#else
+    setenv("GG_CONTENT_DIR", root.c_str(), 1);
+    setenv("GG_SYSTEM_CONTENT_DIR", system.c_str(), 1);
+#endif
+}
+
+constexpr const char *kToneRef = "Samples/Test/tone.wav";
+
+/// A scratch content root for the test `name` holding kToneRef: 1.5 s of a 330 Hz stereo sine at
+/// 44.1 kHz (so both the plugin and gg-render convert it to 48 kHz). Generated, never committed.
+fs::path contentRootWithTone(const std::string &name)
+{
+    const fs::path root = gg::test::sampleDir(name) / "content";
+    gg::test::writeSineWav(root / "Samples" / "Test" / "tone.wav", 44100, 1.5, 330.0);
+    return root;
+}
+
+/// The test preset of `mode` (tests/fixtures/presets/), its layer A sample kToneRef (the FX's
+/// layer A set to Sample, so it reads it), packed as gg-render --pack-preset packs it with
+/// --content-dir `root`, into presets/<name>.ggpreset.
+fs::path packedWithTone(Mode mode, const fs::path &root, const std::string &name)
+{
+    std::ifstream in(fs::path(GG_PRESET_FIXTURE_DIR) /
+                         (mode == Mode::Fx ? "fx-test.json" : "inst-test.json"),
+                     std::ios::binary);
+    std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    std::string error;
+    auto source = gg::render::parsePresetSource(json, error);
+    INFO(error);
+    REQUIRE(source.has_value());
+    source->samples = {{0, kToneRef}};
+    if (mode == Mode::Fx)
+    {
+        source->params.emplace_back("A Source", 0.0); // Sample
+        source->params.emplace_back("Mix", 1.0);      // the grains alone
+    }
+    const std::string bytes = gg::render::packPreset(*source, root, error);
+    INFO(error);
+    REQUIRE_FALSE(bytes.empty());
+    const fs::path file = fs::path(GG_TEST_OUTPUT_DIR) / "presets" / (name + ".ggpreset");
+    fs::create_directories(file.parent_path());
+    gg::test::writeBytes(file, bytes);
+    return file;
+}
+
+/// The bytes the plugin `id` renders after preset-load of `file` (before activation or after,
+/// per `loadActive`), seed kSeed, in blocks of `block` at 48 kHz: the FX over `input`, the
+/// instrument with a note of key 60 at velocity 1 from frame 0 to frame `noteOff`.
+gg::metrics::AudioData pluginRender(const char *id, const fs::path &file, bool loadActive,
+                                    uint64_t seed, uint32_t block, std::size_t frames,
+                                    const gg::metrics::AudioData *input, std::size_t noteOff,
+                                    SampleState *status)
+{
+    const Mode mode = modeOf(id);
+    const std::string location = utf8(file);
+    PresetHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(seed));
+    if (!loadActive)
+    {
+        REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    }
+    REQUIRE(plugin.activate(48000.0, block));
+    if (loadActive)
+    {
+        REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    }
+    *status = plugin.impl().media().loader(0).status().state;
+    const auto &entry = plugin.impl().media().loader(0).entry();
+    REQUIRE(entry.has_value());
+    CHECK(entry->contentPath == kToneRef); // the reference is kept for the next save
+
+    gg::metrics::AudioData out;
+    out.channels.assign(2, std::vector<float>(frames));
+    std::vector<float> inLeft(frames);
+    std::vector<float> inRight(frames);
+    if (input != nullptr)
+    {
+        inLeft = input->channels[0];
+        inRight = input->channels[1];
+    }
+    auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
+    on.velocity = 1.0;
+    auto off = gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, 0, 60, 0);
+    off.velocity = 1.0;
+    for (std::size_t done = 0; done < frames; done += block)
+    {
+        gg::test::InputEvents events;
+        if (mode == Mode::Instrument && done == 0)
+        {
+            events.add(&on.header);
+        }
+        if (mode == Mode::Instrument && done == noteOff)
+        {
+            events.add(&off.header);
+        }
+        float *inputs[2] = {inLeft.data() + done, inRight.data() + done};
+        float *outputs[2] = {out.channels[0].data() + done, out.channels[1].data() + done};
+        REQUIRE(plugin.process(block, mode == Mode::Fx ? inputs : nullptr, outputs,
+                               events.list()) == CLAP_PROCESS_CONTINUE);
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("a preset's content sample loads from the content roots and renders as gg-render does",
+          "[plugin][preset][render]")
+{
+    // Spec §6.4's candidate (the content roots, after the absolute path) and §6.10's bit
+    // identity, for a preset that names layer A's sample by its content-relative reference alone:
+    // the plugin finds it under GG_CONTENT_DIR, gg-render under --content-dir, and the two render
+    // the same bytes (memcmp), loaded before activation or after.
+    constexpr uint64_t kSeed = 5;
+    constexpr uint32_t kBlock = 256;
+    constexpr std::size_t kFrames = 96000; // 2 s at 48 kHz
+    constexpr std::size_t kNoteOff = 38400;
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    const bool loadActive = GENERATE(false, true);
+    CAPTURE(id, loadActive);
+    const Mode mode = modeOf(id);
+    const std::string name = std::string("content-") + tagOf(mode);
+    setUpSamples(name);
+    const fs::path root = contentRootWithTone(name);
+    useContentRoot(root);
+    const fs::path file = packedWithTone(mode, root, name);
+
+    nlohmann::json j = {{"mode", tagOf(mode)}, {"sampleRate", 48000}, {"durationSeconds", 2.0},
+                        {"blockSize", kBlock}, {"seed", kSeed},       {"preset", utf8(file)}};
+    if (mode == Mode::Fx)
+    {
+        j["input"] = {{"kind", "sweep"},
+                      {"startHz", 50},
+                      {"endHz", 4000},
+                      {"seconds", 2.0},
+                      {"amplitude", 0.5}};
+        j["channels"] = 2;
+    }
+    else
+    {
+        j["notes"] = {{{"time", 0.0}, {"key", 60}, {"duration", 0.8}, {"velocity", 127}}};
+    }
+    std::string error;
+    const auto spec = gg::render::parseRenderSpec(j.dump(), error);
+    INFO(error);
+    REQUIRE(spec.has_value());
+    const gg::metrics::AudioData expected = gg::render::render(
+        *spec, nullptr,
+        {.contentDir = utf8(root), .capturesDir = {}, .saveStatePath = {}, .mediaDir = {}});
+    REQUIRE(expected.channels.size() == 2);
+    REQUIRE(expected.channels[0].size() == kFrames);
+    REQUIRE(peak(expected.channels[0]) > 0.01f);
+
+    gg::metrics::AudioData input;
+    if (mode == Mode::Fx)
+    {
+        input = gg::render::makeInput(spec->fx.input, 2, 48000.0, kSeed);
+        REQUIRE(input.channels.size() == 2);
+        input.channels[0].resize(kFrames, 0.0f);
+        input.channels[1].resize(kFrames, 0.0f);
+    }
+    SampleState status = SampleState::None;
+    const gg::metrics::AudioData got =
+        pluginRender(id, file, loadActive, kSeed, kBlock, kFrames,
+                     mode == Mode::Fx ? &input : nullptr, kNoteOff, &status);
+    CHECK(status == SampleState::Loaded);
+    CHECK(std::memcmp(got.channels[0].data(), expected.channels[0].data(),
+                      kFrames * sizeof(float)) == 0);
+    CHECK(std::memcmp(got.channels[1].data(), expected.channels[1].data(),
+                      kFrames * sizeof(float)) == 0);
+}
+
+TEST_CASE("a preset's content sample missing from every content root leaves the layer missing",
+          "[plugin][preset]")
+{
+    // Nothing under the roots: the load succeeds (its values apply), and the layer's status says
+    // its sample is missing, naming the reference's file.
+    setUpSamples("content-missing");
+    const fs::path root = contentRootWithTone("content-missing");
+    const fs::path file = packedWithTone(Mode::Instrument, root, "content-missing");
+    useContentRoot(gg::test::sampleDir("content-missing") / "elsewhere");
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    const std::string location = utf8(file);
+    REQUIRE(instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    const auto status = instrument.impl().media().loader(0).status();
+    CHECK(status.state == SampleState::Missing);
+    CHECK(status.fileName == "tone.wav");
+}
+
+TEST_CASE("a preset load keeps each layer's ring parameters", "[plugin][preset]")
+{
+    // The program manager's ruling: Ring Length, Loop, Loop Length, Overdub and Splice are the
+    // instance's capture and memory, kept by every preset file load, as the seed is, so no preset
+    // load resizes a ring. The preset's other values apply, and it isn't edited. INIT (D8, a fresh
+    // instance, amended 2026-11-02) keeps Ring Length alone: the other four get their defaults.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    const auto ringValues = [](float ring, float loop, float loopLength, float overdub,
+                               float splice) {
+        gg::core::ParamValues v{};
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            using gg::core::LayerParam;
+            v[at(gg::core::layerSlot(LayerParam::RingLength, layer))] = ring;
+            v[at(gg::core::layerSlot(LayerParam::Loop, layer))] = loop;
+            v[at(gg::core::layerSlot(LayerParam::LoopLength, layer))] = loopLength;
+            v[at(gg::core::layerSlot(LayerParam::Overdub, layer))] = overdub;
+            v[at(gg::core::layerSlot(LayerParam::Splice, layer))] = splice;
+        }
+        return v;
+    };
+    const gg::core::ParamValues mine = ringValues(3.0f, 1.0f, -1.0f, 0.5f, 2.0f);
+    const gg::core::ParamValues theirs = ringValues(5.0f, 0.0f, 2.0f, 0.25f, 7.0f);
+    SessionState session = gg::core::initState(mode);
+    SessionState preset = fixtureState(mode);
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+        {
+            session.values[s] = mine[s];
+            preset.values[s] = theirs[s];
+        }
+    }
+    const std::string location =
+        utf8(gg::test::writePresetFile("rings-" + tagOf(mode), infoFor(mode), preset));
+    const auto check = [&](PluginUnderTest &plugin, const gg::core::ParamValues &values,
+                           bool init = false) {
+        for (std::size_t s = 0; s < kParamCount; ++s)
+        {
+            INFO("slot " << s);
+            const auto slot = static_cast<ParamSlot>(s);
+            const auto ref = gg::core::layerOf(slot);
+            const bool kept = init ? ref && ref->param == gg::core::LayerParam::RingLength
+                                   : gg::core::isRingParam(slot);
+            CHECK(plugin.value(paramId(slot)) == (kept ? mine[s] : values[s]));
+        }
+        CHECK_FALSE(plugin.impl().presetEdited());
+    };
+
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    check(plugin, preset.values);
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
+    check(plugin, gg::core::initState(mode).values, true);
+
+    // Active: the Processor's rings keep their length; nothing is resized. (INIT gave the other
+    // four their defaults, so the session's are restored first.)
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
+    REQUIRE(plugin.activate(48000.0, 512));
+    processBlock(plugin, mode);
+    const auto *processor = plugin.impl().processor();
+    std::array<int64_t, gg::core::kLayers> frames{};
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        frames[layer] = processor->ringRead(layer).storage->frames();
+    }
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    processBlock(plugin, mode);
+    check(plugin, preset.values);
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        CHECK(plugin.impl().processor()->base(
+                  gg::core::layerSlot(gg::core::LayerParam::RingLength, layer)) == 3.0f);
+        CHECK(processor->ringRead(layer).storage->frames() == frames[layer]);
+    }
+    CHECK(plugin.impl().media().status(0).find("resizing") == std::string::npos);
+}
+
+// R4's active params.flush path (the residuals re-review's (d)): a load taken by params.flush
+// while active, not by process(), applies its routes before its values too, so FR-8's Freeze
+// arming sees the new routes, as the inactive load does (the test above, through process()).
+TEST_CASE("an instrument load taken by params.flush arms Freeze under its own routes",
+          "[plugin][preset]")
+{
+    constexpr Mode mode = Mode::Instrument;
+    SessionState without = gg::core::initState(mode);
+    without.values[at(ParamSlot::Source)] = static_cast<float>(gg::core::SourceKind::Live);
+    without.routes[9] = gg::core::ModRoute{}; // no Macro 6 to Freeze
+    SessionState with = without;
+    with.routes = gg::core::factoryRoutes(mode); // Macro 6 to Freeze
+    with.values[at(ParamSlot::Macro6)] = 1.0f;
+    const std::string locationWithout =
+        utf8(gg::test::writePresetFile("flush-arm-without", infoFor(mode), without));
+    const std::string locationWith =
+        utf8(gg::test::writePresetFile("flush-arm-with", infoFor(mode), with));
+
+    constexpr uint32_t kBlock = 512;
+    constexpr int kBlocks = 40; // far beyond the freeze ramp
+    const auto headAfter = [&](bool flushLoad) {
+        PresetHost host;
+        PluginUnderTest plugin(kInstrumentId, host.clap());
+        REQUIRE(plugin.valid());
+        if (flushLoad)
+        {
+            REQUIRE(plugin.activate(48000.0, kBlock));
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, locationWithout.c_str(),
+                                      nullptr));
+            gg::test::InputEvents none;
+            plugin.flush(none.list()); // the outgoing routes are in, by the flush path
+            plugin.impl().processor()->reset();
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, locationWith.c_str(),
+                                      nullptr));
+            plugin.flush(none.list()); // the load taken here, not by process()
+        }
+        else
+        {
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, locationWith.c_str(),
+                                      nullptr));
+            REQUIRE(plugin.activate(48000.0, kBlock));
+        }
+        for (int i = 0; i < kBlocks; ++i)
+        {
+            processBlock(plugin, mode, kBlock);
+        }
+        return plugin.impl().engine()->live().head();
+    };
+    const int64_t flushed = headAfter(true);
+    const int64_t inactive = headAfter(false);
+    CAPTURE(flushed, inactive);
+    CHECK(flushed == inactive);
+}
+
+TEST_CASE("a preset's reference that leaves its content root leaves the layer missing",
+          "[plugin][preset]")
+{
+    // Task 14's review: the loader takes a reference as gg-render and the packer do
+    // (gg::media::isContentRelativePath). `../outside/tone.wav`, an absolute path or a backslash
+    // is no reference: the layer is missing even though the file is where such a join would
+    // point.
+    const fs::path dir = setUpSamples("content-escape");
+    const fs::path root = contentRootWithTone("content-escape");
+    const fs::path outside =
+        gg::test::writeSineWav(dir / "outside" / "tone.wav", 44100, 1.5, 330.0);
+#if !defined(_WIN32)
+    gg::test::writeSineWav(root / "Samples\\Test\\tone.wav", 44100, 1.5, 330.0); // one name
+#endif
+    useContentRoot(root);
+    const gg::core::MediaEntry fingerprint = gg::test::entryOf(outside);
+    REQUIRE_FALSE(fingerprint.sha256Hex.empty());
+    for (const std::string &reference : {std::string("../outside/tone.wav"), utf8(outside),
+                                         std::string(R"(Samples\Test\tone.wav)")})
+    {
+        INFO(reference);
+        SessionState state = fixtureState(Mode::Instrument);
+        gg::core::MediaEntry entry = fingerprint;
+        entry.absolutePath.clear();
+        entry.relativePath.clear();
+        entry.contentPath = reference;
+        state.samples[0] = entry;
+        const std::string location =
+            utf8(gg::test::writePresetFile("content-escape", infoFor(Mode::Instrument), state));
+        PluginUnderTest instrument(kInstrumentId);
+        REQUIRE(instrument.valid());
+        REQUIRE(
+            instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+        CHECK(instrument.impl().media().loader(0).status().state == SampleState::Missing);
+    }
+}
+
+TEST_CASE("changing a ring parameter does not mark the loaded preset edited", "[plugin][preset]")
+{
+    // A preset load ignores the five ring parameters, so reloading would not undo a change to
+    // one: it is no edit.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    auto &impl = plugin.impl();
+    REQUIRE(plugin.activate(48000.0, 512));
+    const std::string path = utf8(fixtureFile("edited-ring", mode));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+    CHECK_FALSE(impl.presetEdited());
+
+    gg::test::InputEvents none;
+    for (const gg::core::LayerParam param :
+         {gg::core::LayerParam::RingLength, gg::core::LayerParam::Loop,
+          gg::core::LayerParam::LoopLength, gg::core::LayerParam::Overdub,
+          gg::core::LayerParam::Splice})
+    {
+        const ParamSlot slot = gg::core::layerSlot(param, 0);
+        INFO("slot " << static_cast<int>(slot));
+        const float before = plugin.value(paramId(slot));
+        impl.uiSetValue(slot, quarterOf(slot, mode) + 0.5);
+        plugin.flush(none.list());
+        CHECK(plugin.value(paramId(slot)) != before); // it did change
+        CHECK_FALSE(impl.presetEdited());
+    }
+    // A sound parameter still marks it.
+    impl.uiSetValue(ParamSlot::Size, quarterOf(ParamSlot::Size, mode) + 0.5);
+    plugin.flush(none.list());
+    CHECK(impl.presetEdited());
 }

@@ -263,12 +263,18 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The mod matrix's routes in effect (routes_): the factory routes in a new instance, then a
     /// loaded state's or the editor's last uiSetRoutes, whichever came later.
     const gg::core::ModRoutes &uiRoutes() const noexcept { return routes_; }
-    /// Replaces the routes with `routes`: routes_ at once, so the next state save carries them,
+    /// An array equal to routes_ pushes and marks nothing. Otherwise replaces the routes with
+    /// `routes`: routes_ at once, so the next state save carries them,
     /// and state.mark_dirty when the host offers clap.state. Active, they go to the audio thread
     /// through uiRoutesPending_ and apply at the start of its next process() or params.flush,
     /// after any state loaded before then, so a load made after this edit wins; inactive, the
     /// next activate() gives them to the processor with routes_.
     void uiSetRoutes(const gg::core::ModRoutes &routes) noexcept;
+
+    /// The memory cap from the editor (M2 sub-project 6, PR 2), main thread: clamped through
+    /// MediaSession::setMemoryCapMiB (evicting nothing), then state.mark_dirty when the cap
+    /// changed, since the cap is saved with the state (INST).
+    void uiSetMemoryCapMiB(uint32_t mib) noexcept;
 
     /// The output events of the editor's changes that the host's list refused (try_push false):
     /// each counted, never retried. Any thread.
@@ -313,6 +319,11 @@ class GigaGrainsPlugin : public plugHelper_t
     /// latest value. Deterministic: the same seed, locks, values and presses give the same sound.
     /// May leave the values unchanged (amount 0, or all locked).
     void mutate(float amount) noexcept;
+    /// The values the editor's last changes leave each parameter at: a slot's value waiting to
+    /// be sent, else the value last sent while the audio thread may not have applied it, else
+    /// the base value (what a Mutate press starts from). After a preset load, its values. The
+    /// editor's whole-state undo entries take their before and after from it. Main thread.
+    gg::core::ParamValues uiValues() const noexcept { return mutateInput(); }
     /// The safe way to set many parameters at once from the main thread (a preset-sized restore,
     /// an undo): each slot is sent as the editor's gesture, begin, value and end, like Mutate's,
     /// through the same pending set, batches and drain witness (flushMutate), so however many
@@ -344,8 +355,10 @@ class GigaGrainsPlugin : public plugHelper_t
 
     /// Loads the preset file `file` (gg/core/Preset.h) for this product, all or nothing: reads at
     /// most kMaxStateBytes + 1 bytes of it, checks it with readPreset, then applies it as a state
-    /// load does (applyState, LoadKind::Preset), keeping the seed (D6) and, when it names no
-    /// sample, the sample loaded (D5). False, with `error` saying why and nothing changed, when
+    /// load does (applyState, LoadKind::Preset), keeping the seed (D6), each layer's ring
+    /// parameters (gg::core::keepRingParams) and, when it names no sample, the sample loaded
+    /// (D5); a sample it names by its content-relative reference is found in the content roots
+    /// (gg::media::contentRoots). False, with `error` saying why and nothing changed, when
     /// the file can't be read ("can't read <file name>", and `osError`, if given, the errno of a
     /// file that can't be opened, 0 otherwise), is longer than kMaxStateBytes ("the preset is
     /// larger than 64 MiB"), or isn't a preset of this product ("not a Giga Grains FX preset",
@@ -503,8 +516,10 @@ class GigaGrainsPlugin : public plugHelper_t
 
   private:
     /// What a state applied by applyState is: a session (state.load), whose seed and sample
-    /// replace the instance's, or a preset (a file or INIT), which keeps the seed (D6) and, when
-    /// it names no sample, the sample (D5).
+    /// replace the instance's, or a preset (a file or INIT), which keeps the seed (D6), each
+    /// layer's ring parameters (gg::core::keepRingParams; INIT keeps Ring Length alone,
+    /// keepRingLengths; no preset load resizes a ring) and, when it names no sample, the sample
+    /// (D5).
     enum class LoadKind
     {
         Session,
@@ -514,7 +529,9 @@ class GigaGrainsPlugin : public plugHelper_t
     /// routes (and its seed and sample per `kind`) take effect as stateLoad's comment says, its
     /// name becomes presetName_ and its values presetValues_, and the host rescans the values.
     /// Main thread. All or nothing: may throw std::bad_alloc before anything changes.
-    void applyState(gg::core::SessionState &&state, LoadKind kind);
+    /// `init` (a preset load only): INIT, which keeps Ring Length alone, not all five ring
+    /// parameters.
+    void applyState(gg::core::SessionState &&state, LoadKind kind, bool init = false);
 
     clap_process_status
     processNonblocking(const clap_process *process) noexcept SST_CPPUTILS_NONBLOCKING;

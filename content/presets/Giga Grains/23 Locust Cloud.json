@@ -1,0 +1,45 @@
+{
+  "product": "instrument",
+  "name": "Locust Cloud",
+  "author": "Giga Grains",
+  "description": "A swarm of hundreds of tiny grains a second from a cymbal roll, a falling sweep and white noise; velocity thickens it and a random filter flickers through it.",
+  "tags": ["extreme", "noise", "glitch", "wide", "sample"],
+  "params": {
+    "Level": 3.5,
+    "A Position": 0.4,
+    "A Size": -6.058894,
+    "A Density": 8.643856,
+    "A Spray": 1.0,
+    "A Stereo": 1.0,
+    "Layer B On": 1,
+    "Level B": 1.5,
+    "B Position": 0.5,
+    "B Size": -5.058894,
+    "B Density": 7.643856,
+    "B Spray": 0.875703,
+    "B Stereo": 1.0,
+    "B Pitch Spread": 24.0,
+    "Layer C On": 1,
+    "Level C": 1.5,
+    "C Position": 0.5,
+    "C Size": -7.643856,
+    "C Density": 8.228819,
+    "C Spray": 0.875703,
+    "C Stereo": 1.0,
+    "C Bus 1 Filter": 3,
+    "C Bus 1 Cutoff": 11.965784,
+    "C Bus 1 Resonance": 0.7,
+    "C Random 1 Rate": 3.0,
+    "Reverb Amount": 0.2,
+    "Reverb Decay": 1.0
+  },
+  "mod": [
+    {"slot": 13, "source": "Velocity", "target": "Density", "targetLayer": "all", "depth": 2.0, "curve": "Unipolar"},
+    {"slot": 14, "source": "Random 1", "target": "A Bus 1 Cutoff", "targetLayer": "C", "depth": 3.0, "curve": "Bipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Textures/cymbal-roll.flac",
+    "B": "Samples/Generated/sweep-down.flac",
+    "C": "Samples/Generated/noise-bed-white.flac"
+  }
+}

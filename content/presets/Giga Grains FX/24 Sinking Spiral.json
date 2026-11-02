@@ -1,0 +1,32 @@
+{
+  "product": "fx",
+  "name": "Sinking Spiral",
+  "author": "Giga Grains",
+  "description": "Resamples its own output an octave down, again and again, into a descending, darkening spiral under your input.",
+  "tags": ["extreme", "dark", "drone", "live-input"],
+  "params": {
+    "Mix": 0.7,
+    "Size": -2,
+    "Density": 4.321928,
+    "Spray": 0.36033,
+    "Layer B On": 1,
+    "B Source": 2,
+    "B Pitch": -12,
+    "B Position": 0.36033,
+    "B Size": -1.321928,
+    "B Density": 4,
+    "B Stereo": 0.8,
+    "B Bus 1 Filter": 1,
+    "B Bus 1 Cutoff": 10.228819,
+    "B LFO 1 Rate": -3.321928,
+    "Delay Amount": 0.3,
+    "Delay Time": -0.736966,
+    "Delay Feedback": 0.6,
+    "Delay Damping": 0.6,
+    "Limiter Mode": 2,
+    "Limiter Ceiling": -2
+  },
+  "mod": [
+    {"slot": 13, "source": "LFO 1", "target": "A Bus 1 Cutoff", "targetLayer": "B", "depth": 1, "curve": "Bipolar"}
+  ]
+}

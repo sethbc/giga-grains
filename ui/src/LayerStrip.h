@@ -25,7 +25,10 @@ namespace gg::ui
 ///
 /// **Layout.** Column (the Perform view): the four layers' cells run down the strip, each
 /// spanning its lane's rows, so a layer's controls sit beside its lane (setLaneBounds). Row (the
-/// Edit and Mod views): the cells sit side by side in one compact row.
+/// Edit and Mod views): the cells sit side by side in one compact row. In a narrow cell (the
+/// editor at 640 × 360) Freeze takes from On, and Source from Level, the width their labels need,
+/// and the Source button draws a kind's short form ("Osc") where its name doesn't fit; the list,
+/// the tooltip and the accessibility value keep the names.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.
 class LayerStrip final : public juce::Component
@@ -61,6 +64,7 @@ class LayerStrip final : public juce::Component
     setSourceDropHandler(std::function<void(gg::core::ParamSlot, gg::core::ModSource)> handler);
 
     void resized() override;
+    void lookAndFeelChanged() override;
     void paintOverChildren(juce::Graphics &g) override;
 
   private:

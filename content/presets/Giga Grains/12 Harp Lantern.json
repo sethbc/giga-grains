@@ -1,0 +1,49 @@
+{
+  "product": "instrument",
+  "name": "Harp Lantern",
+  "author": "Giga Grains",
+  "description": "Harp and plucked psaltery in tune, each note read through its pluck and ring, with a ping-pong echo behind; play arpeggios, harder for louder.",
+  "tags": ["playable", "pluck", "strings", "wide", "sample"],
+  "params": {
+    "Level": 1.5,
+    "A Position": 0.6,
+    "A Size": -3.321928,
+    "A Density": 6.321928,
+    "A Distribution": 0.3,
+    "A Pitch": 12,
+    "A Spray": 0.102459,
+    "A Stereo": 0.5,
+    "A Env 1 Attack": -9.965784,
+    "A Env 1 Decay": 2.0,
+    "A Env 1 Sustain": 0.0,
+    "A Env 1 Release": 0.0,
+    "Layer B On": 1,
+    "Level B": -0.5,
+    "B Position": 0.7,
+    "B Size": -3.643856,
+    "B Density": 6.321928,
+    "B Distribution": 0.3,
+    "B Spray": 0.102459,
+    "B Stereo": 0.7,
+    "B Env 1 Attack": -9.965784,
+    "B Env 1 Decay": 1.0,
+    "B Env 1 Sustain": 0.0,
+    "B Env 1 Release": -0.321928,
+    "Reverb Amount": 0.2,
+    "Reverb Decay": 1.321928,
+    "Delay Amount": 0.25,
+    "Delay Time": -1.415037,
+    "Delay Feedback": 0.35,
+    "Delay Ping-pong": 1
+  },
+  "mod": [
+    {"slot": 13, "source": "Velocity", "target": "Level", "targetLayer": "all", "depth": 8.0, "curve": "Bipolar"},
+    {"slot": 14, "source": "Pitch Bend", "target": "Pitch", "targetLayer": "all", "depth": 2.0, "curve": "Bipolar"},
+    {"slot": 15, "source": "Env 1", "target": "Position", "targetLayer": "A", "depth": -0.6, "curve": "Unipolar"},
+    {"slot": 16, "source": "Env 1", "target": "Position", "targetLayer": "B", "depth": -0.7, "curve": "Unipolar"}
+  ],
+  "samples": {
+    "A": "Samples/Plucked/harp-c3.flac",
+    "B": "Samples/Plucked/psaltery-c4-plucked.flac"
+  }
+}

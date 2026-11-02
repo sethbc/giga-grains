@@ -1,0 +1,45 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "file", "path": "violin-c4-vibrato.flac"},
+  "samples": {
+    "B": {"kind": "file", "path": "viola-section-c3-vibrato.flac"},
+    "C": {"kind": "file", "path": "cello-section-c2-vibrato.flac"}
+  },
+  "params": {
+    "Position": 0.35,
+    "Size": -2.321928,
+    "Density": 5.643856,
+    "Spray": 0.05,
+    "Stereo": 0.3,
+    "Level": 7,
+    "Layer B On": 1,
+    "B Position": 0.35,
+    "B Size": -2.321928,
+    "B Density": 5.643856,
+    "B Spray": 0.05,
+    "B Stereo": 0.3,
+    "Level B": 5,
+    "Layer C On": 1,
+    "C Position": 0.35,
+    "C Size": -2.321928,
+    "C Density": 5.643856,
+    "C Spray": 0.05,
+    "C Stereo": 0.3,
+    "Level C": 6
+  },
+  "notes": [
+    {"time": 0.1, "key": 60, "duration": 1.0},
+    {"time": 1.0, "key": 64, "duration": 1.0},
+    {"time": 1.9, "key": 67, "duration": 1.4},
+    {"time": 3.2, "key": 69, "duration": 0.8},
+    {"time": 3.9, "key": 67, "duration": 0.8},
+    {"time": 4.6, "key": 65, "duration": 0.8},
+    {"time": 5.3, "key": 64, "duration": 0.8},
+    {"time": 6.0, "key": 62, "duration": 0.7},
+    {"time": 6.6, "key": 60, "duration": 1.3}
+  ]
+}

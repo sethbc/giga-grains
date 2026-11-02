@@ -69,10 +69,8 @@
 // It takes --space's options and, like it, is report-only with its own JSON.
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>

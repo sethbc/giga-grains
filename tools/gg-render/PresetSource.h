@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -57,20 +58,36 @@ struct PresetSource
 
 /// Parses and validates a preset source. On failure returns nullopt and sets `error` to a message
 /// naming the offending key ("product must be fx or instrument", "tags[1] 'Loud' is not in the
-/// vocabulary", "params.Foo is not a parameter of Giga Grains FX", "unknown key bogus"; a route's
-/// or a value's as the render spec's parser words it).
+/// vocabulary", "params.Foo is not a parameter of Giga Grains FX", "params.A Loop is a ring
+/// parameter, which a preset doesn't set …" (gg::core::isRingParam: a preset load keeps the
+/// instance's), "unknown key bogus"; a route's or a value's as the render spec's parser words it).
 std::optional<PresetSource> parsePresetSource(const std::string &json, std::string &error);
 
 /// The preset file of `source`, which parsePresetSource made (so every param name is its
 /// product's): encodePreset(source.info, state), state being
 /// initState(source.info.product) with each of the source's params set (as float, as the Processor
-/// takes it) and its routes set on the factory twelve (routesWith in Render.h). `contentDir`, the
-/// folder the samples' content-relative paths are taken from, is for the samples alone. On
-/// failure returns "" and sets `error`; until MEDI version 2 has content-relative references
-/// (after sub-project 2 merges), a source naming any sample is the error "samples need MEDI
-/// version 2 (after sub-project 2 merges)".
+/// takes it) and its routes set on the factory twelve (routesWith in Render.h), and each of its
+/// samples as MEDI version 2's content-relative reference (spec §6.6, §6.12): the file
+/// gg::media::resolveContentPath finds for it under `contentDir`, the content folder, loaded
+/// (gg::media::loadSample) for its entry's fingerprint, format, channels, rate and frames, with
+/// `contentPath` the reference, its layer, and no absolute or sample-folder path. On failure
+/// returns "" and sets `error`: a source naming a sample without `contentDir` ("the samples need
+/// --content-dir"), a reference that isn't gg::media::isContentRelativePath ("isn't a valid
+/// content-relative path"), one with no file under it ("not found"), or a file that doesn't
+/// decode. A source never sets a ring parameter: parsePresetSource refuses one.
 std::string packPreset(const PresetSource &source,
                        const std::optional<std::filesystem::path> &contentDir, std::string &error);
+
+/// `gg-render --mutate-preset` (spec §11, the listening pack's Mutate ladder): the preset file
+/// `bytes`, of either product, with its values moved by one Mutate press of the plugin's,
+/// gg::core::mutate with seed 0, `counter`, `amount` and defaultMutateLocks of its values (so
+/// its structure stays: gg/core/Mutate.h); its name, metadata, routes and samples unchanged,
+/// written again by encodePreset. Deterministic: the same bytes, amount and counter give the same
+/// file, and amount 0 gives `bytes` back. On failure returns "" and sets `error`: an amount
+/// outside [0, 1] (or NaN), or bytes that aren't a preset file this version reads (a session
+/// state among them).
+std::string mutatePreset(std::string_view bytes, float amount, uint32_t counter,
+                         std::string &error);
 } // namespace gg::render
 
 #endif // GG_RENDER_PRESETSOURCE_H

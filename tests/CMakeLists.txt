@@ -67,6 +67,7 @@ add_executable(gg-tests
         metrics/click_injection_tests.cpp
         metrics/comb_tests.cpp
         metrics/metrics_tests.cpp
+        metrics/preset_goldens_tests.cpp
         metrics/spectrogram_tests.cpp
         sweep/sweep_bursts_tests.cpp
         sweep/sweep_extremes_tests.cpp
@@ -75,16 +76,18 @@ add_executable(gg-tests
         sweep/sweep_params_tests.cpp
         tools/bench_kernel_tests.cpp
         tools/bench_tests.cpp
+        tools/factory_presets_tests.cpp
         tools/preset_source_tests.cpp
         tools/render_spec_tests.cpp
         tools/signals_tests.cpp
+        ui/edit_layout_tests.cpp
         ui/lane_model_tests.cpp
+        ui/memory_text_tests.cpp
+        ui/pad_model_tests.cpp
         ui/rings_tests.cpp
         ui/route_edits_tests.cpp
-        ui/edit_layout_tests.cpp
-        ui/undo_stack_tests.cpp
-        ui/pad_model_tests.cpp
         ui/splat_tests.cpp
+        ui/undo_stack_tests.cpp
         support/AllocTripwire.cpp
         )
 target_include_directories(gg-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -135,6 +138,7 @@ target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/media/src)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+        GG_FACTORY_PRESET_DIR="${CMAKE_SOURCE_DIR}/content/presets"
         GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
         GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
         GG_RENDER_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render"
@@ -167,20 +171,24 @@ if (GG_BUILD_PLUGINS)
             plugin/persist_tests.cpp
             plugin/preset_tests.cpp
             plugin/process_tests.cpp
-            plugin/rt_tests.cpp
             plugin/routes_tests.cpp
+            plugin/rt_tests.cpp
             plugin/sample_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
 # The editor's tests reach its components' private headers too (ui/src: GrainCanvas, LoaderStrip).
 # notices_tests.cpp checks the texts embedded into gg-ui, which only the editor builds;
-# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys).
+# editor_frame_tests.cpp the editor's frame (its views, header, undo, themes and keys);
+# canvas_tests.cpp, panels_tests.cpp and mod_view_tests.cpp the parts factory_tests.cpp used to hold.
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
-    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/editor_frame_tests.cpp)
+    target_sources(gg-tests PRIVATE ui/notices_tests.cpp plugin/canvas_tests.cpp
+            plugin/editor_frame_tests.cpp plugin/mod_view_tests.cpp plugin/panels_tests.cpp)
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/ui/src)
     # The preset strip and browser (M2 sub-project 5's spec §6.8), through the editor.
     target_sources(gg-tests PRIVATE plugin/browser_tests.cpp)
+    # The editor's media and ring API (M2 sub-project 6, PR 2).
+    target_sources(gg-tests PRIVATE plugin/editor_media_tests.cpp)
 endif ()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
@@ -188,8 +196,13 @@ include(Catch)
 # A case tagged [serial] measures time (or memory) and must not run beside the others: it is
 # discovered on its own, with RUN_SERIAL (CLAUDE.md, "Tests run in parallel").
 catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
-catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+catch_discover_tests(gg-tests TEST_SPEC "[serial]~[crawl48]" ADD_TAGS_AS_LABELS
         PROPERTIES RUN_SERIAL TRUE)
+# The crawl of the 48 packed factory presets (M2 sub-project 5's spec §10) measures time and reads
+# the presets the fixture presets_built packs (golden/presets/presets-built.cmake), so it is
+# serial and requires that fixture: it can't pass on an empty folder (it asserts 48 were seen).
+catch_discover_tests(gg-tests TEST_SPEC "[crawl48]" ADD_TAGS_AS_LABELS
+        PROPERTIES RUN_SERIAL TRUE FIXTURES_REQUIRED presets_built)
 
 # GG_FORCE_SSE (M2 engine spec §6.12): the hidden case "GG_FORCE_SSE in the environment forces the
 # 4-wide table", alone in a process whose environment sets the variable, so dispatch() resolves
@@ -457,6 +470,88 @@ add_test(NAME render_pack_preset_bad_source
         -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/pack-preset-bad-source.ggpreset
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
 set_tests_properties(render_pack_preset_bad_source PROPERTIES LABELS render)
+# --mutate-preset (spec §11, the listening pack's Mutate ladder): one Mutate press of seed 0 under
+# the default locks. render_mutate_preset mutates the packed fx-test preset twice at the same
+# amount and counter (the same bytes, not the input's), once at another counter (other bytes),
+# and renders through the result; a bad amount or counter is refused (exit 2) with nothing
+# written; and it takes no option but -o, --amount and --counter.
+add_test(NAME render_mutate_preset
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        -DPRESET=${GG_PACKED_PRESETS}/fx-test.ggpreset
+        -DSPEC=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/mutate-preset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-mutate-preset.cmake)
+set_tests_properties(render_mutate_preset PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_presets)
+foreach (bad IN ITEMS "amount;1.5;--amount must be from 0 to 1"
+        "amount;nan;--amount must be from 0 to 1"
+        "counter;-1;Could not convert: --counter = -1")
+    list(GET bad 0 what)
+    list(GET bad 1 value)
+    list(GET bad 2 message)
+    if (what STREQUAL "amount")
+        set(mutate_bad_args --amount ${value} --counter 1)
+        set(mutate_bad_name render_mutate_preset_bad_amount_${value})
+    else ()
+        set(mutate_bad_args --amount 0.1 --counter ${value})
+        set(mutate_bad_name render_mutate_preset_bad_counter)
+    endif ()
+    set(mutate_bad_args --mutate-preset ${GG_PACKED_PRESETS}/fx-test.ggpreset
+            -o ${CMAKE_CURRENT_BINARY_DIR}/${mutate_bad_name}.ggpreset ${mutate_bad_args})
+    add_test(NAME ${mutate_bad_name}
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+            "-DARGS=${mutate_bad_args}" -DEXPECTED_CODE=2
+            "-DEXPECTED_STDERR=${message}"
+            -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/${mutate_bad_name}.ggpreset
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+    set_tests_properties(${mutate_bad_name} PROPERTIES LABELS render
+            FIXTURES_REQUIRED packed_presets)
+endforeach ()
+add_test(NAME render_mutate_preset_alone
+        COMMAND gg-render --mutate-preset ${GG_PACKED_PRESETS}/fx-test.ggpreset
+        -o ${CMAKE_CURRENT_BINARY_DIR}/mutate-preset-alone.ggpreset --amount 0.1 --counter 1
+        --block-size 64)
+set_tests_properties(render_mutate_preset_alone PROPERTIES LABELS render
+        PASS_REGULAR_EXPRESSION "excludes --mutate-preset|--mutate-preset excludes")
+# A preset naming a content sample (presets' group 2; spec §6.6, §6.10): fx-sample-test.json's
+# layer A is loop-48k.wav, content-relative, so golden_media's folder serves as its content root.
+# render_pack_preset_samples packs it with --content-dir (the fixture packed_sample_presets),
+# render_preset_samples renders it with --content-dir, and without --content-dir the pack and the
+# render are both bad input (exit 2) naming what they need.
+add_test(NAME render_pack_preset_samples
+        COMMAND gg-render --pack-preset
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-sample-test.json
+        -o ${GG_PACKED_PRESETS}/fx-sample-test.ggpreset --content-dir ${GG_GOLDEN_MEDIA_DIR})
+set_tests_properties(render_pack_preset_samples PROPERTIES LABELS render
+        FIXTURES_REQUIRED golden_media FIXTURES_SETUP packed_sample_presets)
+set(render_pack_preset_samples_no_content_args
+        --pack-preset ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets/fx-sample-test.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/pack-preset-no-content.ggpreset)
+add_test(NAME render_pack_preset_samples_no_content
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_pack_preset_samples_no_content_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=--content-dir"
+        -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/pack-preset-no-content.ggpreset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_pack_preset_samples_no_content PROPERTIES LABELS render)
+add_test(NAME render_preset_samples
+        COMMAND gg-render ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-sample-test.ggpreset --content-dir ${GG_GOLDEN_MEDIA_DIR}
+        -o ${GG_PACKED_PRESETS}/render-fx-sample-preset.wav)
+set_tests_properties(render_preset_samples PROPERTIES LABELS render
+        FIXTURES_REQUIRED "golden_media;packed_sample_presets")
+set(render_preset_samples_no_content_args
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-fx-preset.json
+        --preset ${GG_PACKED_PRESETS}/fx-sample-test.ggpreset)
+add_test(NAME render_preset_samples_no_content
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_preset_samples_no_content_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=loop-48k.wav"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_preset_samples_no_content PROPERTIES LABELS render
+        FIXTURES_REQUIRED packed_sample_presets)
 # A non-ASCII --spectrogram path (carry-over [181]): gg-render exits 0 only if the PNG was
 # written, which on Windows needs the wide-path open, not stbi_write_png's narrow one.
 add_test(NAME render_spectrogram_utf8_path
@@ -501,6 +596,43 @@ foreach (spec IN LISTS GG_GOLDEN_CASE_SPECS)
             --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.metrics.json
             --compare-events ${CMAKE_CURRENT_SOURCE_DIR}/golden/expected/${case}.events.jsonl)
     set_tests_properties(golden_${case} PROPERTIES LABELS golden FIXTURES_REQUIRED golden_media)
+endforeach ()
+
+# The preset goldens (M2 sub-project 5's spec §10), labels `golden` and `presets`: one per factory
+# preset, golden/presets/cases/<fx|inst>-NN-<slug>.json, compared with golden/presets/expected/ as
+# the cases above are. Each spec's "preset": "presets/<Product>/NN Name.ggpreset" resolves through
+# --media-dir: presets_built builds gg-presets and copies the packed presets into
+# <golden-media>/presets/ (it needs the fixture `content` first, which also keeps its build from
+# running beside content_fixture's in the same tree), and the samples they name come from
+# --content-dir, the fetched content. Their click scores are checked under the limit by
+# metrics/preset_goldens_tests.cpp, in place of the click-injection table (spec §10).
+add_test(NAME presets_built
+        COMMAND ${CMAKE_COMMAND} -DBUILD=${CMAKE_BINARY_DIR} -DCONFIG=$<CONFIG>
+        -DPRESETS=${GG_PRESETS_DIR} -DOUT=${GG_GOLDEN_MEDIA_DIR}/presets
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/presets-built.cmake)
+set_tests_properties(presets_built PROPERTIES LABELS "golden;presets"
+        FIXTURES_REQUIRED content FIXTURES_SETUP presets_built)
+# Where the fixture leaves the packed presets, for the plugin crawl test (plugin/discovery_tests.cpp).
+target_compile_definitions(gg-tests PRIVATE GG_BUILT_PRESETS_DIR="${GG_GOLDEN_MEDIA_DIR}/presets")
+file(GLOB GG_PRESET_GOLDEN_SPECS CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/cases/*.json)
+if (NOT GG_PRESET_GOLDEN_SPECS)
+    message(FATAL_ERROR
+            "No preset golden cases in ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/cases")
+endif ()
+foreach (spec IN LISTS GG_PRESET_GOLDEN_SPECS)
+    get_filename_component(case ${spec} NAME_WLE)
+    add_test(NAME golden_preset_${case}
+            COMMAND gg-render ${spec}
+            --media-dir ${GG_GOLDEN_MEDIA_DIR}
+            --content-dir ${GG_CONTENT_ROOT}
+            -o ${CMAKE_BINARY_DIR}/golden/presets/${case}.wav
+            --spectrogram ${CMAKE_BINARY_DIR}/golden/presets/${case}.png
+            --compare ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/expected/${case}.metrics.json
+            --compare-events
+            ${CMAKE_CURRENT_SOURCE_DIR}/golden/presets/expected/${case}.events.jsonl)
+    set_tests_properties(golden_preset_${case} PROPERTIES LABELS "golden;presets"
+            FIXTURES_REQUIRED "golden_media;content;presets_built")
 endforeach ()
 
 # The golden gate must be able to fail, label `golden`. Each tamper test compares a fresh render of
@@ -704,6 +836,12 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
     # About 66 s in Debug: `slow`, so -LE slow leaves it out.
     set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 300)
+    # Bad usage (an unknown option, no folder, a malformed size) exits 2 with the usage; fast.
+    add_test(NAME snap_cli_usage
+            COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli_usage
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap-usage.cmake)
+    set_tests_properties(snap_cli_usage PROPERTIES LABELS "plugin" TIMEOUT 60)
 endif ()
 
 # The installers (spec §6), label `installer`. installer_build_products builds gg-products (not
@@ -719,11 +857,12 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
 
     # The content (M2 sub-project 5's spec §6.11): gg-products/content/ holds the factory presets
     # gg-presets packed and the fetched samples, with the provenance, the CC0 text and the version
-    # file, which the installers' Content component carries. Its minimums are 0 presets in the
-    # first group (no factory sources yet); the factory-content task raises them to 24 and 8.
+    # file, which the installers' Content component carries: at least the 24 factory presets per
+    # product, 8 of the FX's tagged `midi` (factory_presets_tests.cpp pins the sources' exact
+    # counts).
     add_test(NAME installer_content_staged
             COMMAND ${CMAKE_COMMAND} -DDIR=${GG_PRODUCT_DIR}/content
-            -DPIN=${GG_CONTENT_PIN} -DPRODUCTS_MIN=0 -DMIDI_MIN=0
+            -DPIN=${GG_CONTENT_PIN} -DPRODUCTS_MIN=24 -DMIDI_MIN=8
             -P ${CMAKE_CURRENT_SOURCE_DIR}/installer/check-content.cmake)
     set_tests_properties(installer_content_staged PROPERTIES LABELS installer
             FIXTURES_REQUIRED gg_products)
@@ -855,6 +994,17 @@ foreach (case IN ITEMS allowed other-target-source other-target-include other-ta
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
     set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()
+
+# The embed script (cmake/embed-text.cmake, carry-over row 319): its escaping over a fixture of a
+# quote, a backslash, control characters, UTF-8, a 40,000-byte line and an empty file, and its
+# refusal of unpaired lists. A mismatch reports the first differing byte offset.
+foreach (case IN ITEMS escapes long-line empty unpaired)
+    add_test(NAME embed_text_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/embed_text_${case}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-text/run.cmake)
+    set_tests_properties(embed_text_${case} PROPERTIES LABELS "build;ui")
 endforeach ()
 
 # The version (cmake/version.cmake, spec §6.1): gg_compose_version joins the numeric part and the

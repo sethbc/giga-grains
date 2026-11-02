@@ -35,18 +35,21 @@ inline constexpr uint32_t kMutateLayer = 0xFFFFFFFFu;
 inline constexpr uint32_t kMutateStream = 0xFFFFFFFFu;
 inline constexpr uint32_t kMutatePickStream = 0xFFFFFFFEu;
 
-/// D3's fixed set, "the structure stays, the sound moves": Mix, Level and Level B to D, Layer A to
-/// D On, every layer's Source, Freeze and Step Length, the eight macros, Morph X and Y, Reverb
-/// Amount and Dry to Reverb. The same in both products (the instrument's hidden Mix and Dry to
-/// Reverb never move).
+/// D3's fixed set, "the structure stays, the sound moves" (62 slots): Mix, Level and Level B to D,
+/// Layer A to D On, every layer's Source, Freeze and Step Length, the eight macros, Morph X and Y,
+/// Reverb Amount and Dry to Reverb; and wave 2's structure by section (spec §6.9, group 2): every
+/// layer's Quality and five ring parameters (isRingParam: Ring Length, Loop, Loop Length, Overdub,
+/// Splice), Budget, Delay Amount and the limiter's Mode, Ceiling and Release. The same in both
+/// products (the instrument's hidden Mix and Dry to Reverb never move).
 LockSet structuralLocks(Mode mode) noexcept;
 
 /// Every parameter of each layer whose Layer On value is below 0.5 (or NaN).
 LockSet offLayerLocks(const ParamValues &values) noexcept;
 
 /// The default locks for `values`: structuralLocks(mode) | offLayerLocks(values). Everything else
-/// moves: each on layer's other parameters and Space's Decay, Size, Damping, Pre-delay and
-/// Modulation.
+/// moves: each on layer's other parameters (its Smear, Bus Split and the buses' filters among
+/// them), Space's Decay, Size, Damping, Pre-delay and Modulation, and the delay's Time, Feedback,
+/// Damping and Ping-pong.
 LockSet defaultMutateLocks(const ParamValues &values, Mode mode) noexcept;
 
 /// `out` = `in` mutated by `amount` (clamped to [0, 1]; NaN is 0), press `counter` of `seed`. For

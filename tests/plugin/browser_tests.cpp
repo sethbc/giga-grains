@@ -10,7 +10,9 @@
 // ends; each case runs in a process of its own. A preset load calls state.mark_dirty, and a
 // browser load tells the host with preset_load.loaded: both pinned here with a stub host.
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -30,6 +32,7 @@
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/data/Continuous.h>
 
+#include "Palette.h"
 #include "PluginHarness.h"
 #include "PresetBrowser.h"
 #include "editor/EditorPlugin.h"
@@ -39,6 +42,7 @@
 #include "gg/media/ContentPaths.h"
 #include "gg/media/SettingsFile.h"
 #include "gg/ui/Editor.h"
+#include "gg/ui/UndoStack.h"
 #include "support/Utf8.h"
 
 namespace
@@ -724,6 +728,57 @@ TEST_CASE("a lock toggle flips the plugin's lock and Reset locks restores the st
     CHECK_FALSE(size.getToggleState());
 }
 
+TEST_CASE("the lock list shows wave 2's parameters by section and Ring Length as not mutable",
+          "[plugin][ui][mutate]")
+{
+    // Spec §6.9, group 2: Quality, Budget, the ring parameters, Delay Amount and the limiter
+    // start locked; Smear, the buses and the delay's sound start unlocked. Ring Length, which no
+    // host may automate, is never moved by a press (SP-M8): its row is dimmed and has no toggle.
+    const Machine machine("mutate-wave2");
+    Fixture f;
+    openPanel(f);
+    f.tick();
+    for (const ParamSlot s :
+         {ParamSlot::Quality, ParamSlot::Budget, ParamSlot::Loop, ParamSlot::LoopLength,
+          ParamSlot::Overdub, ParamSlot::Splice, ParamSlot::DelayAmount, ParamSlot::LimiterMode,
+          ParamSlot::LimiterCeiling, ParamSlot::LimiterRelease})
+    {
+        INFO("slot " << static_cast<int>(s));
+        CHECK(f.impl->mutateLocked(s));
+        CHECK(lockRow(f, s).getToggleState());
+        CHECK(lockRow(f, s).isEnabled());
+    }
+    for (const ParamSlot s : {ParamSlot::Smear, ParamSlot::BusSplit, ParamSlot::Bus1Filter,
+                              ParamSlot::Bus2Cutoff, ParamSlot::DelayTime, ParamSlot::DelayFeedback,
+                              ParamSlot::DelayDamping, ParamSlot::DelayPingPong})
+    {
+        INFO("slot " << static_cast<int>(s));
+        CHECK_FALSE(f.impl->mutateLocked(s));
+        CHECK_FALSE(lockRow(f, s).getToggleState());
+    }
+
+    // Ring Length: dimmed, no toggle, and a click changes nothing.
+    auto &ring = lockRow(f, ParamSlot::RingLength);
+    CHECK_FALSE(ring.isEnabled());
+    CHECK_FALSE(ring.getClickingTogglesState());
+    CHECK(ring.getAlpha() < 1.0f);
+    CHECK_FALSE(ring.getToggleState());
+    const bool before = f.impl->mutateLocked(ParamSlot::RingLength);
+    click(ring);
+    CHECK(f.impl->mutateLocked(ParamSlot::RingLength) == before);
+
+    // The delay and the limiter are sections of their own, after Space, before the macros.
+    auto &list = *find(panel(f), "mutate.lockList");
+    const auto top = [&](ParamSlot s) { return lockRow(f, s).getBounds().getY(); };
+    CHECK(need<juce::Label>(list, "mutate.heading.delay").getText() == "Delay");
+    CHECK(need<juce::Label>(list, "mutate.heading.limiter").getText() == "Limiter");
+    CHECK(top(ParamSlot::ReverbDecay) < top(ParamSlot::DelayTime));
+    CHECK(top(ParamSlot::DelayPingPong) < top(ParamSlot::LimiterMode));
+    CHECK(top(ParamSlot::LimiterRelease) < top(ParamSlot::Macro1));
+    CHECK(need<juce::Label>(list, "mutate.heading.delay").getBounds().getY() <
+          top(ParamSlot::DelayAmount));
+}
+
 TEST_CASE("an off layer's rows are dimmed apart from their locks", "[plugin][ui][mutate]")
 {
     const Machine machine("mutate-offlayer");
@@ -817,6 +872,131 @@ TEST_CASE("EditorContext::sendValues is filled and its values arrive after a dra
     f.plugin.flush(none.list());
     CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Size)) == size);
     CHECK(f.plugin.value(gg::core::paramId(ParamSlot::Pitch)) == pitch);
+}
+
+namespace
+{
+/// Drains the editor's queue as a host would, a params.flush then on_main_thread (which sends
+/// the next batch of a whole-state replay), until every batch is applied.
+void settle(Fixture &f)
+{
+    for (int round = 0; round < 64; ++round)
+    {
+        gg::test::InputEvents in;
+        gg::test::OutputEvents out(8192);
+        f.plugin.flush(in.list(), out.list());
+        CHECK(out.refused() == 0);
+        f.plugin.onMainThread();
+    }
+}
+
+ParamSlot ringSlot(gg::core::LayerParam param) { return gg::core::layerSlot(param, 0); }
+} // namespace
+
+TEST_CASE("a preset load, INIT and a Mutate press are one undo entry each, the rings kept",
+          "[plugin][ui][preset][mutate]")
+{
+    // INTENT §17: whole-state entries for preset recall and Mutate (M2 sub-project 6's D7). A
+    // preset load keeps the five ring parameters and INIT Ring Length, so an entry holds no
+    // Ring Length and an undo never resizes a ring; undoing INIT gives Loop and the rest back.
+    using gg::core::LayerParam;
+    const Machine machine("undo-whole-state");
+    putPresets(machine);
+    Fixture f;
+    REQUIRE(f.plugin.activate(48000.0, 64));
+    const auto &context = f.impl->editorContext();
+    gg::ui::UndoStack *undo = context.undo;
+    REQUIRE(undo != nullptr);
+    REQUIRE(context.mutate);
+
+    // The instance's own capture settings and a macro, set as the editor would.
+    const ParamSlot ring = ringSlot(LayerParam::RingLength);
+    const ParamSlot loop = ringSlot(LayerParam::Loop);
+    const ParamSlot loopLength = ringSlot(LayerParam::LoopLength);
+    const ParamSlot overdub = ringSlot(LayerParam::Overdub);
+    const ParamSlot splice = ringSlot(LayerParam::Splice);
+    context.sendValues({{ring, 3.0},
+                        {loop, 1.0},
+                        {loopLength, -1.0},
+                        {overdub, 0.5},
+                        {splice, 2.0},
+                        {ParamSlot::Macro1, 0.625}});
+    settle(f);
+    const auto mine = [&] {
+        CHECK(f.impl->uiBaseValue(loop) == 1.0f);
+        CHECK(f.impl->uiBaseValue(loopLength) == -1.0f);
+        CHECK(f.impl->uiBaseValue(overdub) == 0.5f);
+        CHECK(f.impl->uiBaseValue(splice) == 2.0f);
+    };
+    REQUIRE(f.impl->uiBaseValue(ring) == 3.0f);
+    mine();
+    REQUIRE(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.625f);
+    REQUIRE_FALSE(undo->canUndo());
+
+    f.openBrowser();
+    f.list().selectRow(1); // FX Test: Macro 1 at 0.25, the rings kept
+    REQUIRE(f.impl->presetName() == "FX Test");
+    CHECK(undo->undoLabel() == "Preset");
+    CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.25f);
+    mine();
+    f.list().selectRow(0); // INIT: Ring Length kept, Loop and the rest at their defaults
+    REQUIRE(f.impl->presetName() == "Init");
+    CHECK(undo->size() == 2);
+    const float loopDefault = f.impl->uiBaseValue(loop);
+    CHECK(loopDefault != 1.0f);
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK_FALSE(f.impl->presetEdited());
+
+    // Undo INIT: the capture settings come back, Ring Length never moved; the values no longer
+    // INIT's, the preset reads edited.
+    undo->undo();
+    settle(f);
+    mine();
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.25f);
+    CHECK(f.impl->presetEdited());
+    // Undo the preset load: the values before it.
+    undo->undo();
+    settle(f);
+    CHECK(f.impl->uiBaseValue(ParamSlot::Macro1) == 0.625f);
+    mine();
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    // Undo leaves the name alone; the values differ from the preset's, so it reads edited
+    // (carry-over row 402).
+    CHECK(f.impl->presetEdited());
+    CHECK_FALSE(undo->canUndo());
+    // Redo both: INIT's values again, and no longer edited.
+    undo->redo();
+    undo->redo();
+    settle(f);
+    CHECK(f.impl->uiBaseValue(loop) == loopDefault);
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    CHECK_FALSE(f.impl->presetEdited());
+
+    // A Mutate press: one entry, whose undo puts every value back.
+    gg::core::ParamValues before{};
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        before[s] = f.impl->uiBaseValue(static_cast<ParamSlot>(s));
+    }
+    context.mutate(1.0f);
+    CHECK(undo->undoLabel() == "Mutate");
+    settle(f);
+    std::size_t moved = 0;
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        moved += f.impl->uiBaseValue(static_cast<ParamSlot>(s)) != before[s] ? 1 : 0;
+    }
+    CHECK(moved > 0);
+    CHECK(f.impl->uiBaseValue(ring) == 3.0f);
+    undo->undo();
+    settle(f);
+    for (std::size_t s = 0; s < gg::core::kParamCount; ++s)
+    {
+        CAPTURE(s);
+        CHECK(f.impl->uiBaseValue(static_cast<ParamSlot>(s)) == before[s]);
+    }
+    CHECK_FALSE(f.impl->presetEdited());
 }
 
 // ---- The fix wave's browser cases (I4, M2, M3, M4, T5) ----
@@ -1041,7 +1221,7 @@ juce::Rectangle<int> loaderStrip(Fixture &f)
 
 void checkOverlayHides(Fixture &f, const std::function<void()> &open, bool strip = false)
 {
-    const juce::Colour background{0xff15171c}; // theme::kBackground
+    const juce::Colour background{0xff15171c}; // the dark palette's background (ui/src/Palette.cpp)
     const juce::Image perform = snapshot(f);
     const auto label = strip ? loaderStrip(f) : lastMacroLabel(f);
     REQUIRE(pixelsNot(perform, label, background) > 0); // the ink, with nothing over it
@@ -1144,4 +1324,267 @@ TEST_CASE("each layer's Lock all and Unlock all have a row of their own, in view
             CHECK_FALSE(rows[i].intersects(rows[j]));
         }
     }
+}
+
+// ---- Row 313: the strip, the browser and the Mutate panel take the editor's theme ----
+
+namespace
+{
+using gg::ui::ThemeChoice;
+
+/// WCAG's contrast ratio of two opaque colors.
+double contrastOf(juce::Colour a, juce::Colour b)
+{
+    const auto luminance = [](juce::Colour c) {
+        const auto lin = [](float v) {
+            return v <= 0.03928f ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * lin(c.getFloatRed()) + 0.7152 * lin(c.getFloatGreen()) +
+               0.0722 * lin(c.getFloatBlue());
+    };
+    const double la = luminance(a), lb = luminance(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+/// `fg` at its own alpha, times `alpha`, over the opaque `bg`.
+juce::Colour over(juce::Colour fg, juce::Colour bg, float alpha = 1.0f)
+{
+    return bg.interpolatedWith(fg.withAlpha(1.0f), fg.getFloatAlpha() * alpha);
+}
+
+const gg::ui::Palette &paletteFor(ThemeChoice theme)
+{
+    return theme == ThemeChoice::Light ? gg::ui::Palette::light() : gg::ui::Palette::dark();
+}
+
+/// A button's text against its ground, off and on (the on ground: buttonOn over buttonColour).
+void checkButton(const juce::TextButton &button)
+{
+    INFO(button.getComponentID());
+    const juce::Colour ground = button.findColour(juce::TextButton::buttonColourId);
+    CHECK(contrastOf(over(button.findColour(juce::TextButton::textColourOffId), ground), ground) >=
+          4.5);
+    const juce::Colour onGround =
+        over(button.findColour(juce::TextButton::buttonOnColourId), ground);
+    CHECK(contrastOf(over(button.findColour(juce::TextButton::textColourOnId), onGround),
+                     onGround) >= 4.5);
+}
+
+/// The component drawn offscreen at 1x.
+juce::Image drawn(juce::Component &c)
+{
+    return c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);
+}
+
+/// The most contrasting pixel of `area` against `ground`: the text's color at full coverage.
+double strongestContrast(const juce::Image &image, juce::Rectangle<int> area, juce::Colour ground)
+{
+    double best = 1.0;
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+    {
+        for (int x = area.getX(); x < area.getRight(); ++x)
+        {
+            best = std::max(best, contrastOf(image.getPixelAt(x, y).withAlpha(1.0f), ground));
+        }
+    }
+    return best;
+}
+
+void saveImage(const juce::Image &image, const char *name)
+{
+    const char *dir = std::getenv("GG_SCREENSHOT_DIR");
+    if (dir == nullptr || *dir == '\0')
+    {
+        return;
+    }
+    juce::File out = juce::File(juce::String::fromUTF8(dir)).getChildFile(name);
+    juce::FileOutputStream stream(out);
+    if (stream.openedOk())
+    {
+        stream.setPosition(0);
+        stream.truncate();
+        juce::PNGImageFormat().writeImageToStream(image, stream);
+    }
+}
+} // namespace
+
+TEST_CASE("the strip, the browser and the Mutate panel read in both themes", "[plugin][ui][mutate]")
+{
+    // Every text against its ground is at least 4.5:1 (WCAG AA) in the light and the dark theme,
+    // and each takes the palette's grounds. A dimmed row (an off layer's, Ring Length) is
+    // disabled text: WCAG exempts it, and it must still read, so at least 3:1 (the large-text
+    // and UI-component floor).
+    const Machine machine("theme-contrast");
+    putPresets(machine);
+    Fixture f;
+    f.openBrowser();
+    f.list().selectRow(1);
+    click(need<juce::TextButton>(*f.list().getComponentForRowNumber(1), "preset.star"));
+    f.tick();
+    f.list().selectRow(2); // a selected row, a favorite row and a loaded one: three looks
+    for (const ThemeChoice theme : {ThemeChoice::Light, ThemeChoice::Dark})
+    {
+        INFO((theme == ThemeChoice::Light ? "light" : "dark"));
+        REQUIRE(gg::ui::setTheme(*f.editor, theme));
+        const auto &palette = paletteFor(theme);
+
+        // The strip.
+        for (const char *id : {"preset.prev", "preset.name", "preset.next"})
+        {
+            checkButton(need<juce::TextButton>(*f.editor, id));
+        }
+        CHECK(need<juce::TextButton>(*f.editor, "preset.name")
+                  .findColour(juce::TextButton::buttonColourId) == palette.background);
+
+        // The browser.
+        REQUIRE(f.browser().isVisible());
+        CHECK(drawn(f.browser()).getPixelAt(5, 5) == palette.background);
+        for (const char *id :
+             {"preset.favorites", "preset.save", "preset.mutate", "preset.delete", "preset.folder"})
+        {
+            checkButton(need<juce::TextButton>(f.browser(), id));
+        }
+        for (const char *id : {"preset.tag.rhythmic", "preset.tag.texture"})
+        {
+            checkButton(need<juce::TextButton>(f.browser(), id));
+        }
+        const auto &search = need<juce::TextEditor>(f.browser(), "preset.search");
+        const juce::Colour box = search.findColour(juce::TextEditor::backgroundColourId);
+        CHECK(box == palette.background);
+        CHECK(contrastOf(search.findColour(juce::TextEditor::textColourId), box) >= 4.5);
+        CHECK(search.findColour(juce::TextEditor::focusedOutlineColourId) == palette.accent);
+        CHECK(contrastOf(need<juce::Label>(f.browser(), "preset.status")
+                             .findColour(juce::Label::textColourId),
+                         palette.background) >= 4.5);
+        const juce::Colour listGround = f.list().findColour(juce::ListBox::backgroundColourId);
+        CHECK(listGround == palette.header);
+        const juce::Image listImage = drawn(f.list());
+        for (int row = 0; row < f.rows(); ++row)
+        {
+            INFO("row " << row);
+            auto *component = f.list().getComponentForRowNumber(row);
+            REQUIRE(component != nullptr);
+            const auto at = f.list().getLocalArea(component, component->getLocalBounds());
+            const juce::Colour ground = listImage.getPixelAt(at.getX() + 1, at.getY() + 1);
+            const int w = at.getWidth();
+            const int h = at.getHeight();
+            // The strongest pixel is the text at full coverage: the name, then the tags.
+            CHECK(strongestContrast(listImage, {at.getX() + 6, at.getY() + 2, 52, h - 4}, ground) >=
+                  4.5);
+            if (row > 0)
+            {
+                CHECK(strongestContrast(listImage, {at.getX() + 70, at.getY() + 2, w - 140, h - 4},
+                                        ground) >= 4.5);
+            }
+            // The star is a glyph, not text: WCAG's 3:1 for graphics (1.4.11) holds it. The
+            // accent of a favorite is 4.4:1 on the light ground, under the 4.5 of text.
+            const auto &star = need<juce::TextButton>(*component, "preset.star");
+            CHECK(contrastOf(star.findColour(juce::TextButton::textColourOffId),
+                             star.findColour(juce::TextButton::buttonColourId)) >= 3.0);
+        }
+        // The Save as panel.
+        click(f.button("preset.save"));
+        auto &save = *find(f.browser(), "preset.savepanel");
+        REQUIRE(save.isVisible());
+        for (const char *id : {"preset.save.ok", "preset.save.cancel", "preset.save.tag.rhythmic"})
+        {
+            checkButton(need<juce::TextButton>(save, id));
+        }
+        const auto &name = need<juce::TextEditor>(save, "preset.save.name");
+        CHECK(contrastOf(name.findColour(juce::TextEditor::textColourId),
+                         name.findColour(juce::TextEditor::backgroundColourId)) >= 4.5);
+        CHECK(name.findColour(juce::TextEditor::backgroundColourId) == palette.background);
+        const auto &message = need<juce::Label>(save, "preset.save.message");
+        CHECK(contrastOf(message.findColour(juce::Label::textColourId), palette.header) >= 4.5);
+        save.setVisible(false);
+
+        // The Mutate panel.
+        click(need<juce::TextButton>(f.browser(), "preset.mutate"));
+        REQUIRE(panel(f).isVisible());
+        f.tick();
+        CHECK(drawn(panel(f)).getPixelAt(5, 5) == palette.background);
+        for (const char *id : {"mutate.go", "mutate.reset", "mutate.close", "mutate.lockall.A",
+                               "mutate.unlockall.B"})
+        {
+            checkButton(need<juce::TextButton>(panel(f), id));
+        }
+        for (const ParamSlot slot : {ParamSlot::Mix, ParamSlot::Size, ParamSlot::LimiterMode})
+        {
+            checkButton(lockRow(f, slot)); // locked (on) and unlocked (off) rows
+        }
+        const auto labelOn = [&](const char *id, double floor) {
+            INFO(id);
+            CHECK(contrastOf(need<juce::Label>(panel(f), id).findColour(juce::Label::textColourId),
+                             palette.background) >= floor);
+        };
+        labelOn("mutate.heading.A", 4.5);
+        labelOn("mutate.heading.delay", 4.5);
+        labelOn("mutate.heading.limiter", 4.5);
+        labelOn("mutate.amountText", 4.5);
+        // Dimmed rows (an off layer B's, Ring Length): the text blended with the panel's ground.
+        for (const ParamSlot slot : {ParamSlot::B_Size, ParamSlot::RingLength})
+        {
+            auto &row = lockRow(f, slot);
+            REQUIRE(row.getAlpha() < 1.0f);
+            const juce::Colour shown = over(row.findColour(juce::TextButton::textColourOffId),
+                                            palette.background, row.getAlpha());
+            INFO("dimmed " << lockId(slot));
+            CHECK(contrastOf(shown, palette.background) >= 3.0);
+        }
+        // Back to the browser's place for the next theme.
+        click(need<juce::TextButton>(panel(f), "mutate.close"));
+        click(f.button("preset.name"));
+        REQUIRE(f.browser().isVisible());
+    }
+}
+
+TEST_CASE("a theme switch with the browser and the Mutate panel open repaints them",
+          "[plugin][ui][mutate]")
+{
+    const Machine machine("theme-switch");
+    putPresets(machine);
+    Fixture f;
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Dark));
+    f.openBrowser();
+    const juce::Colour darkGround = drawn(f.browser()).getPixelAt(5, 5);
+    const juce::Colour darkButton =
+        f.button("preset.save").findColour(juce::TextButton::buttonColourId);
+    const juce::Colour darkStrip =
+        f.button("preset.name").findColour(juce::TextButton::textColourOffId);
+    const juce::Colour darkList = f.list().findColour(juce::ListBox::backgroundColourId);
+    saveImage(drawn(*f.editor), "dark-browser.png");
+
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Light)); // the browser stays open
+    REQUIRE(f.browser().isVisible());
+    const auto &light = gg::ui::Palette::light();
+    CHECK(drawn(f.browser()).getPixelAt(5, 5) == light.background);
+    CHECK(drawn(f.browser()).getPixelAt(5, 5) != darkGround);
+    CHECK(f.button("preset.save").findColour(juce::TextButton::buttonColourId) != darkButton);
+    CHECK(f.button("preset.name").findColour(juce::TextButton::textColourOffId) != darkStrip);
+    CHECK(f.button("preset.name").findColour(juce::TextButton::textColourOffId) == light.text);
+    CHECK(f.list().findColour(juce::ListBox::backgroundColourId) != darkList);
+    CHECK(f.list().findColour(juce::ListBox::backgroundColourId) == light.header);
+    saveImage(drawn(*f.editor), "light-browser.png");
+
+    click(need<juce::TextButton>(f.browser(), "preset.mutate"));
+    REQUIRE(panel(f).isVisible());
+    CHECK(drawn(panel(f)).getPixelAt(5, 5) == light.background);
+    const juce::Colour lightHeading =
+        need<juce::Label>(panel(f), "mutate.heading.A").findColour(juce::Label::textColourId);
+    CHECK(lightHeading == light.text);
+    saveImage(drawn(*f.editor), "light-mutate.png");
+
+    // Switched back while the panel is open, it follows.
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Dark));
+    CHECK(drawn(panel(f)).getPixelAt(5, 5) == gg::ui::Palette::dark().background);
+    CHECK(need<juce::Label>(panel(f), "mutate.heading.A").findColour(juce::Label::textColourId) ==
+          gg::ui::Palette::dark().text);
+    CHECK(lockRow(f, ParamSlot::Size).findColour(juce::TextButton::buttonColourId) ==
+          gg::ui::Palette::dark().background);
+    click(need<juce::TextButton>(panel(f), "mutate.close"));
+
+    // The strip alone, browser closed.
+    REQUIRE(gg::ui::setTheme(*f.editor, ThemeChoice::Light));
+    CHECK(f.button("preset.next").findColour(juce::TextButton::textColourOffId) == light.dimText);
+    saveImage(drawn(*f.editor), "light-strip.png");
 }

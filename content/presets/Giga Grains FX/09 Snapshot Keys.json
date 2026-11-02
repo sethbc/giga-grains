@@ -1,0 +1,23 @@
+{
+  "product": "fx",
+  "name": "Snapshot Keys",
+  "author": "Giga Grains",
+  "description": "Plays your input almost dry; hold a key and the last moment freezes and plays back at that pitch, so the keyboard plays what just happened.",
+  "tags": ["playable", "freeze", "keys", "midi", "live-input"],
+  "params": {
+    "Mix": 0.35,
+    "Position": 0.220194,
+    "Size": -3.058894,
+    "Density": 5.321928,
+    "Spray": 0.228477,
+    "Stereo": 0.4,
+    "Level": -3,
+    "A Env 1 Attack": -6.058894,
+    "A Env 1 Sustain": 1,
+    "A Env 1 Release": -1.736966
+  },
+  "mod": [
+    {"slot": 13, "source": "Env 1", "sourceLayer": "A", "target": "Mix", "depth": 0.6, "curve": "Unipolar"},
+    {"slot": 14, "source": "Velocity", "target": "Level", "targetLayer": "A", "depth": 4, "curve": "Unipolar"}
+  ]
+}

@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <new>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,7 +26,10 @@
 #include <clapwrapper/wrapper_host.h>
 
 #include "gg/core/PresetInfo.h"
+#include "SettingsPath.h"
+#include "gg/core/MachineSettings.h"
 #include "gg/core/Processor.h"
+#include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 #include "UiSettings.h"
 #include "gg/ui/Editor.h"
@@ -126,7 +131,13 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
                   uiSetValue(slot, static_cast<double>(value));
                   uiEndGesture(slot);
               },
-          .setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); }})),
+          .setRoutes = [this](const gg::core::ModRoutes &routes) { uiSetRoutes(routes); },
+          // A whole-state entry (a preset, Mutate) is up to every parameter: through the batched,
+          // drain-witnessed sender, so the queue never overflows (sendValues).
+          .setValues =
+              [this](std::span<const std::pair<gg::core::ParamSlot, double>> values) {
+                  sendValues(values);
+              }})),
       editorContext_(std::make_unique<gg::ui::EditorContext>())
 {
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
@@ -137,6 +148,173 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
 }
 
 EditorPlugin::~EditorPlugin() = default;
+
+void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
+{
+    context.ringView = [this](uint8_t layer) {
+        gg::ui::RingView view;
+        gg::core::Processor *p = processor();
+        if (p == nullptr || layer >= gg::core::kLayers)
+        {
+            return view;
+        }
+        const gg::core::RingMeta meta = p->ringMeta(layer);
+        view.valid = true;
+        view.head = meta.head;
+        view.windowFrames = meta.windowFrames;
+        const gg::RingStorage *storage = p->ringRead(layer).storage; // collect()'s thread: live
+        view.ringFrames = storage != nullptr ? storage->frames() : 0;
+        view.spliceCount = std::min<uint32_t>(meta.spliceCount, gg::core::kMaxSplices);
+        view.splices = meta.splices;
+        view.frozen = meta.frozen;
+        return view;
+    };
+    context.ringCommand = [this](uint8_t layer, gg::ui::RingCommand command, float seconds) {
+        if (layer >= gg::core::kLayers)
+        {
+            return;
+        }
+        const bool add = command == gg::ui::RingCommand::AddSplice;
+        uiCommand({0, add ? gg::core::CommandKind::AddSplice : gg::core::CommandKind::ClearSplices,
+                   layer, add ? seconds : 0.0f});
+    };
+    // The window or splice of a layer's ring, or the message for the user.
+    const auto capture = [this](uint8_t layer, uint32_t splice,
+                                std::string &message) -> std::shared_ptr<const gg::SampleBuffer> {
+        gg::core::Processor *p = processor();
+        if (p == nullptr)
+        {
+            message = "the plugin isn't running";
+            return nullptr;
+        }
+        if (layer >= gg::core::kLayers)
+        {
+            message = "no ring to capture";
+            return nullptr;
+        }
+        std::shared_ptr<const gg::SampleBuffer> buffer;
+        try
+        {
+            buffer = media().captureRing(layer, splice, *p);
+        }
+        catch (const std::bad_alloc &)
+        {
+            message = "can't capture the ring: not enough memory";
+            return nullptr;
+        }
+        catch (...)
+        {
+        }
+        if (buffer == nullptr)
+        {
+            message = "no ring to capture";
+        }
+        return buffer;
+    };
+    context.captureTo = [this, capture](uint8_t layer, uint32_t splice, uint8_t target) {
+        if (target >= gg::core::kLayers)
+        {
+            return std::string("no such layer"); // before the ring is copied
+        }
+        std::string message;
+        const auto buffer = capture(layer, splice, message);
+        if (buffer == nullptr)
+        {
+            return message;
+        }
+        try
+        {
+            if (!media().loadCapture(target, buffer))
+            {
+                return media().status(target); // "over the memory cap: ..." and the like
+            }
+        }
+        catch (...)
+        {
+            return std::string("can't load the capture: not enough memory");
+        }
+        return std::string();
+    };
+    context.saveCaptureTo = [this, capture](uint8_t layer, uint32_t splice,
+                                            const std::string &path) {
+        std::string message;
+        const auto buffer = capture(layer, splice, message);
+        if (buffer == nullptr)
+        {
+            return message;
+        }
+        try
+        {
+            if (!media().saveCapture(*buffer, pathOf(path)))
+            {
+                return std::string("can't save the capture: the file can't be written");
+            }
+        }
+        catch (...)
+        {
+            return std::string("can't save the capture: not enough memory");
+        }
+        return std::string();
+    };
+    context.capturesFolder = [] {
+        try
+        {
+            // As MediaSession's: the settings', else the default.
+            const auto file = settingsFile();
+            const gg::core::MachineSettings settings =
+                file.empty() ? gg::core::MachineSettings{} : gg::media::loadSettings(file);
+            std::filesystem::path folder = gg::media::defaultCapturesFolder();
+            if (!settings.capturesFolder.empty())
+            {
+                if (auto chosen = gg::media::fromUtf8(settings.capturesFolder))
+                {
+                    folder = *chosen;
+                }
+            }
+            return gg::media::toUtf8(folder).value_or(std::string());
+        }
+        catch (...)
+        {
+            return std::string();
+        }
+    };
+    context.collectSamples = [this](const std::string &folder) {
+        try
+        {
+            const auto result = media().collectAndSave(pathOf(folder));
+            std::string summary = "Collected " + std::to_string(result.copied.size()) + " files";
+            if (!result.missing.empty())
+            {
+                summary += "; " + std::to_string(result.missing.size()) + " missing";
+            }
+            return summary;
+        }
+        catch (...)
+        {
+            return std::string("can't collect: not enough memory or the folder can't be written");
+        }
+    };
+    context.memory = [this] {
+        gg::ui::MemoryView view;
+        view.usedBytes = media().memoryUsedBytes();
+        view.capMiB = media().memoryCapMiB();
+        return view;
+    };
+    context.setMemoryCapMiB = [this](uint32_t mib) { uiSetMemoryCapMiB(mib); };
+}
+
+void EditorPlugin::pushWholeState(const char *label, const gg::core::ParamValues &vBefore,
+                                  const gg::core::ModRoutes &rBefore) noexcept
+{
+    try
+    {
+        undo_->pushSnapshot(label, vBefore, rBefore, uiValues(), uiRoutes());
+    }
+    catch (...)
+    {
+        // Out of memory for the entry: the change stands, with nothing to undo it.
+    }
+}
 
 void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
 {
@@ -180,7 +358,18 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
         }
         return rows;
     };
-    context.loadPreset = [this](std::size_t index) { return loadCatalogPreset(index); };
+    // A preset recall from the browser or the strip is one undo entry (INTENT §17); a host's
+    // preset load is a state load, which pushes none.
+    context.loadPreset = [this](std::size_t index) {
+        const gg::core::ParamValues before = uiValues();
+        const gg::core::ModRoutes routes = uiRoutes();
+        std::string error = loadCatalogPreset(index);
+        if (error.empty())
+        {
+            pushWholeState("Preset", before, routes);
+        }
+        return error;
+    };
     context.presetName = [this] {
         try
         {
@@ -241,7 +430,14 @@ void EditorPlugin::fillPresetContext(gg::ui::EditorContext &context)
             return false;
         }
     };
-    context.mutate = [this](float amount) { mutate(amount); };
+    context.mutate = [this](float amount) {
+        const gg::core::ParamValues before = uiValues();
+        const gg::core::ModRoutes routes = uiRoutes();
+        mutate(amount);
+        // uiValues() reads the pending set, which mutate() fills synchronously: the entry's
+        // "after" is the pressed values. A change that batches the press must update this.
+        pushWholeState("Mutate", before, routes);
+    };
     context.flushMutate = [this] { flushMutate(); };
     context.mutateLocked = [this](gg::core::ParamSlot slot) { return mutateLocked(slot); };
     context.setMutateLock = [this](gg::core::ParamSlot slot, bool locked) {
@@ -274,31 +470,13 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     context = gg::ui::EditorContext{};
     context.productName = descriptorFor(product())->name;
     context.formatName = formatOf(_host.host());
-    // The instrument's loader strip (spec §6.5), on the main thread, as the loader requires. The
-    // loader is GigaGrainsPlugin's, so it outlives the editor, which the shim holds.
-    if (SampleLoader *loader = sampleLoader(); loader != nullptr)
+    // The loader strip (spec §6.3, §6.5), in both products, on the main thread, as the loader
+    // requires. The loaders are GigaGrainsPlugin's, so they outlive the editor, which the shim
+    // holds. The strip's per-layer members are filled below; the sample folder is the machine's,
+    // saved through layer A's loader as it always was.
     {
-        // Nothing may throw into JUCE's callbacks. A request that can't be made (no memory)
-        // leaves the status as the loader set it.
+        SampleLoader *loader = &media().loader(0);
         context.showSampleLoader = true;
-        context.loadSample = [loader](const std::string &path) {
-            try
-            {
-                loader->requestLoad(pathOf(path));
-            }
-            catch (...)
-            {
-            }
-        };
-        context.relinkSample = [loader](const std::string &path) {
-            try
-            {
-                loader->requestRelink(pathOf(path));
-            }
-            catch (...)
-            {
-            }
-        };
         // The settings file couldn't be written, or an allocation failed: the folder stays as
         // it was, and the strip says so (carry-over row 198).
         context.setSampleFolder = [loader](const std::string &path) {
@@ -335,51 +513,56 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
                 return std::string();
             }
         };
-        // Polled by the editor's 30 Hz timer, on the main thread: it first applies what the
-        // loader's worker finished, as on_main_thread does, so a load shows (and plays) even
-        // where the host doesn't deliver on_main_thread, as a VST3 host may not while the plugin
-        // is inactive.
-        context.sampleStatus = [this, loader] {
-            onMainThread();
-            return viewOf(loader->status());
-        };
-        // Cached by the loader: cheap once per sample.
-        context.sampleWaveform = [loader] {
-            const SampleWaveform w = loader->waveform();
-            return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
-        };
-        // PR 1 of the Views: only layer A holds a sample, the one the loader loads. A drop on
-        // another lane is refused (the canvas says so).
-        context.sampleWaveformFor = [loader](uint8_t layer) {
-            if (layer != 0)
-            {
-                return gg::ui::SampleWaveform{};
-            }
-            const SampleWaveform w = loader->waveform();
-            return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
-        };
-        context.loadSampleFor = [loader](uint8_t layer, const std::string &path) {
-            if (layer != 0)
-            {
-                return false;
-            }
-            try
-            {
-                loader->requestLoad(pathOf(path));
-            }
-            catch (...)
-            {
-                // As loadSample: the status stays as the loader set it.
-            }
-            return true;
-        };
     }
-    else
-    {
-        context.sampleWaveform = [] { return gg::ui::SampleWaveform{}; };
-        context.sampleWaveformFor = [](uint8_t) { return gg::ui::SampleWaveform{}; };
-        context.loadSampleFor = [](uint8_t, const std::string &) { return false; };
-    }
+    // Per layer, in both products (M2 sub-project 6, PR 2): every layer has a loader.
+    context.sampleWaveformFor = [this](uint8_t layer) {
+        if (layer >= gg::core::kLayers)
+        {
+            return gg::ui::SampleWaveform{};
+        }
+        const SampleWaveform w = media().loader(layer).waveform();
+        return gg::ui::SampleWaveform{w.peaks, w.frames, w.seconds};
+    };
+    context.loadSampleFor = [this](uint8_t layer, const std::string &path) {
+        if (layer >= gg::core::kLayers)
+        {
+            return false;
+        }
+        try
+        {
+            media().loader(layer).requestLoad(pathOf(path));
+        }
+        catch (...)
+        {
+            // A request that can't be made (no memory): the status stays as the loader set it.
+        }
+        return true;
+    };
+    context.relinkSampleFor = [this](uint8_t layer, const std::string &path) {
+        if (layer >= gg::core::kLayers)
+        {
+            return;
+        }
+        try
+        {
+            media().loader(layer).requestRelink(pathOf(path));
+        }
+        catch (...)
+        {
+        }
+    };
+    context.sampleStatusFor = [this](uint8_t layer) {
+        if (layer >= gg::core::kLayers)
+        {
+            return gg::ui::SampleStatusView{};
+        }
+        // Apply what a loader's worker finished first, as on_main_thread does, so a load shows
+        // (and plays) even where the host doesn't deliver on_main_thread, as a VST3 host may not
+        // while the plugin is inactive.
+        onMainThread();
+        return viewOf(media().loader(layer).status());
+    };
+    fillRingContext(context);
     // Every layer's live ring peaks, while there is a Processor.
     context.livePeaksFor = [this](uint8_t layer) -> const gg::core::LivePeaks * {
         gg::core::Processor *p = processor();
