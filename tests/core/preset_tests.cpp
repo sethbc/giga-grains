@@ -731,4 +731,18 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
         INFO("slot " << s);
         CHECK(loaded[s] == (gg::core::isRingParam(static_cast<ParamSlot>(s)) ? 0.25f : 0.75f));
     }
+
+    // keepRingLengths (INIT's) copies each layer's Ring Length alone.
+    loaded.fill(0.75f);
+    gg::core::keepRingLengths(current, loaded);
+    std::size_t kept = 0;
+    for (std::size_t s = 0; s < kParamCount; ++s)
+    {
+        INFO("slot " << s);
+        const auto ref = gg::core::layerOf(static_cast<ParamSlot>(s));
+        const bool length = ref && ref->param == gg::core::LayerParam::RingLength;
+        CHECK(loaded[s] == (length ? 0.25f : 0.75f));
+        kept += length ? 1 : 0;
+    }
+    CHECK(kept == gg::core::kLayers);
 }

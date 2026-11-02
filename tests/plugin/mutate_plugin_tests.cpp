@@ -174,6 +174,13 @@ std::vector<float> bases(const GigaGrainsPlugin &impl)
 
 bool same(float a, float b) { return std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b); }
 
+/// The slots INIT keeps (gg::core::keepRingLengths): each layer's Ring Length.
+bool keptByInit(ParamSlot slot)
+{
+    const auto ref = gg::core::layerOf(slot);
+    return ref && ref->param == gg::core::LayerParam::RingLength;
+}
+
 void unlockAll(GigaGrainsPlugin &impl)
 {
     for (std::size_t s = 0; s < kParamCount; ++s)
@@ -421,13 +428,13 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
             // Nothing of the press reaches the host again.
             const auto rest = drainAll(plugin);
             CHECK(rest.empty());
-            // The values are INIT's: its defaults (layers B to D off again), but for the ring
-            // parameters, which a preset load keeps (gg::core::keepRingParams).
+            // The values are INIT's: its defaults (layers B to D off again), but for Ring Length,
+            // which INIT keeps (gg::core::keepRingLengths).
             for (std::size_t s = 0; s < kParamCount; ++s)
             {
                 const auto slot = static_cast<ParamSlot>(s);
                 CHECK(same(impl.uiBaseValue(slot),
-                           gg::core::isRingParam(slot)
+                           keptByInit(slot)
                                ? beforeLoad[s]
                                : gg::core::paramMeta(slot, impl.mode()).defaultVal));
             }
@@ -443,16 +450,15 @@ TEST_CASE("a preset load during a multi-batch press discards the unsent slots", 
         impl.mutate(1.0f);
         drainAll(plugin);
         CHECK(impl.uiQueueDropped() == 0);
-        // The ring parameters the cut press had sent stay through the load (a preset load keeps
-        // them, INIT's too: gg::core::keepRingParams), so they start the next press elsewhere.
-        // Zeroing them here is a deliberate narrowing of this test: it no longer checks that the
-        // next press moves the ring parameters (Loop, Loop Length, Overdub, Splice; Ring Length
-        // never moves) the same after a cut press as after none, only every other slot. Their
-        // keep is checked above and in preset_tests.cpp.
+        // The Ring Length the cut press had sent stays through the load (INIT keeps it:
+        // gg::core::keepRingLengths), so it starts the next press elsewhere. Zeroing it here is a
+        // deliberate narrowing of this test: it no longer checks Ring Length (which never moves
+        // under a press) after a cut press, only every other slot. Its keep is checked above and
+        // in preset_tests.cpp.
         auto compared = bases(impl);
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
-            if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+            if (keptByInit(static_cast<ParamSlot>(s)))
             {
                 compared[s] = 0.0f;
             }
@@ -788,14 +794,13 @@ TEST_CASE("a preset load while a set is half sent discards the rest", "[plugin][
     impl.loadInit(); // slots still wait
     const auto rest = drainAll(plugin);
     CHECK(rest.empty());
-    // INIT's defaults, but for the ring parameters, which a preset load keeps.
+    // INIT's defaults, but for Ring Length, which INIT keeps.
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         const auto slot = static_cast<ParamSlot>(s);
-        CHECK(
-            same(impl.uiBaseValue(slot), gg::core::isRingParam(slot)
-                                             ? beforeLoad[s]
-                                             : gg::core::paramMeta(slot, impl.mode()).defaultVal));
+        CHECK(same(impl.uiBaseValue(slot),
+                   keptByInit(slot) ? beforeLoad[s]
+                                    : gg::core::paramMeta(slot, impl.mode()).defaultVal));
     }
     CHECK(impl.uiQueueDropped() == 0);
 }

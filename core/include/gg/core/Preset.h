@@ -50,6 +50,12 @@ bool presetInfoOf(std::string_view bytes, PresetInfo &info);
 /// hold them (an older one does), and they are ignored. Pure, allocation-free.
 void keepRingParams(const ParamValues &current, ParamValues &loaded) noexcept;
 
+/// INIT keeps each layer's Ring Length alone (INTENT §23 #70, amended 2026-11-02; D8: INIT is a
+/// fresh instance, and only Ring Length is about memory, so INIT resizes no ring): `loaded`'s
+/// Ring Length slots are set to `current`'s, and every other slot, Loop, Loop Length, Overdub and
+/// Splice included, is left, so INIT gives their defaults. Pure, allocation-free.
+void keepRingLengths(const ParamValues &current, ParamValues &loaded) noexcept;
+
 /// The INIT state of `mode`'s product: every parameter at its default (paramMeta),
 /// factoryRoutes(mode), seed 0, no sample, the name "Init" and no preset.
 SessionState initState(Mode mode);

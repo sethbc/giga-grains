@@ -506,8 +506,9 @@ class GigaGrainsPlugin : public plugHelper_t
   private:
     /// What a state applied by applyState is: a session (state.load), whose seed and sample
     /// replace the instance's, or a preset (a file or INIT), which keeps the seed (D6), each
-    /// layer's ring parameters (gg::core::keepRingParams; no preset load resizes a ring) and, when
-    /// it names no sample, the sample (D5).
+    /// layer's ring parameters (gg::core::keepRingParams; INIT keeps Ring Length alone,
+    /// keepRingLengths; no preset load resizes a ring) and, when it names no sample, the sample
+    /// (D5).
     enum class LoadKind
     {
         Session,
@@ -517,7 +518,9 @@ class GigaGrainsPlugin : public plugHelper_t
     /// routes (and its seed and sample per `kind`) take effect as stateLoad's comment says, its
     /// name becomes presetName_ and its values presetValues_, and the host rescans the values.
     /// Main thread. All or nothing: may throw std::bad_alloc before anything changes.
-    void applyState(gg::core::SessionState &&state, LoadKind kind);
+    /// `init` (a preset load only): INIT, which keeps Ring Length alone, not all five ring
+    /// parameters.
+    void applyState(gg::core::SessionState &&state, LoadKind kind, bool init = false);
 
     clap_process_status
     processNonblocking(const clap_process *process) noexcept SST_CPPUTILS_NONBLOCKING;

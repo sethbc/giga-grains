@@ -1034,8 +1034,9 @@ TEST_CASE("a preset's content sample missing from every content root leaves the 
 TEST_CASE("a preset load keeps each layer's ring parameters", "[plugin][preset]")
 {
     // The program manager's ruling: Ring Length, Loop, Loop Length, Overdub and Splice are the
-    // instance's capture and memory, kept by every preset load (INIT's too), as the seed is, so
-    // no preset load resizes a ring. The preset's other values apply, and it isn't edited.
+    // instance's capture and memory, kept by every preset file load, as the seed is, so no preset
+    // load resizes a ring. The preset's other values apply, and it isn't edited. INIT (D8, a fresh
+    // instance, amended 2026-11-02) keeps Ring Length alone: the other four get their defaults.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     const Mode mode = modeOf(id);
@@ -1067,13 +1068,16 @@ TEST_CASE("a preset load keeps each layer's ring parameters", "[plugin][preset]"
     }
     const std::string location =
         utf8(gg::test::writePresetFile("rings-" + tagOf(mode), infoFor(mode), preset));
-    const auto check = [&](PluginUnderTest &plugin, const gg::core::ParamValues &values) {
+    const auto check = [&](PluginUnderTest &plugin, const gg::core::ParamValues &values,
+                           bool init = false) {
         for (std::size_t s = 0; s < kParamCount; ++s)
         {
             INFO("slot " << s);
             const auto slot = static_cast<ParamSlot>(s);
-            CHECK(plugin.value(paramId(slot)) ==
-                  (gg::core::isRingParam(slot) ? mine[s] : values[s]));
+            const auto ref = gg::core::layerOf(slot);
+            const bool kept = init ? ref && ref->param == gg::core::LayerParam::RingLength
+                                   : gg::core::isRingParam(slot);
+            CHECK(plugin.value(paramId(slot)) == (kept ? mine[s] : values[s]));
         }
         CHECK_FALSE(plugin.impl().presetEdited());
     };
@@ -1084,9 +1088,11 @@ TEST_CASE("a preset load keeps each layer's ring parameters", "[plugin][preset]"
     REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
     check(plugin, preset.values);
     REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
-    check(plugin, gg::core::initState(mode).values);
+    check(plugin, gg::core::initState(mode).values, true);
 
-    // Active: the Processor's rings keep their length; nothing is resized.
+    // Active: the Processor's rings keep their length; nothing is resized. (INIT gave the other
+    // four their defaults, so the session's are restored first.)
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
     REQUIRE(plugin.activate(48000.0, 512));
     processBlock(plugin, mode);
     const auto *processor = plugin.impl().processor();
@@ -1196,4 +1202,39 @@ TEST_CASE("a preset's reference that leaves its content root leaves the layer mi
             instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
         CHECK(instrument.impl().media().loader(0).status().state == SampleState::Missing);
     }
+}
+
+TEST_CASE("changing a ring parameter does not mark the loaded preset edited", "[plugin][preset]")
+{
+    // A preset load ignores the five ring parameters, so reloading would not undo a change to
+    // one: it is no edit.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    auto &impl = plugin.impl();
+    REQUIRE(plugin.activate(48000.0, 512));
+    const std::string path = utf8(fixtureFile("edited-ring", mode));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, path.c_str(), nullptr));
+    CHECK_FALSE(impl.presetEdited());
+
+    gg::test::InputEvents none;
+    for (const gg::core::LayerParam param :
+         {gg::core::LayerParam::RingLength, gg::core::LayerParam::Loop,
+          gg::core::LayerParam::LoopLength, gg::core::LayerParam::Overdub,
+          gg::core::LayerParam::Splice})
+    {
+        const ParamSlot slot = gg::core::layerSlot(param, 0);
+        INFO("slot " << static_cast<int>(slot));
+        const float before = plugin.value(paramId(slot));
+        impl.uiSetValue(slot, quarterOf(slot, mode) + 0.5);
+        plugin.flush(none.list());
+        CHECK(plugin.value(paramId(slot)) != before); // it did change
+        CHECK_FALSE(impl.presetEdited());
+    }
+    // A sound parameter still marks it.
+    impl.uiSetValue(ParamSlot::Size, quarterOf(ParamSlot::Size, mode) + 0.5);
+    plugin.flush(none.list());
+    CHECK(impl.presetEdited());
 }
