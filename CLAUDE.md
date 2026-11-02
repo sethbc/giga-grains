@@ -991,12 +991,12 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - **A verdict over no ratios is an error** (exit 1): a run without `reference` or any engine
     case, on a model the baseline has, never passes as "0 of 0".
 - **In CI:** the build legs run the full length (with `--commit` and, when
-  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on pushes to `main`, on the
-  nightly schedule (03:17 UTC) and on `workflow_dispatch`. They print the output, and a verdict
-  per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
-  `gg-bench.txt`). On a pull request each leg runs `--quick` as a smoke check only: it checks no
-  baseline, prints no verdict and uploads nothing, but a crash or exit 1 or 2 still fails the
-  job.
+  `tools/gg-bench/baselines/<preset>.json` exists, `--baseline`) on the nightly schedule
+  (03:17 UTC), on `workflow_dispatch` and on a pushed `v*` tag. They print the output, and a
+  verdict per ratio, in the step summary and upload `gg-bench-<preset>` (`gg-bench.json` and
+  `gg-bench.txt`). On a pull request and a push to `main` each leg runs `--quick` as a smoke
+  check only (INTENT §23 #73): it checks no baseline, prints no verdict and uploads nothing, but
+  a crash or exit 1 or 2 still fails the job.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
@@ -1017,9 +1017,9 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
     0.x releases, public from 0.5.0's first beta, keep it report-only.
 - **Refreshing a baseline** (`tools/gg-bench/baselines/README.md` has the format):
-  1. Make three separate full-length CI runs of the same engine code: runs on `main`, the
-     nightly or `gh workflow run ci.yml --ref <branch>` (a pull request's runs are `--quick` and
-     upload no artifact). One run's IQR says nothing about the next run's
+  1. Make three separate full-length CI runs of the same engine code: the nightly or
+     `gh workflow run ci.yml --ref <branch>` (a pull request's runs and a push to `main` are
+     `--quick` and upload no artifact). One run's IQR says nothing about the next run's
      drift, which reached ~20% on Windows (INTENT §23 #47).
   2. Download each run's artifact: `gh run download <id> --pattern 'gg-bench-<preset>'`.
   3. Run `gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json a.json b.json

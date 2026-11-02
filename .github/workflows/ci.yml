@@ -9,11 +9,11 @@
 #               cross-platform determinism gate. On macOS the universal build's x86_64 slice runs
 #               too, under Rosetta: the unit tests and the golden checks. Then clap-validator,
 #               pluginval (strictness 10), auval (macOS) and Steinberg's VST3 validator. gg-bench
-#               runs at full length (ruling T10-c) on pushes to main, on the nightly schedule and
-#               on workflow_dispatch, and reports its in-process ratios, with a verdict against
+#               runs at full length (ruling T10-c) on the nightly schedule, on workflow_dispatch
+#               and on a release tag, and reports its in-process ratios, with a verdict against
 #               the leg's baseline when there is one; report-only until 1.0.0 (ruling 3; INTENT
-#               §23 #60, #61). On a pull request it runs --quick, as a smoke check only (no
-#               verdict, no artifact). The gate turns blocking at 1.0.0, after M5, with the
+#               §23 #60, #61). On a pull request and a push to main it runs --quick, as a smoke
+#               check only (no verdict, no artifact; INTENT §23 #73). The gate turns blocking at 1.0.0, after M5, with the
 #               published §16 headline (INTENT §16, §19).
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
 #               20.1.8 release) on ubuntu-24.04.
@@ -615,9 +615,10 @@ jobs:
               --compare-events "tests/golden/expected/$name.events.jsonl"
           done
 
-      # Full length on pushes to main, the nightly schedule and workflow_dispatch; --quick on a
-      # pull request. A quick run is a smoke check: it must not crash, but its ratios are too
-      # noisy for the baseline, so it checks none, prints no verdict and uploads nothing.
+      # Full length on the nightly schedule, workflow_dispatch and a release tag; --quick on a
+      # pull request and a push to main (INTENT §23 #73: the nightly measures main once a day). A
+      # quick run is a smoke check: it must not crash, but its ratios are too noisy for the
+      # baseline, so it checks none, prints no verdict and uploads nothing.
       # Reported, not gated until 1.0.0 (ruling 3; INTENT §16, §19, §23 #61). gg-bench times the kernels,
       # the frozen reference kernel and the real engine at full length (runs of 2 s, 5 interleaved
       # rounds; ruling T10-c) and reports each engine case's ratio to the reference,
@@ -633,7 +634,7 @@ jobs:
       # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
       # the no-verdict line for a model the baseline lacks. A full run is time-boxed: about 6
       # minutes on every leg; a quick one takes under a minute.
-      - name: Benchmark (full length on main, nightly and dispatch, else --quick; not gated until 1.0.0)
+      - name: Benchmark (full length on the nightly, dispatch and tags, else --quick; not gated until 1.0.0)
         id: bench
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 30
@@ -642,7 +643,7 @@ jobs:
           baseline="tools/gg-bench/baselines/${{ matrix.preset }}.json"
           args=(--commit "${{ github.sha }}" --json "$out.json")
           quick=false
-          if [[ "${{ github.event_name }}" == pull_request ]]; then
+          if [[ "${{ github.event_name }}" == pull_request || "${{ github.ref }}" == refs/heads/main && "${{ github.event_name }}" == push ]]; then
             quick=true
             args+=(--quick)
           elif [[ -f "$baseline" ]]; then
@@ -656,7 +657,7 @@ jobs:
             echo "### gg-bench (${{ matrix.preset }})"
             # The grep strips CRs first: on windows-clangcl the output's lines end in CRLF.
             if [[ $quick == true ]]; then
-              echo "Quick smoke run (pull request): no baseline check, no verdict."
+              echo "Quick smoke run (${{ github.event_name }}): no baseline check, no verdict."
             elif [[ ! -f "$baseline" ]]; then
               echo "No baseline for this leg yet ($baseline): ratios reported, no verdict."
             elif no_verdict=$(tr -d '\r' < "$out.txt" | grep -m 1 '^no baseline for .*; no verdict$'); then
@@ -877,7 +878,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload benchmark
-        if: ${{ !cancelled() && steps.bench.outcome == 'success' && github.event_name != 'pull_request' }}
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' && github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gg-bench-${{ matrix.preset }}
