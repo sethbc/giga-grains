@@ -19,6 +19,7 @@
 #include <regex>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -49,6 +50,11 @@ struct ProductCounts
 {
     std::size_t presets{0};
     std::size_t midi{0};
+    std::size_t texture{0};
+    std::size_t playable{0};
+    std::size_t rhythmic{0};
+    std::size_t extreme{0};
+    std::size_t multiSample{0}; ///< Sources naming two or more samples (layers).
 };
 
 ProductCounts checkProduct(const std::string &folder, Mode mode, std::set<std::string> &names)
@@ -80,6 +86,11 @@ ProductCounts checkProduct(const std::string &folder, Mode mode, std::set<std::s
         CHECK(std::ranges::any_of(source->mod, [](const auto &route) { return route.slot > 12; }));
         CHECK_FALSE(source->info.description.empty());
         ++counts.presets;
+        counts.texture += hasTag(*source, "texture") ? 1 : 0;
+        counts.playable += hasTag(*source, "playable") ? 1 : 0;
+        counts.rhythmic += hasTag(*source, "rhythmic") ? 1 : 0;
+        counts.extreme += hasTag(*source, "extreme") ? 1 : 0;
+        counts.multiSample += source->samples.size() >= 2 ? 1 : 0;
         if (hasTag(*source, "midi"))
         {
             ++counts.midi;
@@ -107,4 +118,28 @@ TEST_CASE("the factory presets are 24 per product, named NN Name, 8 FX ones midi
     CHECK(inst.presets == 24);
     CHECK(inst.midi == 0);
     CHECK(names.size() == 48);
+}
+
+TEST_CASE("each product's 24 factory presets split 8 texture, 6 playable, 4 rhythmic, 6 extreme",
+          "[build][presets]")
+{
+    // D1 (spec §6.6): the focus split, one focus tag each (checked above), pinned so that a later
+    // edit can't drift it. Most instrument presets are multi-layer: at least 13 name two or more
+    // samples.
+    std::set<std::string> names;
+    for (const auto &[folder, mode] :
+         {std::pair<std::string, Mode>{"Giga Grains FX", Mode::Fx},
+          std::pair<std::string, Mode>{"Giga Grains", Mode::Instrument}})
+    {
+        INFO(folder);
+        const ProductCounts counts = checkProduct(folder, mode, names);
+        CHECK(counts.texture == 8);
+        CHECK(counts.playable == 6);
+        CHECK(counts.rhythmic == 4);
+        CHECK(counts.extreme == 6);
+        if (mode == Mode::Instrument)
+        {
+            CHECK(counts.multiSample >= 13);
+        }
+    }
 }

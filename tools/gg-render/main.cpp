@@ -21,8 +21,8 @@
 // --media-dir resolves the spec's relative file paths against DIR instead of the spec's
 // directory. --preset sets the spec's "preset" key, or overrides it, and is resolved like it
 // (RenderSpec::preset). --content-dir names a content root: where a restored state's samples are
-// found by their content path, and the content folder a preset's content-relative samples will be
-// taken from (no preset names a sample yet, so for a preset it is accepted and unused).
+// found by their content path, and the content folder a preset's content-relative samples are
+// taken from, alone and never searched (the factory presets name samples).
 // --captures-dir is the folder audio past the embed limit is filed in, and --save-state writes the
 // session state at the render's end (RenderOptions in Render.h; instrument and FX specs only).
 // --write-media writes the test media the golden cases read and the two state fixtures
