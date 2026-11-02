@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 7 of 7, wave 4 |
-| **Status** | **Draft for approval** (2026-11-02). Phase A of the close's brief: the consistency review (`docs/m2-consistency-review.md`) and the carry-over triage (§10) are written; §8's decisions wait on the director. Nothing is planned or built yet |
+| **Status** | **Approved by the program manager 2026-11-02**, with **the director's decisions of 2026-11-02 by forced choice: option 1 of every question in §8** (K-1 to K-8, rows 402, 333, 393, 396 and 387, the gate's shape and the host checks), recorded in §8 and applied in place. Phase B (the plan and the build) starts from here. Drafted 2026-11-02 as Phase A of the close's brief: the consistency review (`docs/m2-consistency-review.md`) and the carry-over triage (§10) |
 | **Spec authority** | `INTENT.md`; the program design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`, renamed to `…-program-design.md` by §6.6), whose §6.7 this document **amends** (§1) and realizes |
 | **Builds on** | Sub-projects 1 to 6, all merged (PRs #15 to #20, #23 to #25; INTENT §23 #65, #66, #68 to #71); the CI changes (#28, #29; §23 #73 to #76) |
 | **Starts from** | `main` at `0189dc9` on branch `m2-close`; `docs/m2-carry-over.md` with **80 open rows** (79 open plus row 330, closed in part) |
-| **Waits on** | The director's answers to §8. The program manager's own fix of the Windows link race on dispatch run 41543261855 (two format targets writing one `.exp`/`.lib`, from #76) is outside this sub-project: it is not triaged here and nothing here touches it |
+| **Waits on** | Nothing for the build. Outside this sub-project and left to the program manager: the Windows link race on dispatch run 41543261855 (two format targets writing one `.exp`/`.lib`, from #76; PR #30, the Windows link pool; this branch merges `main` when it lands) and the docs-only CI change (heavy jobs skipped on docs-only PRs under one required gate, a PR of its own) |
 
 ## 1. Why this sub-project, and how it amends design §6.7
 
@@ -326,51 +326,56 @@ manager tags; a follow-up PR from this branch's successor sets 0.3.0 and the `de
 Each is a forced choice; option 1 is the recommendation. The consistency review gives each
 conflict's sources in full.
 
+**The director's answers, 2026-11-02** (relayed by the program manager): **option 1 of every
+question below**, each marked **Decided** in place. Each conflict's answer (K-1 to K-8) becomes its
+own dated §23 row at the build (§9, §12), and the consistency review's "Resolution" fields read it.
+K-6's answer is the director's Part I sign-off for §5's clause alone.
+
 ### 8.1 The consistency review's conflicts
 
 - **K-1, the restore criterion.** Must a restored session match the saved session's continued
   render within the goldens' tolerances (§23 #64), or only render the same on every restore (ruling
-  SP-T7e, as built)?
+  SP-T7e, as built)? **Decided: option 1** (the director, 2026-11-02).
   1. Amend the criterion to what was built: every restore renders identically and restores the
      saved frames bit for bit; the clock and grain index restart. *Cost:* a reopened frozen pad
      replays the same material with new grain draws, never the saved session's continuation.
   2. Keep it and add the check. *Cost:* a sparse cloud may fail it; meeting it exactly needs the
      clock and grain index in the state, a format change.
-- **K-2, a click entering Peak mid-sound** (24.4, outside D5b's "nothing wider"; closed row 378).
+- **K-2, a click entering Peak mid-sound** (24.4, outside D5b's "nothing wider"; closed row 378). **Decided: option 1** (the director, 2026-11-02).
   1. Accept it as part of Peak's zero-attack law (D5b); the sweep exempts the mode fade by samples,
      not by where calls fall. *Cost:* the extremes anti-goal "no click when the limiter's mode
      changes" is relaxed for Peak.
   2. A defect: inside a mode crossfade Peak's gain falls no faster than the fade. *Cost:* a limiter
      DSP change in the close; `fx-limiter` and the presets using Peak re-checked by ear.
 - **K-3, INIT keeps Ring Length** (the controller's 2026-11-02 ruling) against D8's "a fresh
-  instance, bit for bit".
+  instance, bit for bit". **Decided: option 1** (the director, 2026-11-02).
   1. Ratify it as D8a: INIT keeps each layer's Ring Length (memory, not sound). *Cost:* INIT differs
      from a fresh instance when a ring isn't 16 s.
   2. INIT resets Ring Length to 16 s. *Cost:* INIT resizes rings on the main thread, can be refused
      by the memory cap, and cuts a held ring's audio past 16 s.
 - **K-4, the overload ladder's order.** Part I §8.4 says "lower the tier, then drop, then steal";
-  the code, by D4, steals the oldest grain past half its window before dropping.
+  the code, by D4, steals the oldest grain past half its window before dropping. **Decided: option 1** (the director, 2026-11-02).
   1. Confirm the escalation reading (§8.4 orders the rungs by load, D4 decides between drop and
      steal): §14's list and CLAUDE.md's non-negotiable gain the clause; no Part I edit. *Cost:* a
      non-negotiable's wording grows.
   2. Amend Part I §8.4 to the test order. *Cost:* a Part I edit.
 - **K-5, which held rings a session saves.** D1: "a ring is saved when it is held"; the controller
-  narrowed it to layers whose base Source builds to Live (§23 #68).
+  narrowed it to layers whose base Source builds to Live (§23 #68). **Decided: option 1** (the director, 2026-11-02).
   1. Ratify the narrowing. *Cost:* a frozen Sample layer's ring is lost on reopen.
   2. Save every held ring, Sample layers included. *Cost:* up to 115 MB a layer at 300 s of audio no
      grain reads unless the kind changes; the 32 MiB embed cap fills sooner.
-- **K-6, Part I §5's "live buffers … saved with the session"** against D1's held rings only.
+- **K-6, Part I §5's "live buffers … saved with the session"** against D1's held rings only. **Decided: option 1** (the director, 2026-11-02; the director's Part I sign-off for that clause only).
   1. Amend Part I §5: "saved with the session when held (frozen or looped)". *Cost:* a one-clause
      Part I edit.
   2. Keep Part I; §18 says §5 means the held case. *Cost:* Part I over-promises to a reader of Part
      I alone.
 - **K-7, "a merge, not a rebase"** (the program manager's ruling, #68, #69) against #64's "each
-  rebased and re-verified".
+  rebased and re-verified". **Decided: option 1** (the director, 2026-11-02).
   1. Ratify: the design and plan say "rebases on, or merges, the merged result, then re-verifies".
      *Cost:* none; M2's history stays non-linear.
   2. Keep "rebase" as the rule and record M2's merges as departures. *Cost:* the rule keeps stating
      what wasn't done.
-- **K-8, rows 118 and 119 moved on the program manager's word** (plan A3 wants the director's too).
+- **K-8, rows 118 and 119 moved on the program manager's word** (plan A3 wants the director's too). **Decided: option 1** (the director, 2026-11-02): ratified and recorded in §23 #65; the rule, that a move needs the director's word, stands.
   1. Ratify; record it in #65. *Cost:* none.
   2. Amend plan A3 so the program manager alone may move an item that shrinks a later sub-project.
      *Cost:* the director loses sight of scope moves.
@@ -378,7 +383,7 @@ conflict's sources in full.
 ### 8.2 The carry-over's DIRECTOR rows
 
 - **Row 402, what undo of a preset recall restores** (today: the values and routes; the samples the
-  preset loaded and its name stay).
+  preset loaded and its name stay). **Decided: option 1** (the director, 2026-11-02): recorded as decided.
   1. Keep "values and routes", recorded as decided (INTENT §17, the presets spec). *Cost:* after an
      undo the strip shows the recalled name, edited, over the recalled samples (accurate: they are
      still loaded); a recall over a captured ring sample can't be undone.
@@ -387,29 +392,31 @@ conflict's sources in full.
   3. Restore the name and the samples. *Cost:* L; an undo re-decodes files (and can fail on a
      missing file or the memory cap) or holds old samples in up to 200 undo entries against the
      cap, with a rule for dropping them.
-- **Row 333, the route list auto-selects a route an undo or a load added.**
+- **Row 333, the route list auto-selects a route an undo or a load added.** **Decided: option 1** (the director, 2026-11-02).
   1. Auto-select only when exactly one route appeared (an undo, a redo, a drop), never on a load.
      *Cost:* S.
   2. Keep it as built (any added route is selected). *Cost:* a preset or state load selects a route
      the user didn't touch.
   3. Never auto-select an added route. *Cost:* an undo of a route's removal leaves it unselected.
 - **Row 393, VSCO 2: CE's request for credit and not to sell the samples directly** (not binding
-  under CC0; credited in `PROVENANCE.md` and `THIRD_PARTY_NOTICES.md`; INTENT §15 records it).
+  under CC0; credited in `PROVENANCE.md` and `THIRD_PARTY_NOTICES.md`; INTENT §15 records it). **Decided: option 1** (the director, 2026-11-02): closed as recorded.
   1. Close the row as recorded. *Cost:* the question returns only if the project is ever sold with
      the content, which INTENT doesn't plan.
   2. Keep it open until a decision about selling. *Cost:* a row that may never close.
 - **Row 396, preset names and tags** (all 24 FX presets tagged `live-input`; "Horizon" in both
-  products' names; the factory order freezes at 1.0.0).
+  products' names; the factory order freezes at 1.0.0). **Decided: option 1** (the director, 2026-11-02): kept; the director may strike words at the gate.
   1. Keep the names and tags as they are; the director may still strike words at the gate.
      *Cost:* none now.
   2. Strike `live-input` from the FX presets and rename one "Horizon" now. *Cost:* the affected
      preset goldens move and the browser's tag list changes.
-- **Row 387, the views' new user-visible strings** (eight, listed in the row).
+- **Row 387, the views' new user-visible strings** (eight, listed in the row). **Decided: option 1** (the director, 2026-11-02): approved or edited at the gate, as checklist items.
   1. The director approves or edits them at the gate, as checklist items. *Cost:* a few minutes of
      the sitting.
   2. Hold them for a full text pass before M5. *Cost:* the row stays open through M3 and M4.
 
 ### 8.3 The gate's checklist shape
+**Decided: option 1** (the director, 2026-11-02): one README, one numbered checklist.
+
 
 1. **One README, one numbered checklist** in sections by pack (layers, engine, sources, extremes,
    presets, views), then the carry-over's gate rows, then the host checks; each item answerable
@@ -422,6 +429,8 @@ conflict's sources in full.
    program manager before the idle run.
 
 ### 8.4 The host checks for Live and Bitwig (design §7.11)
+**Decided: option 1** (the director, 2026-11-02): the focused matrix, eight cells, about 45 minutes.
+
 
 1. **A focused matrix:** Live 12 with the VST3 and the AU, Bitwig with the CLAP and the VST3, both
    products in each (eight cells), each cell one short script: the scan and load; the factory
@@ -500,7 +509,7 @@ which §6.3 uses, and each pack's open gate questions, which §6.7 uses). They a
 | 310 | CLOSE-OBSOLETE | Confirmed by CI with `a9e82d3` (three tries) after `5f1f9b5`; green on mac-universal since | – |
 | 330 | FIX (a) | (a) a loaded out-of-range depth widens the slider; (b) closed, tested headlessly; (c) stock widgets: M5's theme work (§23 #72), so the row stays KEEP-BLOCKED for (c) | I |
 | 331 | FIX | The header split (§6.5) | I |
-| 333 | DIRECTOR | §8.2 | I |
+| 333 | DIRECTOR | §8.2: decided, option 1 (auto-select only when exactly one route appeared: an undo, a redo, a drop; never on a load) | I |
 | 340 | FIX | Clamp the decode bound to `kDefaultDecodeBound` once in `decodeInput` | A |
 | 341 | FIX | `MemoryBudget.cpp`'s local `free` renamed; the rest is fine at HEAD | A |
 | 342 | FIX | `encodeState`'s asserts excuse a missing-audio flag only for an embedded entry whose payload is absent | A |
@@ -545,20 +554,20 @@ which §6.3 uses, and each pack's open gate questions, which §6.7 uses). They a
 | 384 | FIX | `MediaSession::capturesFolder` public; the editor's copy deleted | B |
 | 385 | FIX | `LivePeaks` sized for the longest ring; the lane's oldest frame clamped | I |
 | 386 | FIX | The lane follows the engine's splice numbering (§9) | I |
-| 387 | DIRECTOR | §8.2 (a gate item) | K |
+| 387 | DIRECTOR | §8.2: decided, option 1 (approved or edited at the gate, as checklist items) | K |
 | 388 | FIX | Its 18 items, one line each in the plan; its pointer to row 330 goes there | I |
 | 389 | FIX | A relink to a file with the same fingerprint keeps the content reference | A |
 | 390 | CLOSE-OBSOLETE | A decided rule (INTENT §19, the presets spec §6.4, `RenderSpec.h`), pinned by a test | – |
 | 392 | CLOSE-OBSOLETE | The content repository's `v2` already names VSCO paths and matches exact lines; its counts are v2's | – |
-| 393 | DIRECTOR | §8.2 | – |
+| 393 | DIRECTOR | §8.2: decided, option 1 (closed as recorded) | – |
 | 394 | KEEP-BLOCKED | The director's ears at the gate: the gained sources' noise floor (15 Kalimba Steps) | K |
 | 395 | KEEP-BLOCKED | The director's ears at the gate: 22 Shard Storm's ticks, 17 and 18 without a transport | K |
-| 396 | DIRECTOR | §8.2 | – |
+| 396 | DIRECTOR | §8.2: decided, option 1 (kept; words may be struck at the gate) | – |
 | 397 | KEEP-BLOCKED | The director's eyes at the gate: the dark browser's list ground (in a host; `gg-snap` doesn't draw the browser) | K |
 | 398 | FIX | The presets pack's table re-measured on `release` | K |
 | 400 | FIX | Not a race: the test's instance draws a fresh seed and Distribution 0.5 leaves a rare gap; a fixed seed and Distribution 0 (confirmed first by a seed loop) | B |
 | 401 | FIX | The same-name search after the content roots (INTENT §18, the presets spec §6.4) takes the name from the content reference | A |
-| 402 | DIRECTOR | §8.2 | – |
+| 402 | DIRECTOR | §8.2: decided, option 1 (values and routes, recorded as decided) | – |
 | **403** (new) | FIX | The ring reader's possible race (§6.4) | B |
 
 ## 11. Verification
