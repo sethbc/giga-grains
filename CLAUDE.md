@@ -126,7 +126,10 @@ resource, so machines must catch everything they can catch.
 ## Build and test
 
 **Setup.**
-- You need CMake 3.22 or newer, and Ninja (Visual Studio 2022 with ClangCL on Windows).
+- You need CMake 3.22 or newer and Ninja. On Windows, Visual Studio 2022 (or its Build Tools) with
+  the C++ x64 tools and the C++ Clang (ClangCL) component; configure and build `windows-clangcl`
+  from an "x64 Native Tools" developer shell with Visual Studio's `VC\Tools\Llvm\x64\bin` first
+  on the PATH, so `clang-cl` is Visual Studio's own (INTENT §23 #76).
 - Fetch the dependencies with `git submodule update --init --recursive` (what CI and
   `worktree-setup.sh` check out; today no nested submodule is built).
 - **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh
@@ -209,10 +212,10 @@ tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -
   cache is keyed by leg and by the hash of `base_sdks.cmake` and the script. (CPM's own
   `CPM_SOURCE_CACHE` cached nothing: clap-wrapper gives every package a `SOURCE_DIR`, which makes
   CPM skip it.) The VST3-validator step builds from `VST3_SDK_ROOT`.
-- **ccache**, macOS and Linux legs and the sanitizer jobs only, passed as
-  `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows is
-  uncached (the Visual Studio generator has no launcher support), and `mac-universal`'s
-  two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
+- **ccache**, every build leg and the sanitizer jobs, passed as
+  `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows uses
+  ccache's own pinned release (4.14.2, SHA-256 checked) since the leg moved to Ninja (INTENT §23
+  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
   (the sanitizer jobs' by sanitizer, LLVM version and commit; one ASan shard and the RTSan job
   save), restored by prefix.
 - **The pinned LLVM archive** (sanitizer jobs), keyed by version and SHA-256. The SHA-256 is
@@ -239,7 +242,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 | `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
-| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. |
+| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). |
 
 Every preset uses the same three commands:
 
