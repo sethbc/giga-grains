@@ -10,11 +10,12 @@
 // as tests/plugin/editor_frame_tests.cpp makes them, and each editor is drawn with
 // createComponentSnapshot, never shown in a window.
 //
-// What the pictures show: the instrument has a generated 2 s sine loaded (written as a scratch
-// WAV), both products have layers B and C on and one route added, a few hundred blocks have run so
-// the canvas has grains, and the canvas draws GG_STRESS_GRAINS=2048 synthetic grains (the seam is
-// read when the canvas is made, so it is set before the editor). The per-machine settings point at
-// a scratch file, so the tool never reads or writes the user's.
+// What the pictures show: the instrument has a generated 2 s sine loaded on layer A and both
+// products one on layer B (written as scratch WAVs; the FX's layer B reads it), the FX's layer A
+// has Loop on and two splice marks, both products have layers B and C on and one route added, a few
+// hundred blocks have run so the canvas has grains, and the canvas draws GG_STRESS_GRAINS=2048
+// synthetic grains (the seam is read when the canvas is made, so it is set before the editor). The
+// per-machine settings point at a scratch file, so the tool never reads or writes the user's.
 //
 // Exit status: 0, or 1 with a message on stderr (an error, or an exception that reached the top;
 // 2 for bad usage, an unknown option included).
@@ -360,28 +361,51 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
     }
     const gg::ui::EditorContext &context = plugin->editorContext();
 
-    // The instrument's sample: a 2 s sine, loaded through the loader strip's own path.
-    if (!product.fx)
-    {
-        const fs::path wav = scratch / "sine-2s.wav";
-        if (!writeSineWav(wav, 2.0, 220.0))
+    // Samples, loaded through the loader strip's own path: the instrument's layer A and both
+    // products' layer B get a generated 2 s sine (lane B and the strip then show a sample).
+    const auto loadSample = [&](uint8_t layer, const char *name, double hz) -> std::string {
+        const fs::path wav = scratch / name;
+        if (!writeSineWav(wav, 2.0, hz))
         {
             return "can't write " + wav.string();
         }
-        context.loadSampleFor(0, wav.string());
+        context.loadSampleFor(layer, wav.string());
         bool loaded = false;
         for (int i = 0; i < 500 && !loaded; ++i)
         {
             instance.mainThread();
-            loaded = context.sampleStatusFor(0).state == gg::ui::SampleStatusView::State::Loaded;
+            loaded =
+                context.sampleStatusFor(layer).state == gg::ui::SampleStatusView::State::Loaded;
             if (!loaded)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
-        if (!loaded)
+        return loaded
+                   ? std::string()
+                   : "the generated sample didn't load: " + context.sampleStatusFor(layer).message;
+    };
+    if (!product.fx)
+    {
+        if (const std::string e = loadSample(0, "sine-2s-a.wav", 220.0); !e.empty())
         {
-            return "the generated sample didn't load: " + context.sampleStatusFor(0).message;
+            return e;
+        }
+    }
+    if (const std::string e = loadSample(1, "sine-2s-b.wav", 330.0); !e.empty())
+    {
+        return e;
+    }
+    if (product.fx)
+    {
+        // The FX's layers default to Live; B reads its sample.
+        const ParamSlot source = gg::core::layerSlot(gg::core::LayerParam::Source, 1);
+        context.beginGesture(source);
+        context.setValue(source, static_cast<double>(gg::core::SourceKind::Sample));
+        context.endGesture(source);
+        if (!instance.block())
+        {
+            return "process failed";
         }
     }
 
@@ -422,6 +446,30 @@ std::string snapProduct(const Product &product, const fs::path &outDir,
         if (i % 4 == 0)
         {
             tick(*editor);
+        }
+    }
+
+    // The FX's layer A (a Live ring) gets Loop on and two splice marks, so its lane draws the
+    // marks and the loop window. The ring holds about 2.1 s by now; the marks are 1.5 s and
+    // 0.6 s behind the head, and more blocks follow so the commands apply and the lane refreshes.
+    if (product.fx)
+    {
+        const ParamSlot loop = gg::core::layerSlot(gg::core::LayerParam::Loop, 0);
+        context.beginGesture(loop);
+        context.setValue(loop, 1.0);
+        context.endGesture(loop);
+        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 1.5f);
+        context.ringCommand(0, gg::ui::RingCommand::AddSplice, 0.6f);
+        for (int i = 0; i < 40; ++i)
+        {
+            if (!instance.block())
+            {
+                return "process failed";
+            }
+            if (i % 4 == 0)
+            {
+                tick(*editor);
+            }
         }
     }
 
