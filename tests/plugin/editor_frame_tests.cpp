@@ -1109,7 +1109,7 @@ TEST_CASE("no control's label is elided or collides at 960 by 600 and 640 by 360
         gg::test::PluginUnderTest instance(id);
         REQUIRE(instance.valid());
         const auto editor = editorPluginOf(instance)->createEditor();
-        for (const auto size : {std::pair{960, 600}, std::pair{640, 360}})
+        for (const auto &size : {std::pair{960, 600}, std::pair{640, 360}})
         {
             INFO(size.first << " x " << size.second);
             editor->setSize(size.first, size.second);
