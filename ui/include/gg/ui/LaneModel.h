@@ -101,7 +101,9 @@ struct Window
 ///   [0, 1) (CloudScheduler): from Position to Position + Spray seconds behind the head. Position
 ///   is 16/255 × (2^(8v) − 1) seconds behind the head, so x1, the window's newer (right) edge, is
 ///   Position's x, width × (1 − seconds / ringSeconds), and x0 lies Spray's pixels further left.
-///   The lane is relative to the head, so the window doesn't move as the head does.
+///   The lane is relative to the head, so the window doesn't move as the head does. Position is
+///   clamped to 0 .. livePositionMax(geometry), not 0..1: its range runs past 1 to kPositionMax
+///   (300 s), and a lane spanning more than 16 s reaches past 1.
 /// - Instrument: ±Spray around Position, as the engine spreads a sample grain's spray either
 ///   side. Position is the fraction of the file, so the centre is at width × v.
 Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geometry) noexcept;
@@ -124,11 +126,17 @@ inline constexpr float kGhostThreshold = 1.0e-4f;
 std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effective,
                                   const LaneGeometry &geometry) noexcept;
 
+/// The highest Position a Live lane shows: the value whose seconds are the lane's span,
+/// min(kPositionMax, log2(1 + 255 × ringSeconds / 16) / 8), so 1 for the 16 s lane. 1 for an
+/// instrument lane, and for a lane whose ringSeconds isn't positive and finite.
+float livePositionMax(const LaneGeometry &geometry) noexcept;
+
 /// The Position value whose window is anchored at x, scanWindow's inverse, for a body drag: the
-/// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1, so
-/// a drag past either end of the lane pins Position to that end (left of the FX lane is 1, the
-/// oldest audio; left of the instrument lane is 0), infinities included. A NaN x or a
-/// degenerate lane gives 0.
+/// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1 on
+/// the instrument's lane and to 0 .. livePositionMax on the FX lane, so a drag past either end of
+/// the lane pins Position to that end (left of the FX lane is its span's Position, the oldest
+/// audio, 1 on the 16 s lane; left of the instrument lane is 0), infinities included. A NaN x or
+/// a degenerate lane gives 0.
 float positionValueAtX(float x, const LaneGeometry &geometry) noexcept;
 
 /// The Spray value whose window has the extent extentPx, scanWindow's inverse, for an edge drag:
@@ -267,6 +275,16 @@ struct RingSpan
 /// are numbered from the oldest; splice k runs from the k-th to the next, the last to the head;
 /// a k past the count is the last. k = 0, or no mark inside the window, gives the window.
 RingSpan spliceSpan(const RingView &ring, bool loop, int64_t loopFrames, uint32_t k) noexcept;
+
+/// Whether any of `ring`'s marks (the first min(spliceCount, kMaxSplices)) lies in [from, to).
+bool anyMarkIn(const RingView &ring, int64_t from, int64_t to) noexcept;
+
+/// The anchor of an AddSplice on `ring` with Splice `k` selected, as the engine takes it
+/// (LiveSource::anchorAt, windowEnd and spliceAt): the head when k is 0 or no mark is in
+/// storage, [head − ringFrames, head); otherwise the end of splice k numbered from the first mark
+/// in storage, Loop ignored, the last splice's end the head (spliceSpan(ring, false, 0, k).to).
+/// It differs from the engine only for a mark exactly at the head, which the engine counts.
+int64_t spliceAnchor(const RingView &ring, uint32_t k) noexcept;
 
 /// The value of an AddSplice command (gg::core::CommandEvent) that marks ring frame `frame`, the
 /// command's anchor (the head, or a selected splice's end) at `anchor`: the seconds from the

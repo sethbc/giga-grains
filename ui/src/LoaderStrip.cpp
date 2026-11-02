@@ -18,7 +18,7 @@ namespace
 {
 /// The formats the loader decodes (spec §6.4), for "Load…" and "Relink…", and the same as
 /// extensions for a drop (File::hasFileExtension ignores case).
-constexpr const char *kSampleFilePatterns = "*.wav;*.aif;*.aiff;*.aifc;*.flac;*.mp3";
+constexpr const char *kSampleFilePatterns = kSampleFileChooserPatterns;
 
 constexpr float kFontHeight = 14.0f;
 

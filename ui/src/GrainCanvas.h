@@ -145,6 +145,9 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// The x of each splice mark the last paint drew on layer `layer`'s lane, logical pixels from
     /// the lane's left edge, oldest first; empty for a lane out of range. For the tests.
     std::vector<float> marksDrawn(uint8_t layer) const;
+    /// The head (ring frames) the last paint drew layer `layer`'s marks against; 0 before. For
+    /// the tests.
+    int64_t headDrawn(uint8_t layer) const noexcept;
 
     /// Layer `layer`'s lane menu (the class comment), for the place last right-clicked on it, or
     /// for the keyboard (no place) when the menu was opened by Shift+F10 or not at all. Its
@@ -302,6 +305,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     mutable std::array<std::optional<RingView>, kLaneCount> rings_;
     // The marks the last paint drew, per lane (marksDrawn).
     std::array<std::vector<float>, kLaneCount> marks_;
+    std::array<int64_t, kLaneCount> headDrawn_{};
     // The lane menu's place: the ring frame right-clicked on its layer's lane, or none (the
     // keyboard's, or a Sample lane's).
     uint8_t menuLayer_{0};

@@ -814,7 +814,7 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     // Carry-over row 327: each lane's outline is fetched once a frame, not at each use.
     waveformCalls = 0;
     image = paintInto(900, 403);
-    CHECK(waveformCalls <= static_cast<int>(gg::core::kLayers));
+    CHECK(waveformCalls == 2);      // lanes C and D, the two Sample lanes, once each
     CHECK(litPixels(image, 0) > 0); // peaks, rectangle, tint, marker
     CHECK(litPixels(image, 1) > 0); // off, but drawn
     CHECK(litPixels(image, 2) > 0); // the hint
@@ -1131,10 +1131,14 @@ TEST_CASE("the lane draws the ring's marks", "[plugin]")
     const std::vector<float> marks = f.canvas->marksDrawn(0);
     REQUIRE(marks.size() == 2);
     const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    // Against the head the canvas drew with (the snapshot's, run on by the clock's extrapolation),
+    // which is never behind the published one.
+    const int64_t head = f.canvas->headDrawn(0);
+    CHECK(head >= ring.head);
     for (std::size_t k = 0; k < 2; ++k)
     {
         INFO("mark " << k);
-        const auto x = gg::ui::ringFrameX(lane, ring.head, ring.splices[k], kPluginRate);
+        const auto x = gg::ui::ringFrameX(lane, head, ring.splices[k], kPluginRate);
         REQUIRE(x.has_value());
         CHECK_THAT(marks[k], Catch::Matchers::WithinAbs(*x, 1.0));
     }
@@ -1214,7 +1218,10 @@ TEST_CASE("the lane menu's ring items are disabled while inactive", "[plugin]")
     f.process(kBlock);
     CHECK(enabled("Clear splice marks"));
     f.plugin.deactivate();
+    CHECK_FALSE(enabled("Add splice mark here"));
     CHECK_FALSE(enabled("Clear splice marks"));
+    CHECK_FALSE(enabled("Capture to layer"));
+    CHECK_FALSE(itemOf(f.canvas->laneMenu(0), save).isEnabled);
 
     // A Sample lane's menu loads a sample, through the chooser, into its own layer.
     PluginCanvas inst(kInstrumentPlugin);
@@ -1341,11 +1348,13 @@ TEST_CASE("a Ring Length change mid-draw draws no stale mark", "[plugin]")
             f.plugin.onMainThread(); // the watcher offers the ring
             onLane();
             AllocTripwire::resetCount();
+            clap_process_status status = CLAP_PROCESS_ERROR;
             {
                 AllocTripwire::Scope armed;
-                f.plugin.process(kBlock, inputs, outputs);
+                status = f.plugin.process(kBlock, inputs, outputs);
             }
             REQUIRE_NO_ALLOCATIONS(AllocTripwire::count());
+            REQUIRE(status == CLAP_PROCESS_CONTINUE);
             adopted = f.impl->processor()->ringRead(0).storage->frames() ==
                       static_cast<int64_t>(seconds * kPluginRate);
             onLane();
@@ -1420,7 +1429,7 @@ TEST_CASE("a drop on a Live lane says how to hear it", "[plugin]")
     const float before = f.context().baseValue(source);
     f.dropOn(1, first);
     CHECK(f.noticeShown());
-    CHECK(f.notice() == "B's sample is loaded: set B Source to Sample to play it");
+    CHECK(f.notice() == "B's sample is loading: set B Source to Sample to play it");
     f.dropOn(1, second);
     REQUIRE(f.waitFor(1, gg::ui::SampleStatusView::State::Loaded));
     CHECK(f.context().sampleStatusFor(1).fileName == "short.wav");

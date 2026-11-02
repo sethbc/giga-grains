@@ -53,6 +53,7 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             src/MutatePanel.cpp
             src/PresetBrowser.cpp
             src/PresetStrip.cpp
+            src/LaneMenu.cpp
             )
     add_library(gg::ui ALIAS gg-ui)
 

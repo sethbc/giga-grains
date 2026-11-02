@@ -8,6 +8,8 @@
 #include <array>
 #include <cmath>
 
+#include "gg/core/ParamIds.h" // kPositionMax, kMaxSplices
+
 // UI-thread display code: it works in double and uses libm freely. Nothing here reaches the
 // audio or the grain-event log, so the audio path's determinism rules (INTENT §14) don't bind it.
 
@@ -22,11 +24,11 @@ constexpr double kSpraySpanSeconds = 2.0;
 
 double taperSeconds(double span, double v) { return span / 255.0 * (std::exp2(8.0 * v) - 1.0); }
 
-/// The taper's inverse, clamped to 0..1. seconds must not be NaN.
-double taperValue(double span, double seconds)
+/// The taper's inverse, clamped to 0..top. seconds must not be NaN.
+double taperValue(double span, double seconds, double top = 1.0)
 {
     const double v = std::log2(1.0 + 255.0 * std::max(seconds, 0.0) / span) / 8.0;
-    return std::min(v, 1.0);
+    return std::min(v, top);
 }
 
 /// v clamped to 0..1, with NaN mapped to 0.
@@ -152,7 +154,9 @@ Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geo
     {
         return {0.0f, 0.0f};
     }
-    const double position = clamp01(positionValue);
+    // A Live lane's Position runs to its span's (livePositionMax), past 1 on a long ring.
+    const double top = livePositionMax(geometry);
+    const double position = positionValue >= 0.0f ? std::min<double>(positionValue, top) : 0.0;
     const double spray =
         taperSeconds(kSpraySpanSeconds, clamp01(sprayValue)) * pixelsPerSecond(geometry);
     if (geometry.fxLane)
@@ -189,7 +193,19 @@ float positionValueAtX(float x, const LaneGeometry &geometry) noexcept
         return static_cast<float>(clamp01(fraction));
     }
     const double behindSeconds = (1.0 - fraction) * geometry.ringSeconds; // ±inf for ∓inf x
-    return static_cast<float>(taperValue(kPositionSpanSeconds, behindSeconds));
+    return static_cast<float>(
+        taperValue(kPositionSpanSeconds, behindSeconds, livePositionMax(geometry)));
+}
+
+float livePositionMax(const LaneGeometry &geometry) noexcept
+{
+    if (!geometry.fxLane || !std::isfinite(geometry.ringSeconds) || !(geometry.ringSeconds > 0.0))
+    {
+        return 1.0f;
+    }
+    const double v = taperValue(kPositionSpanSeconds, geometry.ringSeconds,
+                                static_cast<double>(gg::core::kPositionMax));
+    return static_cast<float>(v);
 }
 
 float sprayValueForExtent(float extentPx, const LaneGeometry &geometry) noexcept
@@ -424,6 +440,28 @@ RingSpan spliceSpan(const RingView &ring, bool loop, int64_t loopFrames, uint32_
     // D6: from the oldest mark inside the window; past the count, the last.
     const uint32_t i = std::min(k, count) - 1;
     return {marks[i], i + 1 < count ? marks[i + 1] : r0};
+}
+
+bool anyMarkIn(const RingView &ring, int64_t from, int64_t to) noexcept
+{
+    for (uint32_t m = 0; m < std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices); ++m)
+    {
+        if (ring.splices[m] >= from && ring.splices[m] < to)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+int64_t spliceAnchor(const RingView &ring, uint32_t k) noexcept
+{
+    // The engine numbers from the first mark in storage, m >= head − N, and ignores Loop.
+    if (k == 0 || !anyMarkIn(ring, ring.head - ring.ringFrames, ring.head))
+    {
+        return ring.head;
+    }
+    return spliceSpan(ring, false, 0, k).to;
 }
 
 float spliceSeconds(int64_t anchor, int64_t frame, double sampleRate) noexcept

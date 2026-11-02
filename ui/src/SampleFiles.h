@@ -18,7 +18,7 @@ inline bool isSampleFilePath(const juce::String &path)
         "wav;aif;aiff;aifc;flac;mp3");
 }
 
-/// The patterns a chooser for a sample offers (the canvas's lane menu's).
+/// The patterns a chooser for a sample offers (the loader strip's and the lane menu's).
 inline constexpr const char *kSampleFileChooserPatterns = "*.wav;*.aif;*.aiff;*.aifc;*.flac;*.mp3";
 
 /// What both drop targets say of a file that isn't one.

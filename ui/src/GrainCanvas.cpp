@@ -45,11 +45,6 @@ constexpr float kSpliceAlpha = 0.8f;
 /// A lane this high or more numbers its marks.
 constexpr float kMarkNumberMinHeight = 40.0f;
 
-juce::String withEllipsis(const char *text)
-{
-    return juce::String(text) + juce::String::charToString(0x2026);
-}
-
 constexpr std::array<LayerParam, 5> kHeldParams{LayerParam::Position, LayerParam::Spray,
                                                 LayerParam::Pitch, LayerParam::PitchSpread,
                                                 LayerParam::Freeze};
@@ -300,24 +295,9 @@ float GrainCanvas::spliceValueFor(uint8_t layer, std::optional<int64_t> frame) c
     RingView ring = ringOf(layer);
     ring.head = laneHead(layer, ring);
     const LaneGeometry lane = geometry(layer, 1.0f);
-    const gg::core::RingParams params = ringParamsOf(layer);
-    const int64_t loopFrames = loopFramesOf(params, lane.sampleRate);
-    // The anchor (Processor.h's CommandEvent): the head, or a selected splice's end while marks
-    // inside the window make the selection one.
-    int64_t anchor = ring.head;
-    if (params.splice >= 1)
-    {
-        const RingSpan window = spliceSpan(ring, params.loop, loopFrames, 0);
-        bool marked = false;
-        for (uint32_t k = 0; k < std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices); ++k)
-        {
-            marked = marked || (ring.splices[k] >= window.from && ring.splices[k] < window.to);
-        }
-        if (marked)
-        {
-            anchor = spliceSpan(ring, params.loop, loopFrames, params.splice).to;
-        }
-    }
+    // The anchor as the engine takes it (Processor.h's CommandEvent, LiveSource::anchorAt): the
+    // head, or the selected splice's end, numbered from the first mark in storage, Loop ignored.
+    const int64_t anchor = spliceAnchor(ring, ringParamsOf(layer).splice);
     return spliceSeconds(anchor, *frame, lane.sampleRate);
 }
 
@@ -584,12 +564,12 @@ void GrainCanvas::paint(juce::Graphics &g)
 
 void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
 {
+    marks_[layer].clear(); // what this paint draws, even when it draws nothing
     const juce::Rectangle<int> b = laneBounds(layer);
     if (b.isEmpty())
     {
         return;
     }
-    marks_[layer].clear();
     const bool on = laneOn(layer);
     const bool live = context_.clock != nullptr && haveSnapshot_;
     const double now = wallSeconds();
@@ -815,6 +795,7 @@ void GrainCanvas::drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry 
     // last published one.
     const int64_t head = laneHead(layer, ring);
     ring.head = head;
+    headDrawn_[layer] = head;
     const double rate = lane.sampleRate;
     const gg::core::RingParams params = ringParamsOf(layer);
     const int64_t loopFrames = loopFramesOf(params, rate);
@@ -832,14 +813,10 @@ void GrainCanvas::drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry 
         g.setColour(pal.window.withAlpha(kLoopAlpha));
         g.fillRect(juce::Rectangle<float>(x0, top, std::max(xOf(window.to) - x0, 1.0f), height));
     }
-    // 2. The selected splice, while marks inside the window make it one: outlined.
+    // 2. The selected splice, while marks inside the window make it one: outlined, as a capture
+    // of it takes it (MediaSession::spanOf, Loop included).
     const uint32_t count = std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices);
-    bool marked = false;
-    for (uint32_t k = 0; k < count; ++k)
-    {
-        marked = marked || (ring.splices[k] >= window.from && ring.splices[k] < window.to);
-    }
-    if (params.splice >= 1 && marked)
+    if (params.splice >= 1 && anyMarkIn(ring, window.from, window.to))
     {
         const RingSpan selected = spliceSpan(ring, params.loop, loopFrames, params.splice);
         const float x0 = xOf(selected.from);
@@ -878,6 +855,11 @@ void GrainCanvas::drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry 
 std::vector<float> GrainCanvas::marksDrawn(uint8_t layer) const
 {
     return layer < kLaneCount ? marks_[layer] : std::vector<float>{};
+}
+
+int64_t GrainCanvas::headDrawn(uint8_t layer) const noexcept
+{
+    return layer < kLaneCount ? headDrawn_[layer] : 0;
 }
 
 void GrainCanvas::drawRect(juce::Graphics &g, const WindowRect &r, bool ghost, bool oneSided,
@@ -1329,157 +1311,7 @@ void GrainCanvas::filesDropped(const juce::StringArray &files, int x, int y)
         // A Live layer keeps reading its ring: the drop doesn't switch its Source.
         const std::string letter(1, kLayerLetters[layer]);
         postNotice(*this, context_,
-                   letter + "'s sample is loaded: set " + letter + " Source to Sample to play it");
+                   letter + "'s sample is loading: set " + letter + " Source to Sample to play it");
     }
-}
-
-void GrainCanvas::openLaneMenu(uint8_t layer, std::optional<int64_t> frame)
-{
-    menuLayer_ = layer;
-    menuFrame_ = frame;
-    if (showMenu)
-    {
-        showMenu(laneMenu(layer));
-    }
-}
-
-juce::PopupMenu GrainCanvas::laneMenu(uint8_t layer)
-{
-    juce::PopupMenu menu;
-    if (layer >= kLaneCount)
-    {
-        return menu;
-    }
-    forgetFrame();
-    const juce::Component::SafePointer<GrainCanvas> safe(this);
-    if (!liveLane(layer))
-    {
-        menu.addItem(withEllipsis("Load sample"), [safe, layer] {
-            if (safe != nullptr)
-            {
-                safe->chooseSampleFor(layer);
-            }
-        });
-        return menu;
-    }
-    const std::optional<int64_t> frame = menuLayer_ == layer ? menuFrame_ : std::nullopt;
-    const RingView ring = ringOf(layer);
-    const gg::core::RingParams params = ringParamsOf(layer);
-    const uint32_t splice = params.splice; // the selected one, or 0 for the window
-    // Commands, not parameters (VW-P2b): no undo entry. The mark's value is taken when it is
-    // chosen, from the head the lane draws at then, so it lands on the frame clicked.
-    menu.addItem(juce::PopupMenu::Item("Add splice mark here")
-                     .setEnabled(ring.valid)
-                     .setAction([safe, layer, frame] {
-                         if (safe != nullptr && safe->context_.ringCommand)
-                         {
-                             safe->context_.ringCommand(layer, RingCommand::AddSplice,
-                                                        safe->spliceValueFor(layer, frame));
-                             safe->repaint();
-                         }
-                     }));
-    menu.addItem(juce::PopupMenu::Item("Clear splice marks")
-                     .setEnabled(ring.valid && ring.spliceCount > 0)
-                     .setAction([safe, layer] {
-                         if (safe != nullptr && safe->context_.ringCommand)
-                         {
-                             safe->context_.ringCommand(layer, RingCommand::ClearSplices, 0.0f);
-                             safe->repaint();
-                         }
-                     }));
-    // Loop is a parameter: one gesture, so one undo entry (VW-P2b), and it can be set inactive.
-    menu.addItem(juce::PopupMenu::Item("Loop").setTicked(params.loop).setAction([safe, layer] {
-        if (safe == nullptr)
-        {
-            return;
-        }
-        GrainCanvas &c = *safe;
-        const ParamSlot slot = gg::core::layerSlot(LayerParam::Loop, layer);
-        const float before = c.context_.baseValue ? c.context_.baseValue(slot) : 0.0f;
-        const float after = before > 0.5f ? 0.0f : 1.0f;
-        c.recordBegin(slot, before);
-        if (c.context_.beginGesture)
-        {
-            c.context_.beginGesture(slot);
-        }
-        if (c.context_.setValue)
-        {
-            c.context_.setValue(slot, static_cast<double>(after));
-        }
-        if (c.context_.endGesture)
-        {
-            c.context_.endGesture(slot);
-        }
-        c.recordEnd(slot, after);
-        c.repaint();
-    }));
-    juce::PopupMenu targets;
-    for (uint8_t target = 0; target < kLaneCount; ++target)
-    {
-        targets.addItem(
-            juce::String::charToString(static_cast<juce::juce_wchar>(kLayerLetters[target])),
-            [safe, layer, splice, target] {
-                if (safe == nullptr || !safe->context_.captureTo)
-                {
-                    return;
-                }
-                const std::string message = safe->context_.captureTo(layer, splice, target);
-                if (!message.empty())
-                {
-                    postNotice(*safe, safe->context_, message);
-                }
-            });
-    }
-    menu.addSubMenu("Capture to layer", targets, ring.valid);
-    menu.addItem(juce::PopupMenu::Item(withEllipsis("Save capture as"))
-                     .setEnabled(ring.valid)
-                     .setAction([safe, layer, splice] {
-                         if (safe != nullptr)
-                         {
-                             safe->chooseCaptureFileFor(layer, splice);
-                         }
-                     }));
-    return menu;
-}
-
-void GrainCanvas::chooseSampleFor(uint8_t layer)
-{
-    const juce::String last =
-        context_.lastLoadFolder ? juce::String::fromUTF8(context_.lastLoadFolder().c_str()) : "";
-    const juce::File initial = juce::File::isAbsolutePath(last) ? juce::File(last) : juce::File();
-    const juce::Component::SafePointer<GrainCanvas> safe(this);
-    browse({"Load a sample", initial, false, kSampleFileChooserPatterns},
-           [safe, layer](const juce::File &file) {
-               if (safe != nullptr && file != juce::File() && safe->context_.loadSampleFor)
-               {
-                   safe->context_.loadSampleFor(layer, file.getFullPathName().toStdString());
-               }
-           });
-}
-
-void GrainCanvas::chooseCaptureFileFor(uint8_t layer, uint32_t splice)
-{
-    const juce::String folder =
-        context_.capturesFolder ? juce::String::fromUTF8(context_.capturesFolder().c_str()) : "";
-    const juce::File initial =
-        juce::File::isAbsolutePath(folder) ? juce::File(folder) : juce::File();
-    const juce::Component::SafePointer<GrainCanvas> safe(this);
-    browse({"Save the capture as", initial, true, "*.wav"}, [safe, layer,
-                                                             splice](const juce::File &chosen) {
-        if (safe == nullptr || chosen == juce::File())
-        {
-            return;
-        }
-        const juce::File file =
-            chosen.hasFileExtension("wav") ? chosen : chosen.withFileExtension("wav");
-        const std::string message =
-            safe->context_.saveCaptureTo
-                ? safe->context_.saveCaptureTo(layer, splice, file.getFullPathName().toStdString())
-                : std::string("can't save the capture");
-        if (!message.empty())
-        {
-            postNotice(*safe, safe->context_, message);
-        }
-    });
 }
 } // namespace gg::ui
