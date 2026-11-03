@@ -21,15 +21,8 @@
 // The click check looks away from (exempt()):
 // - the input's fade-in, the first 10 ms and the score's ±5 ms beyond;
 // - the pre-delay and kReverbSizeExempt after every Reverb Size move: carry-over row 217,
-//   accepted (S8);
-// - The reverb's onset is not exempt: the Processor fades the reverb's input in over 10 ms at an
-//   idle-to-active chunk (carry-over row 302, closed), so Reverb Amount rising from exactly 0
-//   under a sounding input scores like any other stretch.
-//   The morph law's first normalization (r_L·b_L / Σ r_K·b_K) also packed a crossfade into a few
-//   samples of a layer's ramp off the pad's center (carry-over row 301, closed): nothing here
-//   exempted it, and the law now moves at the ramps' pace, so nothing needs to.
-//   Reverb Size moves are exempt only when the Size in effect (its base or its modulation)
-//   changes.
+//   accepted (S8). A move is exempt only when the Size in effect (its base or its modulation)
+//   changes;
 // - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 378): the limiter's
 //   laws stand (zero lookahead, no attack), so a ceiling far under the material is a law
 //   consequence, not a defect. The check looks away over every call in which Peak's gain fell
@@ -38,6 +31,14 @@
 //   tape-like by design, and inside a Feedback 100% loop it re-reads each pass a fifth higher.
 //   The check looks away over the samples where Delay Amount is above 0, the delay's Feedback is
 //   at least 0.95 and its read time is still gliding.
+//
+// Not exempt, and so scored like any other stretch:
+// - the reverb's onset: the Processor fades the reverb's input in over 10 ms at an idle-to-active
+//   chunk (carry-over row 302, closed), so Reverb Amount rising from exactly 0 under a sounding
+//   input doesn't click;
+// - the morph law's first normalization (r_L·b_L / Σ r_K·b_K), which packed a crossfade into a
+//   few samples of a layer's ramp off the pad's center (carry-over row 301, closed): the law now
+//   moves at the ramps' pace.
 //
 // Each case pins a floor under the share of the render the click check scores
 // (Checks::minScored), so an exemption that widens past what the case needs fails there.
@@ -145,6 +146,8 @@ struct Checks
     /// case pins one a little under what it measures, so an exemption that widens past what the
     /// case needs fails here instead of blinding the check.
     double minScored = 0.0;
+    /// The most the last second's RMS may stand above the loudest earlier one (Verdict::runawayDb).
+    static constexpr double kRunawayDb = 6.0;
 };
 
 struct Verdict
@@ -416,7 +419,7 @@ class SweepDriver
     double sizeMod_{0.0};
     // The Processor's Reverb Size base at the end of the last call (row 309): a different value
     // before the next one was set on the Processor directly, not queued.
-    double seenSizeBase_{0.0};
+    float seenSizeBase_{0.0f};
     std::array<std::vector<float>, 2> out_;
     std::array<std::vector<float>, 2> in_;
     std::vector<Queued> events_;
@@ -439,7 +442,7 @@ inline void requireClean(const SweepDriver &d, const Checks &c)
     INFO(v.where);
     CHECK(v.finite);
     CHECK(v.peak <= c.peakBound);
-    CHECK(v.runawayDb <= 6.0);
+    CHECK(v.runawayDb <= Checks::kRunawayDb);
     if (!c.clicksExempt)
     {
         CHECK(v.clickScore <= c.clickLimit);

@@ -237,7 +237,7 @@ Verdict SweepDriver::check(const Checks &c) const
             }
         }
         v.runawayDb = lastDb - loudest;
-        if (!(v.runawayDb <= 6.0))
+        if (!(v.runawayDb <= Checks::kRunawayDb))
         {
             where << "runaway: the last second, from sample " << last << " (" << labelAt(last)
                   << "), at " << lastDb << " dB RMS, " << v.runawayDb
@@ -295,7 +295,7 @@ void SweepDriver::noteExempt(int64_t time, gg::core::ParamSlot slot, bool isMod,
         return;
     }
     double &held = isMod ? sizeMod_ : sizeBase_;
-    if (value != held)
+    if (static_cast<float>(value) != static_cast<float>(held))
     {
         held = value;
         sizeMoves_.push_back((time + 31) / 32 *
@@ -356,12 +356,17 @@ void SweepDriver::call(uint32_t n, std::span<const gg::core::ParamEvent> events,
 {
     // A Reverb Size base set straight on the Processor between calls (row 309) is a move at
     // this call's start, as a queued event is: the base now differs from the last call's end.
-    const double directSize = processor_.base(gg::core::ParamSlot::ReverbSize);
+    // Compared as floats, the Processor's own width. Before the first sample nothing sounds, so
+    // a set at clock 0 only updates the trackers.
+    const float directSize = processor_.base(gg::core::ParamSlot::ReverbSize);
     if (directSize != seenSizeBase_)
     {
         sizeBase_ = directSize;
         seenSizeBase_ = directSize;
-        sizeMoves_.push_back((clock_ + 31) / 32 * 32);
+        if (clock_ > 0)
+        {
+            sizeMoves_.push_back((clock_ + 31) / 32 * 32);
+        }
     }
     const auto at = static_cast<std::size_t>(clock_);
     out_[0].resize(at + n);

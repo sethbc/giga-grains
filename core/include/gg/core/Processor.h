@@ -29,7 +29,6 @@
 #include "gg/core/SourceExchange.h"
 #include "gg/core/SpaceReverb.h"
 #include "gg/core/UiSnapshot.h"
-#include "gg/core/Window.h"
 #include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
 #include "gg/grain/Budget.h"
@@ -1170,11 +1169,10 @@ class Processor
     SpaceParams space_{};
     std::unique_ptr<SpaceReverb> reverb_;
     // The send's onset fade (row 302): whether the last control chunk was active, the sample
-    // where the latest idle-to-active chunk (at t > 0) began (-1 for none), and the sin^2
-    // table. The reverb's input is multiplied by the rising half over kRampSeconds from there.
+    // where the latest idle-to-active chunk (at t > 0) began (-1 for none). The reverb's input is
+    // multiplied by the rising half of a Hann window (sin^2) over kRampSeconds from there.
     bool reverbPrevActive_{false};
     int64_t reverbOnsetAt_{-1};
-    HannTable reverbFade_;
 
     // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
     // layers' sum. The parameters below are the effective values at the last boundary; the six

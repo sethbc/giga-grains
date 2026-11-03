@@ -46,7 +46,7 @@ void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
     }
     // No runaway under the last burst's settings, held for 1.5 s (row 309): the check below sees
     // the restored defaults' last second, which proves recovery alone.
-    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= 6.0);
+    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= gg::test::Checks::kRunawayDb);
     d.setDefaults();
     d.note(gg::core::NoteEventType::AllOff, -1, 1.0f, -1);
     d.play(0.05, m);

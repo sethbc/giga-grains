@@ -216,7 +216,7 @@ int negativeZeros(const std::vector<float> &v)
         std::count_if(v.begin(), v.end(), [](float x) { return x == 0.0f && std::signbit(x); }));
 }
 
-// A change of Reverb Amount (and Pre-delay, seconds) at an absolute frame.
+// A change of Reverb Amount at an absolute frame.
 struct AmountAt
 {
     std::size_t frame;
@@ -224,15 +224,17 @@ struct AmountAt
 };
 
 // Renders the FX over `input` in calls of `block` frames with Amount changes at their absolute
-// frames, so every block size sees the same events at the same samples. `activeAt` frames are
-// sampled with reverbActive() after the call that contains them (when it is not null).
+// frames, so every block size sees the same events at the same samples. reverbActive() after
+// each call is appended to `activeAfterEach` (when it is not null).
 Stereo renderAmounts(const Stereo &input, uint32_t block, std::span<const AmountAt> changes,
-                     double predelay, std::vector<bool> *activeAfterEach = nullptr)
+                     double predelay, std::vector<bool> *activeAfterEach = nullptr,
+                     double initialAmount = 0.0)
 {
     Processor p({kSampleRate, 4096, 42, Mode::Fx});
     p.setBase(ParamSlot::ReverbPredelay, predelay);
     p.setBase(ParamSlot::Mix, 0.5); // the grains and the dry sine both reach the reverb
     p.setBase(ParamSlot::DryToReverb, 1.0);
+    p.setBase(ParamSlot::ReverbAmount, initialAmount);
     const std::size_t frames = input.left.size();
     Stereo out(frames, kNaN);
     for (std::size_t done = 0; done < frames; done += block)
@@ -1137,4 +1139,49 @@ TEST_CASE("a second reverb onset fades in too", "[core][space]")
     const Stereo b = renderAmounts(input, 511, changes, 0.0);
     CHECK(sameBits(a.left, b.left));
     CHECK(sameBits(a.right, b.right));
+}
+
+TEST_CASE("nothing fades at t = 0, and a mid-chunk Amount event starts the fade at the next chunk",
+          "[core][space]")
+{
+    const Stereo input = withEdges(sine(2 * 48000, 220.0, 0.5f));
+    SECTION("Amount above 0 from the start")
+    {
+        // X has the reverb active from its first chunk (t = 0: no onset, no fade). W raises
+        // Amount at frame 0 by an event: the ramp leaves 0 there, so chunk 0 is idle and chunk 1
+        // (t = 32 > 0) is an onset, faded over 10 ms. By frame 2800 the Amount ramps are long
+        // over, so the returns differ only in what the reverb heard: W heard its first 480
+        // samples faded, X unfaded, and X's return is the larger.
+        const std::span<const AmountAt> none;
+        const std::array<AmountAt, 1> at0{{{0, 1.0}}};
+        const Stereo x = renderAmounts(input, 64, none, 0.0, nullptr, 1.0);
+        const Stereo w = renderAmounts(input, 64, at0, 0.0, nullptr, 0.0);
+        const Stereo dry = renderAmounts(input, 64, none, 0.0, nullptr, 0.0);
+        const auto returnEnergy = [&](const Stereo &s) {
+            double e = 0.0;
+            for (std::size_t i = 2800; i < 9000; ++i)
+            {
+                const double d = static_cast<double>(s.left[i]) - dry.left[i];
+                e += d * d;
+            }
+            return e;
+        };
+        CHECK(returnEnergy(x) > 0.0);
+        CHECK(returnEnergy(w) < returnEnergy(x));
+        CHECK_FALSE(sameBits(x.left, w.left));
+    }
+    SECTION("an event mid-chunk at block size 1 moves the onset to the next chunk")
+    {
+        // The event at 4820 (chunk 150, 4800 to 4831) takes effect at the grid boundary 4832,
+        // where the Amount ramp leaves 0: chunk 151 is still idle and chunk 152 (4864) is the
+        // onset. Block sizes 1 and 64 agree bit for bit.
+        const std::array<AmountAt, 1> mid{{{4820, 1.0}}};
+        std::vector<bool> active;
+        const Stereo a = renderAmounts(input, 1, mid, 0.0, &active);
+        const Stereo b = renderAmounts(input, 64, mid, 0.0);
+        CHECK(sameBits(a.left, b.left));
+        CHECK(sameBits(a.right, b.right));
+        CHECK_FALSE(active[4863]);
+        CHECK(active[4864]);
+    }
 }

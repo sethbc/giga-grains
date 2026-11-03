@@ -80,7 +80,8 @@ std::string describe(const Shares &s)
 /// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
 /// against 11.6%; every other exemption covers what it did. Each exemption's own share of the
 /// FX render (SweepDriver::exemptShare; they overlap): the fade-in 0.04%, Reverb Size moves
-/// 43.0%, kLimiterDrive 12.8% and kDelayGlideHold 24.3%. The reverb's onset, which was exempt for
+/// 43.0%, kLimiterDrive 12.8% and kDelayGlideHold 24.3% (the instrument's: 0.04%, 37.3%, 13.0% and
+/// 21.5%; re-measured after row 302's fix). The reverb's onset, which was exempt for
 /// 18.5% of it (20.7% of the instrument's) until row 302's fix, is scored now: 42.41% of the FX's
 /// render is scored (40.17% before) and 43.67% of the instrument's (30.04% before).
 Shares extremes(Mode mode, uint64_t seed, double minScored)
@@ -102,7 +103,7 @@ Shares extremes(Mode mode, uint64_t seed, double minScored)
     }
     // No runaway under the last corner's settings (row 309), before the defaults come back: the
     // check below sees the restored last second, which proves recovery alone.
-    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= 6.0);
+    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= gg::test::Checks::kRunawayDb);
     d.setDefaults();
     d.play(1.0, m);
     gg::test::requireClean(d, gg::test::chainBound(d, minScored));
@@ -205,6 +206,8 @@ Shares chainCorners(Mode mode, uint64_t seed, double minScored)
         d.note(NoteEventType::Off, key);
         d.play(0.4, m);
     }
+    // No runaway under the last corner's settings (row 309), before the defaults come back.
+    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= gg::test::Checks::kRunawayDb);
     d.setDefaults();
     d.play(1.0, m);
     gg::test::requireClean(d, gg::test::chainBound(d, minScored));

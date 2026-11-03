@@ -217,7 +217,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
     INFO(clean.where);
     REQUIRE(clean.finite);
     REQUIRE(clean.peak <= c.peakBound);
-    REQUIRE(clean.runawayDb <= 6.0);
+    REQUIRE(clean.runawayDb <= gg::test::Checks::kRunawayDb);
     REQUIRE(clean.clickScore <= c.clickLimit);
     REQUIRE(clean.where.empty());
 
@@ -245,7 +245,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
                 }
             }
         },
-        [](const auto &v) { return v.runawayDb > 6.0; }, "runaway");
+        [](const auto &v) { return v.runawayDb > gg::test::Checks::kRunawayDb; }, "runaway");
     plant(
         [&] {
             for (auto &ch : out)

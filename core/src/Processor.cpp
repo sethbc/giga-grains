@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include "gg/core/Processor.h"
+#include "gg/core/Window.h"
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,10 @@ static_assert(kBudgetUnitsPerGrain == gg::kNormalStereoWeight);
 
 namespace
 {
+/// The rising half of this table is the reverb's onset fade (row 302). Built at load, off the
+/// audio thread.
+const HannTable kReverbFade;
+
 /// The configuration the engines would reject, rejected before anything is allocated.
 const ProcessorConfig &validated(const ProcessorConfig &c)
 {
@@ -2130,7 +2135,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             const float a = amount_.at(t, rampSamples_);
             const float s = drySend_.at(t, rampSamples_);
             const bool active = a != 0.0f; // read by the reverb at a chunk's first sample
-            if (t % static_cast<int64_t>(kControlGrid) == 0)
+            if ((t & (static_cast<int64_t>(kControlGrid) - 1)) == 0)
             {
                 // Row 302: a chunk that turns the reverb on after idle ones, at t > 0, starts
                 // the send's fade-in (the room is empty, and a step at its input would click).
@@ -2211,7 +2216,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 if (into < rampSamples_)
                 {
                     // The rising half of the Hann window, sin^2, over kRampSeconds.
-                    const float g = reverbFade_.at(0.5 * static_cast<double>(into) /
+                    const float g = kReverbFade.at(0.5 * static_cast<double>(into) /
                                                    static_cast<double>(rampSamples_));
                     rIn[0] *= g;
                     rIn[1] *= g;
