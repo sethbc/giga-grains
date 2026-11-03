@@ -26,8 +26,9 @@
 ; SPDX-License-Identifier: AGPL-3.0-or-later
 ; Copyright 2026, the Giga Grains authors (see git history)
 ;
-; The Windows installer (spec section 6.5), compiled by Inno Setup 6's ISCC.exe. The gg-installer
-; target runs it (cmake/products.cmake):
+; The Windows installer (spec section 6.5), compiled by Inno Setup's ISCC.exe: CI pins Inno Setup
+; 7.1.1 (INTENT section 23 #90), and 6.3 or later compiles it too. The gg-installer target runs it
+; (cmake/products.cmake):
 ;
 ;   ISCC.exe /DStagedAssets=<gg-products> /DLicenses=<gg-products\licenses> /DVersion=<X.Y.Z>
 ;            /DFullVersion=<v> /DOutDir=<dir> [/DContent=<gg-products\content>] giga-grains.iss
@@ -97,6 +98,7 @@ DisableProgramGroupPage=yes
 LicenseFile={#Licenses}\LICENSE
 Compression=lzma2/ultra64
 SolidCompression=yes
+; Inno Setup 7's 64-bit compiler ignores this (it compresses in process); a 32-bit one uses it.
 LZMAUseSeparateProcess=yes
 UninstallDisplayIcon={uninstallexe}
 WizardStyle=modern

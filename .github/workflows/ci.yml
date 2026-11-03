@@ -316,6 +316,13 @@ jobs:
       # isn't none.
       GG_RELEASE_KIND: ${{ needs.plan.outputs.release_kind }}
       GG_VERSION: ${{ needs.plan.outputs.version }}
+      # Inno Setup, the Windows installer's compiler (INTENT §23 #90): its 64-bit edition's
+      # release from jrsoftware/issrc (tag is-7_1_1), checked against its SHA-256 (the digest
+      # GitHub publishes for the asset), installed on every Windows run, so ctest's
+      # installer_windows_inno and gg-installer compile the script with it, not the image's
+      # Inno Setup 6.
+      INNO_VERSION: 7.1.1
+      INNO_SHA256: 8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -459,6 +466,35 @@ jobs:
           }
           & (Join-Path $llvm "clang-cl.exe") --version
 
+      # Inno Setup 7.1.1 (INNO_VERSION, above), installed silently into Program Files\Inno Setup 7
+      # beside the image's Inno Setup 6. Configure names its ISCC.exe (GG_ISCC), so the image's
+      # copy is never found in its place; the installer step checks the version the script
+      # printed. pwsh, not Git Bash, which would rewrite the installer's /SWITCHES as paths.
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $name = "innosetup-$env:INNO_VERSION-x64.exe"
+          $tag = "is-" + ($env:INNO_VERSION -replace '\.', '_')
+          $exe = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/$tag/$name" -OutFile $exe
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          if ($hash -ne $env:INNO_SHA256) { throw "${name}: SHA-256 $hash, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:ProgramFiles "Inno Setup 7"
+          $log = Join-Path $env:RUNNER_TEMP "innosetup-install.log"
+          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$dir`"", "/LOG=`"$log`"")
+          $p = Start-Process -FilePath $exe -ArgumentList $setupArgs -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -ErrorAction SilentlyContinue
+            throw "$name exited $($p.ExitCode)"
+          }
+          $iscc = Join-Path $dir "ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "no ISCC.exe in $dir" }
+          "ISCC: $iscc, file version $((Get-Item $iscc).VersionInfo.FileVersion)"
+          "GG_ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # Saved (below) only on main, so pull requests don't fill the repository's cache quota
       # with a 500 MB cache per leg per run.
       - name: Restore the compiler cache
@@ -560,6 +596,8 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then
             command -v ninja >/dev/null || choco install -y ninja --no-progress
             launcher+=("-DCMAKE_LINKER=$(cygpath -m "$GG_WIN_LINKER")")
+            # The pinned Inno Setup (Install Inno Setup, above), not whichever find_program meets.
+            launcher+=("-DGG_ISCC=$(cygpath -m "$GG_ISCC_PATH")")
           fi
           release_opts=()
           if [[ "$GG_RELEASE_KIND" == nightly ]]; then
@@ -951,7 +989,8 @@ jobs:
       # GG_SIGN; Windows ships unsigned (spec decision 3) and Linux has nothing to sign. The
       # expected files, named by plan's version, are staged in $RUNNER_TEMP/installer for the
       # upload: macOS the DMG (the PKG is inside it), Windows the zip and the Inno Setup EXE
-      # (GG_ISCC must have been found at configure), Linux the tarball.
+      # (GG_ISCC, the pinned Inno Setup, named at configure; the script prints the compiler's
+      # version, which must be INNO_VERSION), Linux the tarball.
       - name: Build the installer
         id: installer
         if: ${{ needs.plan.outputs.release_kind != 'none' && steps.products.outcome == 'success' }}
@@ -982,6 +1021,11 @@ jobs:
             fi
             cp "$dir/$file" "$stage/"
           done
+          # (grep without -q reads to the end, so pipefail sees no SIGPIPE from tr.)
+          if [[ "$RUNNER_OS" == Windows ]] && ! tr -d '\r' < "$log" | grep -F "Inno Setup $INNO_VERSION: Giga Grains" >/dev/null; then
+            echo "::error title=gg-installer::the log names no Inno Setup $INNO_VERSION (giga-grains.iss prints the compiler's version)"
+            exit 1
+          fi
           if [[ "$RUNNER_OS" == macOS ]]; then
             signed="$(tr -d '\r' < "$log" | grep -E '^signed: (yes|no)$' | tail -n 1 | cut -d ' ' -f 2 || true)"
             expected=no

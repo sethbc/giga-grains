@@ -330,9 +330,9 @@ cmake --build --preset release --target gg-installer
 
 It builds `gg-products` first, then writes into `build/release/gg-installer/`: on macOS
 `giga-grains-<v>-macos.pkg` and `.dmg` (and the last line `signed: no`), on Windows the zip and,
-when Inno Setup 6's `ISCC.exe` is found at configure, the EXE, on Linux the tarball. The bundles
-are signed ad hoc, and the PKG is unsigned, so Gatekeeper will object to it: right-click → Open,
-or allow it in System Settings → Privacy & Security. Any preset works (`dev` too); the
+when Inno Setup's `ISCC.exe` is found at configure (7.1.1, as CI pins it, or 6.3 or later), the
+EXE, on Linux the tarball. The bundles are signed ad hoc, and the PKG is unsigned, so Gatekeeper
+will object to it: right-click → Open, or allow it in System Settings → Privacy & Security. Any preset works (`dev` too); the
 `installer` tests run the same scripts on the products.
 
 **Signed and notarized,** for the director, with the identities already in the login keychain:

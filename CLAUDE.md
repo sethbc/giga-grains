@@ -302,8 +302,11 @@ ctest --preset dev --output-on-failure
     CC0 text and `content-version.txt`): the installers' Content component. It depends on
     `gg-content`, so a tree needs the fetched release (or `GG_CONTENT_DIR`).
   - `cmake --build --preset <p> --target gg-installer` builds `gg-products`, then packs it into
-    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno Setup
-    6's `ISCC.exe` is found at configure, its installer, or the Linux tarball. Unsigned unless
+    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno
+    Setup's `ISCC.exe` is found at configure, its installer, or the Linux tarball. CI's Windows
+    leg installs Inno Setup 7.1.1 (pinned, SHA-256 checked) and names its `ISCC.exe` with
+    `-DGG_ISCC`; locally `cmake/products.cmake` looks in `Program Files\Inno Setup 7`, then Inno
+    Setup 6's folder (the script needs 6.3 or later). Unsigned unless
     the signing environment is set ("Releasing" below; `docs/releasing.md`).
 - **If you delete a bundle or `gg_assets/`, configure again before building.** The `Info.plist`
   files of the CLAP, VST3 and app bundles are link dependencies, and CMake writes them at

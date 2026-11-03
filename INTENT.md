@@ -3151,7 +3151,8 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
     installed system-wide, signed with the director's Developer ID and notarized, with the
     certificates and an App Store Connect API key held as GitHub Actions secrets and never
     committed.
-  - Windows: an Inno Setup installer and a plain zip, **unsigned at 1.0** (as Surge XT,
+  - Windows: an Inno Setup installer (CI compiles it with Inno Setup 7.1.1, pinned and checked
+    by SHA-256; §23 #90) and a plain zip, **unsigned at 1.0** (as Surge XT,
     Shortcircuit XT and OB-Xf ship); Azure Trusted Signing or SignPath Foundation's open-source
     program is the upgrade path once downloads make SmartScreen's warning matter.
   - Linux: a tar archive, built on Ubuntu 22.04.
