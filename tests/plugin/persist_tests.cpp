@@ -762,9 +762,16 @@ TEST_CASE("a Ring Length shrink waits for the grains reading past it", "[plugin]
     // while; once the reads fit the second it offers, the next call adopts it and the status
     // clears. Bounded by work: the drain takes one grain's length (50 ms, five calls), so the
     // shrink must land within 40 polls.
+    // Carry-over row 400: a fixed seed and periodic onsets (Distribution 0). With the default
+    // Distribution and the instance's random seed, a rare gap between onsets (3 seeds of 0 to
+    // 2000 here: 196, 233 and 1742) left no grain reading 2 s back when the change came, so the
+    // shrink was offered at the first poll; every 750 samples, three or more 50 ms grains always
+    // read there.
     gg::test::useMediaScratch("ring-shrink-drain");
     PluginUnderTest fx(kFxId);
     REQUIRE(fx.valid());
+    REQUIRE(fx.loadDefaultsWithSeed(1));
+    setParam(fx, idOf(LayerParam::Distribution, 0), 0.0);
     setParam(fx, idOf(LayerParam::Density, 0), 6.0); // 64 Hz
     setParam(fx, idOf(LayerParam::Size, 0), -4.321928094887363);
     setParam(fx, idOf(LayerParam::Position, 0), std::log2(1.0 + 2.0 * 255.0 / 16.0) / 8.0);
