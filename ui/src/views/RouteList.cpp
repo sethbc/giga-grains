@@ -526,6 +526,9 @@ struct RouteList::Impl
                                      juce::dontSendNotification);
             if (half)
             {
+                // Not the box's text-when-nothing-selected alone: setSelectedId(0) empties the
+                // text, which that only paints (dimmed); this sets it, so the box reads it (row
+                // 388 (b): the setText isn't redundant).
                 row.target.setText(kChooseTarget, juce::dontSendNotification);
             }
             row.targetLayer.setSelectedId(r.targetLayer < gg::core::kLayers ? r.targetLayer + 1

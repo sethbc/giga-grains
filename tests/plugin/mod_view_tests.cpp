@@ -438,6 +438,52 @@ TEST_CASE("a half-built route row is kept until it has a target", "[plugin]")
     }
 }
 
+TEST_CASE("a half-built row survives another row's edit and yields to its slot's route", "[plugin]")
+{
+    // Row 388 (b): a refresh that another edit causes keeps a draft and its "choose a target";
+    // a route that comes into the draft's slot by another way (an undo, the host) wins.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *source = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.source"));
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
+    auto *curve = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.1.curve"));
+    REQUIRE(source != nullptr);
+    REQUIRE(target != nullptr);
+    REQUIRE(curve != nullptr);
+    source->setSelectedId(static_cast<int>(gg::core::ModSource::Lfo1) + 1,
+                          juce::sendNotificationSync);
+    REQUIRE(target->getText() == "choose a target");
+
+    // Another row's edit: the routes change, the rows are shown again, the draft stays.
+    curve->setSelectedId(static_cast<int>(gg::core::ModCurve::UnipolarSquared) + 1,
+                         juce::sendNotificationSync);
+    REQUIRE(h.undo.size() == 1);
+    view.refresh();
+    CHECK(source->getSelectedId() == static_cast<int>(gg::core::ModSource::Lfo1) + 1);
+    CHECK(target->getText() == "choose a target");
+    // Its undo too.
+    h.undo.undo();
+    view.refresh();
+    CHECK(target->getText() == "choose a target");
+
+    // A route in slot 13 from elsewhere: it wins, and the draft is gone.
+    h.routes[12] = {.source = gg::core::ModSource::Lfo2,
+                    .target = ParamSlot::Pitch,
+                    .depth = 1.0f,
+                    .curve = gg::core::ModCurve::Bipolar};
+    view.refresh();
+    CHECK(source->getSelectedId() == static_cast<int>(gg::core::ModSource::Lfo2) + 1);
+    CHECK(target->getText() == "Pitch");
+    // Cleared again, the slot is empty: no draft comes back.
+    h.routes[12] = {};
+    view.refresh();
+    CHECK(source->getSelectedId() == 1);
+    CHECK(target->getText() != "choose a target");
+}
+
 TEST_CASE("a route to a hidden target shows its name", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
