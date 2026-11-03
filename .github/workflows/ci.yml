@@ -739,7 +739,7 @@ jobs:
       # baseline doesn't have yet, gg-bench prints "no baseline for <machine>; no verdict" and
       # exits 0; the summary repeats that line above the output. A ratio never fails the job: a
       # regression (exit 3) becomes a warning and the step exits 0, so the artifact still
-      # uploads; sub-project 6 makes it blocking. Anything else still fails the job, as before: a
+      # uploads; it turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61). Anything else still fails the job, as before: a
       # crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or the timeout. The
       # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
       # the no-verdict line for a model the baseline lacks. A full run is time-boxed at 60

@@ -51,8 +51,8 @@ option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
 if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # clients/clap-first signs every macOS bundle with this identity after building it, and the
-    # codesign_* tests verify the signatures. "-" signs ad hoc, locally and on every CI run but a
-    # tag's or the nightly's. A Developer ID signs with a real identity, and then also with the
+    # codesign_* tests verify the signatures. "-" signs ad hoc: locally, and on every CI run that
+    # builds no installer or has no signing secrets. A Developer ID signs with a real identity, and then also with the
     # hardened runtime and a secure timestamp, and the two standalone apps with their
     # entitlements (installer/macos/standalone.entitlements: the microphone). The installer is
     # notarized after that. See docs/superpowers/specs/2026-10-29-release-pipeline-design.md §6.2.

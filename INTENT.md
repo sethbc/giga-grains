@@ -1518,7 +1518,7 @@ which restore bit for bit and need no encoder (§18, §23 #68).
 | RtMidi 6.0.0 | MIT-style (the same terms) | Fetched by clap-wrapper (CPM tag `6.0.0`) only with `CLAP_WRAPPER_STANDALONE_RTAUDIO`, which we leave off |
 | wil (Windows Implementation Libraries) | MIT | Fetched by clap-wrapper (CPM tag `v1.0.240803.1`) for the Windows standalone |
 | JUCE (GUI modules only) | AGPLv3 / commercial | Editor, widgets, accessibility |
-| sst-basic-blocks | GPL-3.0-or-later | SIMD setup and `ParamMetaData`; the LFOs, envelopes and mod matrix are in-house (§14) |
+| sst-basic-blocks | GPL-3.0-or-later | SIMD setup, `ParamMetaData` and the patched Reverb 2's helpers (lag, block interpolators, quadrature oscillator, block ops); the LFOs, envelopes and mod matrix are in-house (§14) |
 | sst-filters, sst-waveshapers, sst-effects | GPL-3.0-or-later | Filters (`CytomicSVF`), reverb (Reverb 2); drive later. The delay is in-house (§14) |
 | sst-voicemanager | MIT | MIDI1, MPE and CLAP note-ID voice management |
 | sst-cpputils, sst-plugininfra, sst-clap-helpers, sst-jucegui | MIT | Real-time utilities, versioned patch state, JUCE shim, widgets |

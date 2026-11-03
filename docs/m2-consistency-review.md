@@ -319,7 +319,7 @@ Live or Resample layer (§23 #68)". Resolution: Fixed in `47c6eac`.
 matrix" (in-house, `ModMatrix.h`, `ModSources.h`); l.1490 credits sst with the delay (in-house,
 l.1280–1281); l.1474–1476 plans unpinned rows "for M2 and M3" (M2 added none); l.1607's in-house list
 is short.
-Fix: l.1489 "SIMD setup and `ParamMetaData`; LFOs and the mod matrix are in-house (§14)"; l.1490
+Fix: l.1489 "SIMD setup, `ParamMetaData` and the patched Reverb 2's helpers (lag, block interpolators, quadrature oscillator, block ops); the LFOs, envelopes and mod matrix are in-house (§14)" (checked against `core/src/space/Reverb2Patched.h` l.43–48); l.1490
 "Filters (`CytomicSVF`), reverb (Reverb 2); drive later"; l.1474 "for M3 and later"; l.1607 adds the
 mod matrix and sources, the delay and limiter, the Spectral Smear. Resolution: Fixed in `47c6eac`.
 
@@ -385,7 +385,7 @@ describes `inst-sample-end` (#66) or drops "below"; l.2854 "(36 before main's me
 ASan". `tests/sweep/` holds 30 (`TEST_CASE` counts 19 + 5 + 3 + 2 + 1); CLAUDE.md says 30 but keeps
 the 20-case timings (engine spec l.568).
 Fix: "30 `[sweep]` cases (20 from sub-project 3, the rest from 2 and 4)"; re-time `ctest -L sweep` in
-`dev` and `asan` and update §19 and CLAUDE.md. Resolution: Fixed in `47c6eac` (the 26.5 s and 194 s timings are labeled as timed over 20 cases; re-timing `ctest -L sweep` in `dev` and `asan` waits for a quiet machine; CLAUDE.md, outside INTENT: fixed in the close).
+`dev` and `asan` and update §19 and CLAUDE.md. Resolution: Fixed in `47c6eac` (the 26.5 s and 194 s timings are labeled as timed over 20 cases; re-timing `ctest -L sweep` in `dev` and `asan` waits for a quiet machine, owed to the close's Task 19; CLAUDE.md, outside INTENT: fixed in the close).
 
 **R-27** (A-12, B-12). §19 l.3070–3071: "walks the 223 slots". `tests/ui/edit_layout_tests.cpp` l.49
 walks `kParamCount`, 283.

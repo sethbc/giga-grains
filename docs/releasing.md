@@ -275,7 +275,7 @@ The 0.2.0, 0.3.0 and 0.4.0 drafts are never published, so skip the publish step 
    the draft's assets on that page, then:
    - **macOS:** on a clean user account (a new standard user, no earlier Giga Grains in it or
      in `/Library/Audio/Plug-Ins/`), open the DMG and run the PKG. Gatekeeper must not object.
-     Check the five choices installed where the overview says.
+     Check the six choices installed where the overview says.
    - **Windows:** run the EXE (SmartScreen warns about an unknown publisher once: *More info* →
      *Run anyway*). It installs the CLAP and VST3 under `Common Files` and the apps under
      `Program Files\Giga Grains`.
