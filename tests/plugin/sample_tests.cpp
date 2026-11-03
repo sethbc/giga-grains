@@ -1063,6 +1063,54 @@ TEST_CASE("relink restores the saved sample, or loads a replacement and says so"
     CHECK(peak(out.left) > 0.01f);
 }
 
+TEST_CASE("a relink to the same audio keeps the content reference; to other audio drops it",
+          "[plugin]")
+{
+    // Row 389: a factory preset's sample (a content reference, no saved path) relinked by hand to
+    // a byte-identical copy stays named by its reference too, as an automatic search's find
+    // keeps it; another file is another sample and loses it.
+    const fs::path dir = setUp("relink-content-ref");
+    gg::test::useSystemContentDir(dir / "no-content"); // nothing the search could find it in
+    const fs::path original = gg::test::sineSampleFile("relink-content-ref");
+    gg::core::MediaEntry entry = gg::test::entryOf(original);
+    entry.absolutePath.clear();
+    entry.relativePath.clear();
+    entry.contentPath = "Samples/Test/relink-content-ref.wav";
+    const fs::path copy = dir / "elsewhere" / "renamed.wav";
+    fs::create_directories(copy.parent_path());
+    fs::copy_file(original, copy, fs::copy_options::overwrite_existing);
+    fs::remove(original);
+    const fs::path other = gg::test::writeSineWav(dir / "other.wav", 48000, 2.0, 330.0);
+
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0));
+    REQUIRE(instrument.activate(48000.0, 512));
+    REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
+    auto &loader = loaderOf(instrument);
+    REQUIRE(loader.status().state == SampleState::Missing);
+
+    loader.requestRelink(copy);
+    SampleStatus status = settle(instrument);
+    REQUIRE(status.state == SampleState::Loaded);
+    CHECK(status.message.empty());
+    auto saved = savedEntry(instrument);
+    REQUIRE(saved.has_value());
+    CHECK(saved->contentPath == "Samples/Test/relink-content-ref.wav");
+    CHECK(fs::path(saved->absolutePath).filename() == "renamed.wav");
+    CHECK(saved->sha256Hex == entry.sha256Hex);
+
+    loader.requestRelink(other);
+    status = settle(instrument);
+    REQUIRE(status.state == SampleState::Loaded);
+    CHECK(status.message.find("different audio than the saved sample") != std::string::npos);
+    saved = savedEntry(instrument);
+    REQUIRE(saved.has_value());
+    CHECK(saved->contentPath.empty());
+    CHECK(fs::path(saved->absolutePath).filename() == "other.wav");
+}
+
 TEST_CASE("a failed relink leaves a missing sample relinkable and a restored file loads",
           "[plugin]")
 {
