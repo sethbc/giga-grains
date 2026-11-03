@@ -7,7 +7,7 @@
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
 | **Feeds** | Every wave-2 sub-project: 3 (Engine scale and quality) takes the mip-level accessor and the per-layer pools; 2 (Sources and persistence) takes the Source-kind parameter, the per-layer rings and the chain's tap point; 4 (Extremes and the FX chain) takes the chain after the grain sum and the source interface; 5 and 6 take the parameter list, the mod matrix and the layer structure |
-| **Starts from** | `m2-program` at `1f8cb33` (the program PR #14, in CI), and `docs/m2-carry-over.md` with **13 open rows** |
+| **Starts from** | `m2-programme` at `1f8cb33` (the program PR #14, in CI), and `docs/m2-carry-over.md` with **13 open rows** |
 
 ## 1. Why this sub-project
 
