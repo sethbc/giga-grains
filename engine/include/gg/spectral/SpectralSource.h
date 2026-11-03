@@ -12,6 +12,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/source/LiveSource.h"
+#include "gg/spectral/SpectralConstants.h"
 
 struct PFFFT_Setup; // pffft's opaque setup (pffft.h); pffft stays private to gg-engine
 
@@ -71,10 +72,11 @@ struct SpectralMaterial
 class SpectralSource
 {
   public:
-    /// The output ring: Spray's 2 s, Size's 2 s, the 256-frame margins and a block (spec §6.2).
-    static constexpr double kRingSeconds = 5.0;
+    /// The output ring: Spray's 2 s, Size's 2 s, the 256-frame margins and a block (spec §6.2;
+    /// spectral::kRingSeconds, SpectralConstants.h).
+    static constexpr double kRingSeconds = spectral::kRingSeconds;
     /// The STFT's window, in seconds; fftSizeFor() rounds it to a power of two.
-    static constexpr double kWindowSeconds = 0.085;
+    static constexpr double kWindowSeconds = spectral::kWindowSeconds;
     /// What the synthesis divides out: 0.75 = √(mean(w_a²) × Σ_k w_s(n − kH)²) = √(3/8 × 3/2),
     /// not the 1.5 that Σ_k w_a·w_s sums to. The phases are redrawn every frame, so the
     /// overlapping frames are incoherent and add in power, not in amplitude: dividing by 1.5
