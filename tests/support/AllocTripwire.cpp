@@ -30,8 +30,9 @@ namespace
 {
 std::atomic<uint64_t> allocations{0};
 // How many Scopes are alive on this thread. constinit: reading it from operator new must not
-// run an initializer.
-constinit thread_local int armedDepth = 0;
+// run an initializer. Under the sanitizers no operator new reads it (the tripwire is off), which
+// Clang 23's -Wunused-but-set-global flags: maybe_unused.
+[[maybe_unused]] constinit thread_local int armedDepth = 0;
 
 #if !GG_SANITIZE
 /// The live AllocPeak's state: the blocks allocated on its thread and not yet freed, in a fixed
