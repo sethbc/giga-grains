@@ -472,6 +472,8 @@ the block before it there). Three more rules:
   which it returns for every non-app bundle; AUs don't register through Launch Services, the
   registrar scans the Components folders.
 
+With a copy also installed system-wide (`/Library/Audio/Plug-Ins/Components`, e.g. from an installer PKG), check which bundle auval actually loads: while `auval -v` runs, `lsof -c auvaltool | grep 'Giga Grains.component'` shows the path. The user domain (`~/Library/...`) wins, and the version alone doesn't tell two 0.2.0 builds apart.
+
 **A tag that fails `plan`.** Its summary and the `::error` line give one of these reasons:
 
 - *the tag does not match CMake's version*: `check-version.sh` printed why just above it,
