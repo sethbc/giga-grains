@@ -112,3 +112,85 @@ $b --chain --commit "$(git rev-parse --short HEAD)" --json chain.json
 # the A/B: build main (4fed5bb) the same way, then alternate main's binary and this one:
 $b --cases reference,engine-sample --json ab-head.json
 ```
+
+## 2026-11-03: M2's close (sub-project 7, the idle run)
+
+One session on the director's Apple M5 Max (arm64), the `release` preset, AppleClang
+21.0.0.21000401, 4-wide kernels, at commit `ca60f54` (main's engine and tools sources at M2's
+close plus the close's own changes). An idle window the director granted. The one-minute load
+average was 1.63 before the run and 1.73 to 2.24 after (the `run.log` lines at the end of each
+of the four commands), under the 3.20 of M1's run. Every in-run IQR of `engine-sample` is at or
+under 0.013 ns, under 0.6% of its median.
+
+| File | Command | What it is |
+|---|---|---|
+| `2026-11-03-m2-headline.json` | `gg-bench --commit ca60f54 --json …` | The full default run: 63 configurations (every case at blocks 32, 64 and 256) over 2,000 grains of 100 ms from 60 s of stereo noise at 48 kHz, 5 interleaved rounds of at least 2 s. Schema 2, with the ratios against the frozen `reference` kernel. |
+| `2026-11-03-m2-canvas.json` | `gg-bench --canvas --json …` | The canvas at 3,200 x 1,200 (pixel scale 2), four lanes, the banded resolve, 240 frames after a 20-frame warm-up, at 4,096, 8,192 and 16,384 grains. |
+| `2026-11-03-m2-space.json` | `gg-bench --space --commit ca60f54 --json …` | Space's per-sample stage, as M1's. |
+| `2026-11-03-m2-chain.json` | `gg-bench --chain --commit ca60f54 --json …` | The wet chain's bus filters, delay and limiter, and the `spectral` stage (one Spectral Smear's STFT). |
+
+**The figures** (medians; ns per stereo grain-sample at blocks 32 / 64 / 256, % of one core at
+48 kHz, and the ratio to `reference` in the same round), beside M1's:
+
+| Case | ns | % of one core | Ratio |
+|---|---|---|---|
+| `engine-sample` (**X**, INTENT §16) | 2.431 / 2.188 / 2.017 | **23.3 / 21.0 / 19.4** | 1.1704 / 1.0897 / 1.0302 |
+| M1's X (2026-10-29) | 2.44 / 2.21 / 2.03 | 23.4 / 21.2 / 19.5 | 1.154 / 1.072 / 1.024 |
+| `engine-live` | 3.399 / 2.717 / 2.177 | 32.6 / 26.1 / 20.9 | 1.6367 / 1.3520 / 1.1091 |
+| `engine-sample-eco` | 1.760 / 1.556 / 1.338 | 16.9 / 14.9 / 12.9 | 0.8474 / 0.7706 / 0.6829 |
+| `reference` (frozen) | 2.077 / 2.010 / 1.963 | 19.9 / 19.3 / 18.8 | |
+| `engine-live-long` (300 s ring) | 3.524 / 2.851 / 2.323 | 33.8 / 27.4 / 22.3 | 1.6960 / 1.4143 / 1.1866 |
+| `engine-layers` (4 x 500 grains) | 3.066 / 2.818 / 2.387 | 29.4 / 27.1 / 22.9 | 1.4774 / 1.4035 / 1.2192 |
+| `engine-layers-full` (4 x 2,000) | 3.632 / 3.124 / 2.367 | 139.5 / 120.0 / 90.9 (8,000 grains) | 1.7503 / 1.5540 / 1.2088 |
+| `engine-sample-hq` | 16.688 / 16.237 / 15.887 | 160.3 / 155.9 / 152.6 | 8.0275 / 8.0752 / 8.1144 |
+| `engine-sample-hq-up` | 16.928 / 16.420 / 15.977 | 162.6 / 157.7 / 153.4 | 8.1396 / 8.1443 / 8.1479 |
+| `engine-overload` | 2.398 / 2.190 / 2.029 | 23.3 / 21.2 / 19.7 | 1.1545 / 1.0867 / 1.0357 |
+| `engine-sample-sse` | 2.451 / 2.192 / 2.021 | 23.5 / 21.1 / 19.4 | 1.1800 / 1.0901 / 1.0311 |
+| `engine-sample-smear` | 2.432 / 2.191 / 2.025 | 23.3 / 21.0 / 19.4 | 1.1701 / 1.0889 / 1.0328 |
+| `engine-buses` | 2.435 / 2.201 / 2.017 | 23.4 / 21.1 / 19.4 | 1.1699 / 1.0945 / 1.0293 |
+| `engine-spectral` | 3.399 / 2.715 / 2.183 | 32.6 / 26.1 / 21.0 | 1.6356 / 1.3492 / 1.1148 |
+
+- **X is 19.4%** at block 256 (23.3% at block 32 and 21.0% at block 64), against M1's 19.5%
+  (23.4 / 21.2 / 19.5): 0.4% to 0.9% lower in ns. The ratios, 1.1704 / 1.0897 / 1.0302 against
+  M1's 1.154 / 1.072 / 1.024, are +1.4% / +1.6% / +0.6%, inside ruling R3's 3%, and agree with
+  sub-project 4's idle A/B (1.172 / 1.101 / 1.032) to within 0.8%. (This machine's `reference`
+  is 2.077 / 2.010 / 1.963 ns here against M1's 2.12 / 2.07 / 2.01, so the machine ran a little
+  faster in absolute terms and the ratio is the comparison.)
+- **HQ against Normal** (row 307): `engine-sample-hq` over `engine-sample` is **6.87 / 7.42 /
+  7.88** at blocks 32 / 64 / 256 (16.688 / 2.431, 16.237 / 2.188, 15.887 / 2.017), against
+  sub-project 3's 6.8 / 7.4 / 7.8 and the weight table's 6.79 (the `--quick` figure at block
+  256, on a loaded machine). The weights are unchanged: they wait for M5's calibration (INTENT
+  §14), and the row stays open for it and for the x86 legs.
+- **`engine-layers-full`** (the Task 19 brief's A/B at `630d740` and at the head) was not
+  re-measured locally: the program manager dropped it, since the Linux baseline remake from three
+  full CI runs settles whether it moved. Here it is 3.632 / 3.124 / 2.367 ns, IQR up to 0.24 ns
+  (6.5% of the median at block 32), the noisiest case in the run, as the layers' threaded-less
+  `SerialRunner` sum is.
+- **Space:** 28.718 ns per stereo sample (min 28.686, IQR 0.048), **0.138%** of one core, against
+  M1's 29.44 ns, 0.141%, and sub-project 4's fix wave 28.49 ns, 0.137%.
+- **`--chain`:** the bus filters, delay and limiter 11.706 ns per stereo sample (min 11.656, IQR
+  0.049), **0.056%** of one core (sub-project 4: 11.781 ns, 0.057%). Its new `spectral` stage,
+  one Spectral Smear's STFT over stereo noise with no grain reading it, is **26.705 ns** (min
+  26.561, IQR 0.035), **0.128%** of one core. That is **row 372's figure**: the STFT keeps
+  running while a Spectral layer is switched off, so an idle Spectral layer costs 0.128% of a
+  core, under the 0.25% that would have gone to the director and the 1% of the program
+  manager's ruling of 2026-11-03. The row closes as measured; the cost is not removed.
+- **Canvas:** 2.474 / **2.848** / 3.592 ms per frame at 4,096 / 8,192 / 16,384 grains (p95 2.508
+  / 2.880 / 3.639), with four lanes and the banded resolve (`"lanes": 4`, `"resolve":
+  "banded"`). At 8,192 grains it is inside the 3 ms budget by 0.15 ms, against M1's one-tint
+  2.87 ms and sub-project 6's four-lane run of 2.959 ms (loaded; p95 4.009). The splat is 0.737
+  ms and the resolve 2.054 ms.
+
+**Reproduce** (on an otherwise idle machine; about twenty minutes):
+
+```sh
+cmake --preset release
+cmake --build --preset release --target gg-bench
+b=build/release/tools/gg-bench/gg-bench
+uptime                                   # the load average, for the record
+c="$(git rev-parse --short HEAD)"
+$b --commit "$c" --json headline.json
+$b --canvas --json canvas.json
+$b --space --commit "$c" --json space.json
+$b --chain --commit "$c" --json chain.json
+```
