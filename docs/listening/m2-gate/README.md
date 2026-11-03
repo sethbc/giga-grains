@@ -9,19 +9,40 @@ numbers and words, for example "6 revisit, 12 further, 22 edit: ...". **An item 
 stands as accept**, and an accepted item closes its carry-over row. A verdict that isn't accept
 becomes the fix wave's first tasks.
 
-**About two hours.** The listening is about 70 minutes, the carry-over items 15 and the host
-matrix about 45 (eight cells, five or six minutes each).
+**About two and a half hours.** The listening is about 70 minutes and the carry-over items 15.
+The host matrix is about 70: eight cells of about 7 minutes each (ten steps; S5, a save and
+reopen, and S9, five editor reopens, are the long ones, and S8 needs the CPU meter to climb), and
+item 40's checks about 15 more if you do them all.
 
 ## Before you start
 
-The renders aren't committed; the links below point at `build/release/listening/m2-<pack>/` under
-the repository root, so render once per tree with each pack's own commands (the "Rendering the
-files" section of [layers](../m2-layers/README.md), [engine](../m2-engine/README.md),
-[sources](../m2-sources/README.md), [extremes](../m2-extremes/README.md),
-[presets](../m2-presets/README.md) and [views](../m2-views/README.md)). All six were re-rendered on
-`release` at `df1c3ae` for this gate, and each pack says so; sources' `03` is 130 s and takes the
-longest. Each WAV has its spectrogram PNG beside it. The presets pack needs the content (the first
-`gg-presets` build fetches it) and `ffmpeg` for the joined ladder.
+The renders aren't committed. The links below assume the **`release` build tree of this
+repository** (`build/release/listening/m2-<pack>/` under the repository root). From the repository
+root, this renders every pack there (the first run fetches the content and takes several minutes;
+sources' `03` is 130 s; the presets part needs `ffmpeg` for the joined ladder). The commands are
+the packs' own ("Rendering the files" in [layers](../m2-layers/README.md),
+[engine](../m2-engine/README.md), [sources](../m2-sources/README.md),
+[extremes](../m2-extremes/README.md), [presets](../m2-presets/README.md) and
+[views](../m2-views/README.md)); each WAV gets its spectrogram PNG beside it.
+
+```sh
+cmake --preset release && cmake --build --preset release --target gg-render gg-presets
+b=build/release; r=$b/tools/gg-render/gg-render; c=$b/content-cache/content
+for p in layers engine extremes views sources; do
+  L=$b/listening/m2-$p; mkdir -p "$L"; $r --write-media "$L/media"
+  for s in docs/listening/m2-$p/specs/*.json; do
+    n=$(basename "$s" .json); set --
+    [ "$n" = 08a-ring-restore-a ] && set -- --save-state "$L/media/08-saved.ggst"
+    $r "$s" --media-dir "$L/media" --captures-dir "$L/captures" -o "$L/$n.wav" \
+       --spectrogram "$L/$n.png" --metrics "$L/$n.metrics.json" --events "$L/$n.events.jsonl" "$@"
+  done
+done
+shasum -a 256 $b/listening/m2-sources/08*.wav        # the two must match
+# The presets pack: its own block (it packs presets, renders the strings phrase and the Mutate
+# ladder first); run the "Rendering the files" commands in docs/listening/m2-presets/README.md.
+```
+
+All six packs were re-rendered on `release` at `df1c3ae` for this gate, and each says so.
 
 For the host cells, install the `release` products (`cmake --build --preset release --target
 gg-installer`, or the `gg-products` folder), both products, all formats.
@@ -115,12 +136,13 @@ each one's character. Answer: `none`, or the numbers (for example `fx-22, inst-1
 Position 0.5 peaks at -4.9) and [init-fx](../../../build/release/listening/m2-presets/init-fx.wav). Answer: `keep` or `further` (D8's change).
 
 **13. Does Infinite Regress stay bounded?** Play [fx-19-infinite-regress](../../../build/release/listening/m2-presets/fx-19-infinite-regress.wav) (Feedback
-0.93; it builds over 8 s to -12 dBFS RMS). Answer: `yes` or `no`.
+0.93; it builds over 8 s to -12 dBFS RMS). Answer: `bounded` or `runaway`.
 
 **14. Does the Mutate ladder stay in the family at 10% and leave it by 60%?** Play
 [mutate-ladder](../../../build/release/listening/m2-presets/mutate-ladder.wav) (FX 01 Soft Focus, then Mutate at 10%, 30% and 60%, 4 s each). Each
 bus filter's type is a stepped slot, so about 73% of 15% presses flip at least one of the eight
-types with four layers on. Answer: `fine` or `lock` (lock the two filter types per layer).
+types with four layers on. Answer: `fine` or `lock` (lock the two filter types per layer); a
+note is optional.
 
 ## Views
 
@@ -130,8 +152,8 @@ Pack: [m2-views](../m2-views/README.md). Re-rendered at `df1c3ae`; every figure 
 lanes in the layer colors (A orange, B sky blue, C green, D pink), the pad's corners and handle, the
 macro row, undo and redo and the theme switch in the header, and in the light theme which parts stay
 dark by design (the lanes, D9) and whether everything else reads. In the Mod view the two
-vertical scrollbars are the panel's and the route list's. Answer: `yes`, or the picture and what's
-wrong.
+vertical scrollbars are the panel's and the route list's. Answer: `yes` or `no`; if no, name the
+picture and what's wrong (optional).
 
 | | Perform | Edit | Mod | FX |
 |---|---|---|---|---|
@@ -159,6 +181,9 @@ check that a long ring's lane still draws its peaks (rows 385 and 386). Answer: 
 `click` (fix it).
 
 Row 387, the new strings. Each is a text the views added; answer `ok` or give the replacement.
+
+Row 387 names eight strings; I find nine distinct texts, and the seven items below (19 to 25)
+cover all nine, the strip's three short forms being one item.
 
 **19. "Load a sample"** (a lane menu's file chooser). Answer: `ok` or edit.
 
@@ -192,7 +217,7 @@ first (the mbira's +27 dB hiss shows even after its 3.5 kHz low-pass), then [ins
 so quiet), [inst-10-felt-mallets](../../../build/release/listening/m2-presets/inst-10-felt-mallets.wav) (marimba +35), [inst-12-harp-lantern](../../../build/release/listening/m2-presets/inst-12-harp-lantern.wav),
 [inst-02-glass-orchard](../../../build/release/listening/m2-presets/inst-02-glass-orchard.wav) and [inst-20-shatter-glass](../../../build/release/listening/m2-presets/inst-20-shatter-glass.wav) (wine glass +30.6),
 [fx-04-undertow](../../../build/release/listening/m2-presets/fx-04-undertow.wav) and [fx-23-splinter-keys](../../../build/release/listening/m2-presets/fx-23-splinter-keys.wav) (cymbal roll +38.5). Answer:
-`accept` or the presets to fix.
+`accept` or `fix`; if fix, list the preset numbers (optional).
 
 **27. Row 395: are Shard Storm's ticks on drums acceptable?** Short pitched-up grains on sharp
 onsets tick at drum transients (its golden uses a sweep because its click score swung 8.5 to 22.7
@@ -207,9 +232,11 @@ the sparse loop. Answer: `accept` or `reword`.
 **29. Row 396: any tag word to strike or add?** The 29 words: focus `texture` `playable`
 `rhythmic` `extreme`; character `pad` `drone` `freeze` `smear` `stretch` `glitch` `keys` `pluck`
 `percussive` `voice` `strings` `winds` `brass` `metal` `noise` `dark` `bright` `wide` `mono` `reverb`
-`dry`; use `midi` `live-input` `sample` `sidechain`. No preset uses `voice` (the content has no
-voice) or `dry`, so the browser hides both; `sidechain` has one preset, `mono` two. A change moves
-a golden and, from 1.0.0, the frozen order. Answer: `none`, or the words.
+`dry`; use `midi` `live-input` `sample` `sidechain`. A change moves a golden and, from 1.0.0, the
+frozen order. The candidates to strike, each answered `keep` or `strike`: `voice` (no preset uses
+it: the content has no voice) and `dry` (none uses it either; the browser hides both), `sidechain`
+(one preset), `mono` (two) and `live-input` (all 24 FX presets). The other 24 words stand as
+`keep`. Answer: for example `voice strike, dry strike, others keep`; to add a word, name it.
 
 **30. Row 396: any name or tag to change?** "Horizon" is in both products' names (Event
 Horizon, Bowed Horizon); 18 Dotted Echoes' fixed 375 ms is a dotted eighth only at 120 BPM (its
@@ -272,22 +299,29 @@ grains); the variable changes nothing else.
 **39. Bitwig, VST3, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
 **40. Once-only host checks.** The packs' longer host checklists stay in the packs as their
-record; these are the ones worth a sitting, each in the host named. Answer `pass` or `fail ...`
-for the group; skipped counts as accept.
+record; these are the ones worth a sitting, each in the host named. Answer each bullet `pass` or
+`fail` (a note is optional), for example `40a pass, 40c fail`; a skipped bullet counts as accept.
 
-- Bitwig: the thirteen remote-control pages move what their names say, including "Filter A" and
-  "FX" ([layers](../m2-layers/README.md#host-checklist), [extremes](../m2-extremes/README.md#host-checklist)).
-- Live: the instrument's sidechain feeds a layer set to Live, then Spectral, then back with no click
-  (Layer B; the layers and extremes packs).
-- Both: all four layers at HQ, Density 400 Hz, Size 500 ms, Budget 256, then automated between 256
-  and 16,384: no click, dropout or silent layer ([engine](../m2-engine/README.md#host-checklist)).
-- Both: Peak limiter at -6 dB on a hot four-layer patch never passes -6 dB on the host's meter; Smear 0
-  against 1 on the CPU meter, the two figures noted ([extremes](../m2-extremes/README.md#host-checklist)).
-- Both: a ring over 32 MB (about two minutes of stereo) saved and reopened from the captures folder;
-  the cap's refusal message in the sample strip; a layer B sample in the FX restored
-  ([sources](../m2-sources/README.md#host-checklist)).
-- Both: an M1 session opens as it did and the instrument's Macro 7 now drives Feedback; a `midi`
-  FX preset with a MIDI track routed to it; Save as and reopen keeps the name with no edited dot; a
-  favorite survives a restart; Mutate shows as automation ([layers](../m2-layers/README.md#host-checklist), [presets](../m2-presets/README.md#host-checklist)).
-- Both: the installer's content status line reads "Factory content v2 in ..."
+- **40a. Both, instrument:** a layer B to D left at Sample is silent until it has a sample (a
+  layer with none is silent, which is expected, not a bug). Load a sample on layer B from its strip
+  (or drop a file on its lane) and it joins layer A; or set B's Source to Live with the sidechain
+  fed. In the FX every layer is Live and sounds
+  ([layers](../m2-layers/README.md#host-checklist)).
+- **40b. Bitwig:** the thirteen remote-control pages move what their names say, including "Filter A"
+  and "FX" ([layers](../m2-layers/README.md#host-checklist), [extremes](../m2-extremes/README.md#host-checklist)).
+- **40c. Live:** the instrument's sidechain feeds a layer set to Live, then Spectral, then back
+  with no click (layer B; the layers and extremes packs).
+- **40d. Both:** all four layers at HQ, Density 400 Hz, Size 500 ms, Budget 256, then automated
+  between 256 and 16,384: no click, dropout or silent layer ([engine](../m2-engine/README.md#host-checklist)).
+- **40e. Both:** the Peak limiter at -6 dB on a hot four-layer patch never passes -6 dB on the
+  host's meter; Smear 0 against 1 on the CPU meter, the two figures noted
+  ([extremes](../m2-extremes/README.md#host-checklist)).
+- **40f. Both:** a ring over 32 MB (about two minutes of stereo) saved and reopened from the
+  captures folder; the cap's refusal message in the sample strip; a layer B sample in the FX
+  restored ([sources](../m2-sources/README.md#host-checklist)).
+- **40g. Both:** an M1 session opens as it did and the instrument's Macro 7 now drives Feedback; a
+  `midi` FX preset with a MIDI track routed to it; Save as and reopen keeps the name with no edited
+  dot; a favorite survives a restart; Mutate shows as automation
+  ([layers](../m2-layers/README.md#host-checklist), [presets](../m2-presets/README.md#host-checklist)).
+- **40h. Both:** the installer's content status line reads "Factory content v2 in ..."
   ([presets](../m2-presets/README.md#host-checklist)).
