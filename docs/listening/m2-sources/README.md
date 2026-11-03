@@ -70,10 +70,13 @@ AU in Live. Note the host and format of anything that fails.
 - [ ] **A ring over 32 MB goes to the captures folder.** Make a ring longer than 32 MB (about
   2 minutes of stereo at 48 kHz), save: it is written to the captures folder, not embedded, and
   reopens.
-- [ ] **A long ring from the generic editor.** Set a Ring Length of 2 minutes from the generic
-  editor, while playing: nothing is cut or clicks at the resize, in both directions.
+- [ ] **A long ring from the Edit view.** Set a Ring Length of 2 minutes from the Edit view's
+  Ring panel (or the generic editor, where the host shows a non-automatable parameter), while
+  playing: nothing is cut or clicks at the resize, in both directions. Carry-over rows 385
+  (`LivePeaks` sized for the longest ring) and 386 (the lane follows the engine's splice
+  numbering) bear on this check and the lane's display.
 - [ ] **The cap's refusal.** Raise Ring Length until the memory cap refuses it: the status says
-  why (through sub-project 6's readout once it lands).
+  why (through the sample strip's memory readout, views PR 2).
 
 ### Sources
 

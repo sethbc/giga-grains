@@ -5,20 +5,54 @@ synthesizer, and *Giga Grains FX*, a granular effect, both built from one shared
 engine as CLAP, VST3, AU v2 and standalone for macOS, Windows and Linux. Read
 [`INTENT.md`](INTENT.md) first: it says what the project is for and how it is built.
 
-**Status (2026-10-29):** M0 (foundations) and M1 (the Cloud core: both plugins make textures)
-are done, and so are the installers and the release pipeline; next comes M2. Nothing has been
-released yet, and nothing will be public before M5: its `0.5.0-beta.N` are the first public
-releases, and v1.0.0 follows M5 (INTENT §20).
+**Status (2026-11-02):** M0 (foundations) and M1 (the Cloud core: both plugins make textures)
+are done, and so are the installers and the release pipeline. M2 is in progress: its sub-projects
+1 to 6 (layers, sources, engine, extremes, presets, views) are built and merged, and the close
+is under way. Nothing has been released yet, and nothing will be public before M5: its
+`0.5.0-beta.N` are the first public releases, and v1.0.0 follows M5 (INTENT §20).
 
 **Downloads:** the installers will be on
 [GitHub Releases](https://github.com/sethbc/giga-grains/releases) from M5's `v0.5.0-beta.1` on:
 a signed and notarized macOS installer, a Windows installer and zip, a Linux archive, and each
 release's complete source. Nothing is published there before then.
 
-To build,
-fetch the dependencies with `git submodule update --init`, then configure, build and test with
-CMake 3.22 or newer and Ninja (on Windows, Visual Studio 2022 with ClangCL: the
-`windows-clangcl` preset). The first configure downloads the VST3 and AudioUnit SDKs.
+## Building from source
+
+One line per OS installs what the build needs, clones the repository with its submodules into the
+directory you name, then configures, builds and tests the `dev` preset. Each script installs only
+what is missing and changes nothing on a second run.
+
+macOS (run `xcode-select --install` first if you have no Xcode command-line tools; the script
+installs the rest with Homebrew: CMake, Ninja, Git and LLVM):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sethbc/giga-grains/main/scripts/bootstrap-macos.sh | bash -s -- --clone ~/src/giga-grains
+```
+
+Ubuntu 22.04 or 24.04 and Debian-family systems with the same packages (gcc-13, CMake, Ninja and
+JUCE's development libraries; run as root or with `sudo` available):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sethbc/giga-grains/main/scripts/bootstrap-linux.sh | bash -s -- --clone ~/src/giga-grains
+```
+
+Windows, in PowerShell (winget installs CMake, Ninja, Git and the Visual Studio 2022 Build Tools
+with the C++ x64 tools, a Windows SDK and the C++ Clang component):
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sethbc/giga-grains/main/scripts/bootstrap-windows.ps1))) -Clone C:\src\giga-grains
+```
+
+To read a script before running it, clone first (`git clone --recurse-submodules
+https://github.com/sethbc/giga-grains.git`), read `scripts/bootstrap-<os>.sh` (or `.ps1`), and run
+it from the clone without `--clone`. On Windows, build from Visual Studio's x64 developer shell:
+`. .\scripts\dev-shell-windows.ps1` enters it and puts Visual Studio's own `clang-cl` first on the
+PATH, as the `windows-clangcl` preset needs.
+
+To build by hand instead, fetch the dependencies with `git submodule update --init --recursive`,
+then configure, build and test with CMake 3.22 or newer and Ninja (on Windows, Visual Studio 2022
+with ClangCL: the `windows-clangcl` preset). The first configure downloads the VST3 and AudioUnit
+SDKs.
 
 ```sh
 cmake --preset dev

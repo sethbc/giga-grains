@@ -4,7 +4,7 @@
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
 | **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters; INIT keeps Ring Length alone, amended 2026-11-02) is in the §6.2 bullet on what a load keeps |
-| **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
+| **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-program-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
 | **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets` (group 2: `m2-presets-g2`); `docs/m2-carry-over.md` with **11 open rows** at the start |
 | **Waits on** | Nothing: wave 2 is merged (`MEDI` version 2's content-relative reference, sub-project 2, and wave 2's parameters, which the factory presets are voiced with; §6.12) |
@@ -237,7 +237,8 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   > are ignored on load, gg-render's preset path ignores them too (the defaults', unless the
   > spec's `params` set them), and a factory source may set none (`--pack-preset` refuses one).
   >
-  > > **Amended 2026-11-02 (the final review's fix wave; the controller's ruling, D8):** INIT keeps
+  > > **Amended 2026-11-02 (the final review's fix wave; the controller's ruling, D8; ratified by
+  > > the director the same day as D8a, INTENT §23 #80, the consistency review's K-3):** INIT keeps
   > > each layer's **Ring Length** alone, which is what sizes a ring, and gives Loop, Loop Length,
   > > Overdub and Splice their defaults, so it is a fresh instance in everything that is heard.
   > > A preset file load is as above and keeps all five (`gg::core::keepRingLengths`).
@@ -250,7 +251,9 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   `presetName_` and written back into the state's `name` on save, so a reopened session shows the
   preset it came from. A base value that differs from the loaded preset's marks it edited: the
   header shows the name with a trailing dot (`Glass Hold •`), computed on the editor's 30 Hz tick
-  from the 218 values (cheap). INIT shows "Init", as today.
+  from the 283 values, the ring parameters aside (a load keeps them; `GigaGrainsPlugin.cpp`;
+  **Amended**, the consistency review's R-21, 2026-11-02; first written "the 218 values"), which is
+  cheap. INIT shows "Init", as today.
 - The FX's `is_for_preset` on its remote-controls pages stays false; nothing changes there.
 
 ### 6.3 Discovery: the factory, the provider and the wrapper's bridges (INTENT §18)
@@ -562,7 +565,7 @@ only if sub-project 6 widens the slot.
   - *The alternative law* (D4, option 2): `v' = v + amount × (r − v)` with `r` a uniform draw over
     the range, a blend toward a fresh random point; at amount 1 the result is independent of where
     it started.
-- **Locks** are a bitset over the 218 slots, kept by the plugin for its life (not state; a session
+- **Locks** are a bitset over the 283 slots (**Amended**, R-21; first written 218), kept by the plugin for its life (not state; a session
   reopens with the defaults). **Locked by default** (D3, recommended, "the structure stays, the
   sound moves"): Mix, Level and Level B to D, Layer A to D On, every Source, every Freeze, Macro
   Freeze and the seven other macros, Morph X and Y, Reverb Amount, Dry to Reverb, Step Length, and
@@ -579,8 +582,10 @@ only if sub-project 6 widens the slot.
   applies one mutation: the plugin computes `out` on the main thread, then sends every changed slot
   as a host gesture (begin, value, end) through the editor queue, in batches small enough for its
   1,024 entries (the builder sizes the batch or grows the queue; a mutation touching 150 slots is
-  450 entries), so hosts record it as automation and sub-project 6's undo will see ordinary
-  gestures. The counter increments per press, so successive presses differ and a session's seed
+  450 entries), so hosts record it as automation. **Amended** (R-20, 2026-11-02; views D7, row 402): each
+  press or load is one whole-state undo entry (`pushWholeState`), not a run of ordinary gestures;
+  an undo restores the values and routes, and a recall's samples and name aren't restored (the
+  director's decision, §23 #86). The counter increments per press, so successive presses differ and a session's seed
   with the same presses reproduces the same walk; the counter isn't saved.
 - Mutate never touches the mod routes, the sample, the seed or the locks; it is a parameter move.
 
@@ -797,6 +802,19 @@ recorded provenance and our own tools"). **Decided: option 1.**
    no longer means the defaults; `fx-sine` and the other default-valued goldens would describe a
    state no button reaches.
 
+**D8a. INIT keeps each layer's Ring Length** (the director, 2026-11-02, option 1 of two; INTENT §23
+#80; the consistency review's K-3). It ratifies the controller's ruling of 2026-11-02 in the final
+review's fix wave (§6.2), which bent D8's "bit for bit" with no sign-off recorded: INIT keeps each
+layer's Ring Length (memory, not sound); Loop, Loop Length, Overdub and Splice return to their
+defaults. *Cost:* INIT differs from a fresh instance whenever a ring isn't 16 s. Declined: INIT
+resetting Ring Length to 16 s, which resizes every ring on the main thread, can be refused by the
+memory cap and cuts a held ring's audio past 16 s. Carry-over row 391's "the director's D8" is this.
+
+**Row 402's decision** (the director, 2026-11-02, option 1; §23 #86): an undo of a preset recall
+restores the values and routes; the recalled samples and the name stay, recorded as decided in
+INTENT §17. Declined: restoring the name too (M); the name and the samples (L: an undo re-decoding
+files or holding old samples against the memory cap).
+
 **D9. Which presets a product's browser lists** (§6.1, §6.8). **Decided: option 1.**
 1. **Its own:** the FX lists FX presets, the instrument instrument presets; a preset file carries
    its product. *Cost:* a sound made in one product can't be picked from the other's list (a
@@ -833,8 +851,8 @@ Engineering choices, each with its reason.
   project's one RNG, reproducible per session, no `std::` distribution; the counter isn't state
   because a walk's history isn't worth a chunk.
 - **Mutate applies through host gestures,** one per changed slot, in batches that fit the editor
-  queue: hosts record it, sub-project 6's undo sees ordinary gestures, and the audio thread learns
-  of it exactly as of a knob move.
+  queue: hosts record it, the audio thread learns
+  of it exactly as of a knob move; each press is one whole-state undo entry (views D7; row 402).
 - **Preset goldens live in `tests/golden/presets/`** with their own glob, outside the
   click-injection table (§10): 48 cases × 16 injected renders would add minutes to every test run
   for a detector already pinned on the engineered cases; each preset golden's expected click score
@@ -939,7 +957,7 @@ length, what it is and what to listen for; the host checklist) and `specs/`:
 
 | File | What | Listen for |
 |---|---|---|
-| `fx-NN-<slug>.wav` × 24 | each FX preset over the content's voice-and-strings phrase as input, 8 s; the eight `midi` ones with two held notes from 3 s | the preset's character; the MIDI ones freezing and repitching on the notes (D7) |
+| `fx-NN-<slug>.wav` × 24 | each FX preset over the content's strings phrase as input, 8 s; the eight `midi` ones with two held notes from 3 s | the preset's character; the MIDI ones freezing and repitching on the notes (D7) |
 | `inst-NN-<slug>.wav` × 24 | each instrument preset, a two-note phrase then a chord, 8 s | playable from note 1; the focus the tags promise |
 | `init-fx.wav`, `init-inst.wav` | INIT in each product over the same material | the plain defaults (D8) |
 | `mutate-ladder.wav` | one texture preset, then Mutate at 10%, 30% and 60% (seed fixed, counter 1 to 3), 4 s each | variations that stay in the family at 10%, leave it by 60% (D3, D4) |

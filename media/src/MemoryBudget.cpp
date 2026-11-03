@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "gg/source/InterleavedStereo.h"
 #include "gg/source/RingStorage.h"
 
 namespace gg::media
@@ -16,6 +17,8 @@ constexpr uint64_t kMiB = uint64_t{1} << 20;
 constexpr uint64_t kFloat = sizeof(float);
 /// A ring's guard slots past each level's end (RingStorage::kGuardFrames, LiveSource's).
 constexpr auto kRingGuard = static_cast<uint64_t>(RingStorage::kGuardFrames);
+/// The guard frames a source's interleaved copy and each pyramid level carry, before and after.
+constexpr auto kSourceGuards = 2 * static_cast<uint64_t>(InterleavedStereo::kGuardFrames);
 
 uint64_t ceilShift(uint64_t frames, uint32_t n) noexcept
 {
@@ -39,21 +42,16 @@ uint64_t sampleBytes(int64_t frames, uint32_t channels, bool interleavedCopy,
     uint64_t bytes = n * channels * kFloat;
     if (interleavedCopy)
     {
-        bytes += n * 2 * kFloat;
+        bytes += (n + kSourceGuards) * 2 * kFloat;
     }
     for (uint32_t level = 1; level < std::min(levels, kMaxLevels); ++level)
     {
-        bytes += ceilShift(n, level) * channels * kFloat;
+        bytes += (ceilShift(n, level) + kSourceGuards) * channels * kFloat;
     }
     return bytes;
 }
 
-uint64_t sourceBytes(const PreparedSource &source) noexcept
-{
-    const SampleBuffer &buffer = source.buffer();
-    return sampleBytes(buffer.frames(), buffer.channels(), source.pairs().frames() > 0,
-                       source.levelCount());
-}
+uint64_t sourceBytes(const PreparedSource &source) noexcept { return source.bytes(); }
 
 uint64_t ringBytes(int64_t frames, uint32_t maxBlockSize, uint32_t levels) noexcept
 {
@@ -77,8 +75,9 @@ bool MemoryBudget::fits(uint64_t need) const noexcept
 
 std::string MemoryBudget::refusal(uint64_t need) const
 {
-    const uint64_t free = usedBytes < capBytes ? capBytes - usedBytes : 0;
+    const uint64_t available = usedBytes < capBytes ? capBytes - usedBytes : 0;
     return "over the memory cap: needs " + std::to_string(mibUp(need)) + " MB, " +
-           std::to_string(free / kMiB) + " MB free of " + std::to_string(mibUp(capBytes)) + " MB";
+           std::to_string(available / kMiB) + " MB free of " + std::to_string(mibUp(capBytes)) +
+           " MB";
 }
 } // namespace gg::media

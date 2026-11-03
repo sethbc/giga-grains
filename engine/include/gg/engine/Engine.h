@@ -209,7 +209,8 @@ class Engine
     /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode,
     /// and the grains still sounding, which would read nothing, end at once. That ends the
     /// grains reading the ring too: a source removed entirely is the one hard cut that remains,
-    /// by design. Otherwise grains reading the ring are left alone.
+    /// by design. Otherwise grains reading the ring are left alone. The removal leaves bus2Used()
+    /// raised, so the layer's bus-2 filter rings out rather than adding a second cut.
     ///
     /// The engine owns this source, keeping it alive until the next setSource or its
     /// destruction; takeRetiredSource never hands it back. Sources adopted with adoptSource that
@@ -408,7 +409,8 @@ class Engine
     /// True from the first admission of a bus-1 grain (whichever process() form runs) until
     /// reset() or the enable gate turning off, where the pool is cleared; false at construction.
     /// It stays raised while no grain is on bus 1 any more, so a layer that sums bus2 after its
-    /// filter keeps the filter's tail (extremes spec §6.3).
+    /// filter keeps the filter's tail (extremes spec §6.3). A source removal, setSource(nullptr),
+    /// clears the pool but keeps it raised too, so bus 2's filter rings out.
     bool bus2Used() const noexcept { return bus2Used_; }
     /// Grains admitted at a lower tier than their draw's, by the overload ladder's rung 2 or by
     /// a steal, since construction or reset().

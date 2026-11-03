@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/LayersFixture.h"
@@ -32,6 +33,20 @@ using gg::core::Mode;
 using gg::core::ParamSlot;
 using gg::test::Material;
 using gg::test::SweepDriver;
+
+namespace gg::core
+{
+/// LivePeaks's friend (LivePeaks.h): stores a value into the bucket holding `frame`, which write()
+/// never does for a non-finite one.
+struct LivePeaksTestAccess
+{
+    static void plant(const LivePeaks &peaks, int64_t frame, float value)
+    {
+        peaks.peaks_[static_cast<size_t>((frame / LivePeaks::kBucket) % peaks.bucketCount_)].store(
+            value);
+    }
+};
+} // namespace gg::core
 
 namespace
 {
@@ -202,7 +217,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
     INFO(clean.where);
     REQUIRE(clean.finite);
     REQUIRE(clean.peak <= c.peakBound);
-    REQUIRE(clean.runawayDb <= 6.0);
+    REQUIRE(clean.runawayDb <= gg::test::Checks::kRunawayDb);
     REQUIRE(clean.clickScore <= c.clickLimit);
     REQUIRE(clean.where.empty());
 
@@ -230,7 +245,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
                 }
             }
         },
-        [](const auto &v) { return v.runawayDb > 6.0; }, "runaway");
+        [](const auto &v) { return v.runawayDb > gg::test::Checks::kRunawayDb; }, "runaway");
     plant(
         [&] {
             for (auto &ch : out)
@@ -329,6 +344,26 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
         CHECK(v.clickScore > c.clickLimit);
         CHECK(namesSample(v.where, at));
     }
+}
+
+TEST_CASE("sweep: a Reverb Size base set straight on the Processor is a move", "[sweep]")
+{
+    // Row 309: the driver saw a Size move only through its own set(); a base set on the
+    // Processor between calls is a move at the next call, and a queued set to the same value
+    // after it is not another.
+    SweepDriver d(Mode::Fx, 1119);
+    d.processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+    d.play(1.0, Material::SineLive);
+    using gg::test::Exemption;
+    CHECK(d.exemptShare(Exemption::ReverbSize) == 0.0);
+    d.processor().setBase(ParamSlot::ReverbSize, 0.9f);
+    d.play(2.0, Material::SineLive);
+    const double afterDirect = d.exemptShare(Exemption::ReverbSize);
+    CHECK(afterDirect > 0.0);
+    d.set(ParamSlot::ReverbSize, static_cast<double>(d.processor().base(ParamSlot::ReverbSize)));
+    d.play(2.0, Material::SineLive);
+    // The same Size again exempts nothing more: the exempt stretch is the same in frames.
+    CHECK(d.exemptShare(Exemption::ReverbSize) * 5.0 == Catch::Approx(afterDirect * 3.0));
 }
 
 TEST_CASE("sweep: a Reverb Modulation drop at infinite Decay scores under the limit", "[sweep]")
@@ -445,14 +480,12 @@ TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[s
         const gg::test::Checks c = gg::test::chainBound(d, 0.0);
         REQUIRE(d.check(c).where.empty());
         // LivePeaks::write() stores a non-finite sample as 0, so a NaN reaches a bucket only by
-        // a poke: its first member is the bucket array (confirmed below by reading a written
-        // bucket through it, before anything is written).
+        // a poke, through the class's test accessor (row 309).
         const auto &peaks = d.processor().livePeaks(1);
-        auto *buckets = *reinterpret_cast<std::atomic<float> *const *>(&peaks);
         constexpr int64_t kFrame = 100 * gg::core::LivePeaks::kBucket;
         REQUIRE(peaks.at(kFrame) > 0.0f);
-        REQUIRE(buckets[100].load() == peaks.at(kFrame));
-        buckets[100].store(std::numeric_limits<float>::quiet_NaN());
+        gg::core::LivePeaksTestAccess::plant(peaks, kFrame,
+                                             std::numeric_limits<float>::quiet_NaN());
         const auto v = d.check(c);
         INFO(v.where);
         CHECK(!v.finite);

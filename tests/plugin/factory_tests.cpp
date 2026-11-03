@@ -587,6 +587,39 @@ TEST_CASE("the instrument's editor context outlines its sample", "[plugin]")
     CHECK(waveform.seconds == 4.0);
 }
 
+TEST_CASE("the editor's captures folder is the session's", "[plugin]")
+{
+    // Carry-over row 384: the editor has no rule of its own for the captures folder; it asks the
+    // media session, whose rule is the settings file's folder, else the default.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const std::filesystem::path dir = gg::test::useMediaScratch("gui-captures-folder");
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&fx.impl());
+    REQUIRE(plugin != nullptr);
+    const auto editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    const gg::ui::EditorContext &context = plugin->editorContext();
+    REQUIRE(context.capturesFolder);
+    CHECK(plugin->media().capturesFolder() == dir / "captures");
+    CHECK(context.capturesFolder() == gg::test::utf8(dir / "captures"));
+
+    // A settings file that names no captures folder: the default.
+    const std::filesystem::path empty = dir / "no-folder" / "settings.xml";
+    std::filesystem::remove(empty);
+    gg::test::useSettingsFile(empty);
+    gg::test::PluginUnderTest other("org.sethbc.giga-grains-fx");
+    REQUIRE(other.valid());
+    auto *second = dynamic_cast<gg::plugin::EditorPlugin *>(&other.impl());
+    REQUIRE(second != nullptr);
+    const auto secondEditor = second->createEditor();
+    REQUIRE(secondEditor != nullptr);
+    const gg::ui::EditorContext &defaults = second->editorContext();
+    REQUIRE(defaults.capturesFolder);
+    CHECK(second->media().capturesFolder() == gg::media::defaultCapturesFolder());
+    CHECK(defaults.capturesFolder() == gg::test::utf8(gg::media::defaultCapturesFolder()));
+}
+
 TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;

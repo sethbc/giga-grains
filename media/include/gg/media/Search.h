@@ -46,8 +46,10 @@ inline constexpr std::size_t kMaxScanEntries = 50'000;
 ///    own name is "Captures" (the default's, whatever machine saved it) or the setting's
 ///    folder's name, so a project moved with its captures folder reopens whole;
 /// 5. a file of the saved path's name (its last component, after either `/` or `\`, so a path
-///    saved on Windows still gives its name elsewhere):
-///    a. in the saved path's folder;
+///    saved on Windows still gives its name elsewhere; for an entry with no saved path and a
+///    content-relative reference, that reference's last component, as a factory preset's sample
+///    has):
+///    a. in the saved path's folder (none for an entry named by its reference alone);
 ///    b. in `settings.lastLoadFolder`;
 ///    c. anywhere under `settings.sampleFolder`, recursively. The scan stops after visiting
 ///       kMaxScanEntries directory entries (files and folders alike, the match included), never

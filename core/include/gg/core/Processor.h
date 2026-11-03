@@ -10,8 +10,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <sst/cpputils/rtsan_support.h>
@@ -765,6 +767,13 @@ class Processor
     /// its spawn, so the sinks see the steal without it; no schedule the engine admits gets there,
     /// and the dropped spawn is counted in droppedGrainEvents().
     void setStealSink(GrainStealSink sink, void *ctx) noexcept;
+    /// A test's hook into a ring adoption (carry-over row 351), for tests only, never set on a
+    /// host's path: called on the audio thread inside an adoption (the class comment's ring
+    /// exchange), after the new storage is published and before the storage it replaced is
+    /// retired, so a test can read and collect there, where the two threads' order would
+    /// otherwise put a read only by chance. Empty, as it is unless a test sets one, it costs a
+    /// branch per adoption. Call it while process() isn't running.
+    void setAdoptRingHook(std::function<void()> hook) { adoptRingHook_ = std::move(hook); }
 
     /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
     /// opens and closes. It takes effect from the next process() call's start. Turning it off
@@ -1157,6 +1166,7 @@ class Processor
     void *externalSinkCtx_{nullptr};
     GrainStealSink externalStealSink_{nullptr};
     void *externalStealSinkCtx_{nullptr};
+    std::function<void()> adoptRingHook_; // setAdoptRingHook's; empty unless a test sets one
     std::atomic<bool> publishing_{false};
     bool publishingThisCall_{false};
     std::unique_ptr<GrainQueue> grainQueue_; // heap: 128 KB
@@ -1169,6 +1179,11 @@ class Processor
     // reverb (heap: about 14.5 MB, 16-byte aligned).
     SpaceParams space_{};
     std::unique_ptr<SpaceReverb> reverb_;
+    // The send's onset fade (row 302): whether the last control chunk was active, the sample
+    // where the latest idle-to-active chunk (at t > 0) began (-1 for none). The reverb's input is
+    // multiplied by the rising half of a Hann window (sin^2) over kRampSeconds from there.
+    bool reverbPrevActive_{false};
+    int64_t reverbOnsetAt_{-1};
 
     // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
     // layers' sum. The parameters below are the effective values at the last boundary; the six

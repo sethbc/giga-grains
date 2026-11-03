@@ -500,3 +500,63 @@ TEST_CASE("exchange holds a ring given to the engine directly until it is retire
     exchange.collect();
     CHECK(exchange.ringsHeld() == 0);
 }
+
+TEST_CASE("exchange withdraws an untaken ring offer and nothing else", "[core][source]")
+{
+    // Carry-over row 355: withdrawRing() replaces an untaken ring offer with an offer of no ring,
+    // freeing the ring at once; with no untaken ring it does nothing. The offer of no ring is
+    // carried forward as any untaken ring is, and settles once the audio side marks it.
+    SourceExchange exchange;
+    exchange.withdrawRing(); // before any offer: nothing to withdraw
+    SourceOffer polled;
+    CHECK_FALSE(exchange.poll(polled));
+    CHECK_FALSE(exchange.ringAdoptionPending());
+
+    // An untaken ring with values and a source: the ring goes, the rest stays.
+    gg::core::ParamValues values{};
+    values[0] = 0.5f;
+    auto source = makeSource();
+    const PreparedSource *rawSource = source.get();
+    exchange.offer(std::move(source), &values);
+    exchange.offerRing(makeRing(), RingOffer{});
+    REQUIRE(exchange.ringsHeld() == 1);
+    exchange.withdrawRing();
+    CHECK(exchange.ringsHeld() == 0); // freed, never handed over
+    CHECK(exchange.ringAdoptionPending());
+    exchange.withdrawRing(); // twice: the offer left has no ring, so nothing happens
+    CHECK(exchange.ringsHeld() == 0);
+    CHECK(exchange.held() == 1);
+
+    // A newer offer of values carries the offer of no ring forward with the source.
+    gg::core::ParamValues newer = values;
+    newer[0] = 0.75f;
+    exchange.offerValues(newer);
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.source == rawSource);
+    CHECK_FALSE(polled.keepSource);
+    REQUIRE(polled.hasValues);
+    CHECK(polled.values == newer);
+    REQUIRE(polled.hasRing);
+    CHECK(polled.ring.storage == nullptr);
+    CHECK_FALSE(polled.ring.restore);
+    CHECK(exchange.ringAdoptionPending());
+    exchange.markRingAdopted(polled.ringSerial); // the Processor settles it so
+    CHECK_FALSE(exchange.ringAdoptionPending());
+    exchange.withdrawRing(); // taken: nothing to withdraw
+    CHECK_FALSE(exchange.poll(polled));
+
+    // An untaken offer of no ring replaced by a ring offer: nothing is freed twice, and the new
+    // ring is the one handed over.
+    exchange.offerRing(makeRing(), RingOffer{});
+    exchange.withdrawRing();
+    CHECK(exchange.ringsHeld() == 0);
+    auto next = makeRing();
+    RingStorage *rawNext = next.get();
+    exchange.offerRing(std::move(next), RingOffer{});
+    CHECK(exchange.ringsHeld() == 1);
+    REQUIRE(exchange.poll(polled));
+    CHECK(polled.ring.storage == rawNext);
+    exchange.markRingAdopted(polled.ringSerial);
+    CHECK_FALSE(exchange.ringAdoptionPending());
+    CHECK(exchange.ringsHeld() == 1);
+}
