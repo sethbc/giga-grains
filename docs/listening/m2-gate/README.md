@@ -1,5 +1,23 @@
 # The M2 listening gate
 
+**Status: Complete: every item answered, 2026-11-03.** The director's verdicts are in each item's
+answer field and in INTENT §23 #92. Thirty-six items were keep, accept, yes, ok, pass or fine. The
+five that were not, and where each went:
+
+- **2** (Env's release): change. A grain stream through the release, for M3's Voice scheduler
+  (carry-over row 404); not built now.
+- **3** (HQ's weight): yes, with a question about clicks in `01-three-tiers`. They were layer B's
+  noise bursts, not the tiers; `01` is re-rendered over a sine, with the note under item 3 here
+  and in the engine pack.
+- **16** (the pad path): static in `03-pad-path`. Its layer C, white noise, is now a 550 Hz sine,
+  re-rendered, with the note in the views pack and under item 16; "sounds fine now."
+- **18** (Ring Length drag): not understood as written. Rewritten in plain steps as item 40i, and
+  answered there: no click.
+- **29** (tag words): strike `live-input`. A code task, Task 17b; carry-over row 396 closes when
+  it lands.
+
+Items 32 to 39's S7 frame-time numbers and S8 thread-pool notes were not given.
+
 One sitting, one numbered checklist. It holds every open question from the six M2 listening
 packs, the carry-over's gate rows, the views' 16 snapshots and the host checks for Ableton Live 12
 and Bitwig Studio. The packs keep their tables and figures; this file only asks.
@@ -410,3 +428,5 @@ record; these are the ones worth a sitting, each in the host named. Answer each 
   the value changes. A slight change in the texture is expected. Answer `no click` or `click`
   (say whether the slow or the fast drag) in the matrix.
   *Director, 2026-11-03:* **no click** ("18 is fine", in a host).
+
+> *Director, 2026-11-03:* "all of 40a-h pass": **40a to 40h pass**; 40i is item 18, no click.
