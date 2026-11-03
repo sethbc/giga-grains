@@ -459,6 +459,43 @@ TEST_CASE("a route to a hidden target shows its name", "[plugin]")
           other->findColour(juce::ComboBox::textColourId));
 }
 
+TEST_CASE("a loaded depth past the target's range is kept until moved", "[plugin]")
+{
+    // Row 330 (a): the core takes any finite depth, so a loaded one past the target's span widens
+    // the slider rather than being clamped to it on the first touch.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    const auto &meta = gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Fx);
+    const float range = meta.maxVal - meta.minVal;
+    const float loaded = -3.0f * range;
+    h.routes[12] = {.source = gg::core::ModSource::Lfo1,
+                    .target = ParamSlot::Position,
+                    .depth = loaded,
+                    .curve = gg::core::ModCurve::Bipolar};
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *depth = dynamic_cast<juce::Slider *>(findDeep(view, "route.13.depth"));
+    REQUIRE(depth != nullptr);
+    CHECK(depth->getValue() == static_cast<double>(loaded));
+    CHECK(depth->getMinimum() <= static_cast<double>(loaded));
+
+    // A small drag moves it from where it is, not from the clamp.
+    REQUIRE(depth->onDragStart);
+    REQUIRE(depth->onDragEnd);
+    depth->onDragStart();
+    depth->setValue(static_cast<double>(loaded) * 0.99, juce::sendNotificationSync);
+    depth->onDragEnd();
+    CHECK(h.routes[12].depth == static_cast<float>(static_cast<double>(loaded) * 0.99));
+    CHECK(h.routes[12].depth < -range);
+    CHECK(h.undo.size() == 1);
+    // A route within its range keeps the target's span.
+    auto *other = dynamic_cast<juce::Slider *>(findDeep(view, "route.1.depth"));
+    REQUIRE(other != nullptr);
+    const auto &target = gg::core::paramMeta(h.routes[0].target, gg::core::Mode::Fx);
+    CHECK(other->getMaximum() == static_cast<double>(target.maxVal - target.minVal));
+}
+
 TEST_CASE("retargeting a route scales its depth to the new target's units", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;

@@ -534,9 +534,14 @@ struct RouteList::Impl
             row.curve.setSelectedId(static_cast<int>(r.curve) + 1, juce::dontSendNotification);
             if (depthSlot != i + 1) // the slider being dragged shows itself
             {
-                const double range = depthRange(r.target, context.mode);
+                // A loaded depth past the target's span (the core takes any finite one) widens
+                // the slider, so it shows and keeps that depth until the user moves it (row
+                // 330 (a)).
+                const double depth = static_cast<double>(r.depth);
+                const double range = std::max(depthRange(r.target, context.mode),
+                                              std::isfinite(depth) ? std::abs(depth) : 0.0);
                 row.depth.setRange(-range, range, 0.0);
-                row.depth.setValue(static_cast<double>(r.depth), juce::dontSendNotification);
+                row.depth.setValue(depth, juce::dontSendNotification);
             }
             row.sourceLayer.setEnabled(active && gg::core::isPerLayerSource(r.source));
             row.targetLayer.setEnabled(active && gg::core::isLayerTarget(r.target));
