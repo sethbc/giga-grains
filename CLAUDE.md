@@ -146,7 +146,10 @@ resource, so machines must catch everything they can catch.
   `scripts/bootstrap-linux.sh [--with-format] [--clone DIR]` and
   `scripts/bootstrap-windows.ps1 [-Verify] [-Clone DIR]` install what the build needs (the README's
   "Building from source" has their one-liners); `scripts/dev-shell-windows.ps1` enters the x64
-  developer shell. CI's legs run them (the `scripts_bootstrap` test checks them against stubs).
+  developer shell. Their `--clone` runs `ctest -LE serial` (the `[serial]` timing and memory cases are left out of a
+  newcomer's first run), and `GG_REPO_REF` picks the commit to check out, in a new or an existing
+  clone. The Linux one installs a font (`fonts-dejavu-core`) beside the JUCE libraries: the GUI
+  tests lay out text. CI's legs run them (the `scripts_bootstrap` test checks them against stubs).
 - Fetch the dependencies with `git submodule update --init --recursive` (what CI and
   `worktree-setup.sh` check out; today no nested submodule is built).
 - **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh

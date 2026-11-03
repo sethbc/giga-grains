@@ -19,7 +19,9 @@ release's complete source. Nothing is published there before then.
 ## Building from source
 
 One line per OS installs what the build needs, clones the repository with its submodules into the
-directory you name, then configures, builds and tests the `dev` preset. Each script installs only
+directory you name, then configures, builds and tests the `dev` preset (leaving out the
+timing- and memory-measuring cases, `ctest -LE serial`, which a newcomer's first run needn't
+gate on). Each script installs only
 what is missing and changes nothing on a second run.
 
 macOS (run `xcode-select --install` first if you have no Xcode command-line tools; the script
@@ -30,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/sethbc/giga-grains/main/scripts/boo
 ```
 
 Ubuntu 24.04 (the Linux baseline; 22.04's archive has no gcc-13) and Debian-family systems with
-the same packages (gcc-13, CMake, Ninja and JUCE's development libraries; run as root or with
+the same packages (gcc-13, CMake, Ninja, JUCE's development libraries and a font; run as root or with
 `sudo` available):
 
 ```sh

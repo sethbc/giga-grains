@@ -361,7 +361,9 @@ check "fetch-content, a wrong hash: no content" \
 printf 'tag v1\nsha256 %s\n' "$content_hash" >"$work/pin-no-url.txt"
 fetch_content "$work/content-cache-no-url" "$work/pin-no-url.txt"
 check "fetch-content, a pin without a url: fails" "$((status != 0 ? 0 : 1))"
-expect_in "fetch-content, a pin without a url: says so" "$out" "no url line"
+# CMake wraps a FATAL_ERROR message at a space, so under a long path the words split across
+# lines: join the lines before matching.
+expect_in "fetch-content, a pin without a url: says so" "$(tr -s '\n ' ' ' <<<"$out")" "no url line"
 
 # A stale .gg-pin (an older release's) is fetched over, and the stamp is then the pin's.
 printf 'v0 %s\n' "$(printf 'f%.0s' {1..64})" >"$dest/content/.gg-pin"

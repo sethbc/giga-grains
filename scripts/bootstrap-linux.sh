@@ -17,7 +17,8 @@
 #     (libfontconfig1-dev libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev
 #     libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev
 #     libglu1-mesa-dev libjack-jackd2-dev);
-#   - libxi-dev (JUCE 9's juce_gui_basics includes XInput2.h) and xvfb (headless GUI tests).
+#   - libxi-dev (JUCE 9's juce_gui_basics includes XInput2.h), xvfb (headless GUI tests) and
+#     fonts-dejavu-core (a font: the GUI tests lay out text, and a bare container has none).
 # A second run finds everything present and changes nothing.
 #
 #   --with-format  also install clang-format 23 the way the Format workflow gets it: a Python
@@ -25,9 +26,11 @@
 #                  hash-pinned wheel (x86_64 only), then print the CLANG_FORMAT export
 #   --clone DIR    then clone the repository (with its submodules) into DIR, or update the clone
 #                  there, and run `cmake --preset dev`, `cmake --build --preset dev` and
-#                  `ctest --preset dev` in it, with gcc-13 as the compiler. GG_REPO_URL names
-#                  another repository, and GG_REPO_REF a commit or branch to check out after the
-#                  clone (CI sets it to the commit under test)
+#                  `ctest --preset dev -LE serial` in it, with gcc-13 as the compiler. GG_REPO_URL names
+#                  another repository, and GG_REPO_REF a commit or branch to check out, after
+#                  the clone or in an existing clone (CI sets it to the commit under test).
+#                  `-LE serial` leaves out the timing- and memory-measuring cases, which a busy
+#                  first run would fail
 #
 # Exit status: 0 on success, 1 when an install or a step fails, 2 for bad usage. Works in bash
 # 3.2. The whole script is one function, called last, so `curl ... | bash -s -- ...` is safe: the trailing
@@ -88,7 +91,7 @@ main() {
 
     # installed <package>: 0 when dpkg lists it as installed.
     installed() {
-        dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
+        dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep 'install ok installed' >/dev/null
     }
     # missing_of <package>...: sets $missing to those not installed.
     local missing=()
@@ -137,7 +140,7 @@ main() {
     missing_of cmake ninja-build git curl unzip file binutils pkg-config ca-certificates \
         libfontconfig1-dev libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev \
         libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev \
-        libglu1-mesa-dev libjack-jackd2-dev libxi-dev xvfb
+        libglu1-mesa-dev libjack-jackd2-dev libxi-dev xvfb fonts-dejavu-core
     if ((${#missing[@]} > 0)); then
         echo "installing: ${missing[*]}"
         apt_install "${missing[@]}" || {
@@ -172,6 +175,7 @@ main() {
         echo "== Clone, build and test: $clone"
         if [[ -e "$clone/.git" ]]; then
             echo "found a clone: updating its submodules"
+            if [[ -n "${GG_REPO_REF:-}" ]]; then git -C "$clone" checkout "$GG_REPO_REF"; fi
             git -C "$clone" submodule update --init --recursive
         else
             git clone --recurse-submodules "$repo_url" "$clone"
@@ -184,7 +188,7 @@ main() {
         export CC=gcc-13 CXX=g++-13
         cmake --preset dev
         cmake --build --preset dev
-        ctest --preset dev
+        ctest --preset dev -LE serial
     fi
     echo "bootstrap-linux: done"
 }

@@ -60,7 +60,7 @@ new_machine() {
     mkdir -p "$stubs" "$tpl" "$state/dpkg"
     : >"$log"
     local c
-    for c in id grep dirname mkdir cp env; do ln -s "$(command -v "$c")" "$stubs/$c"; done
+    for c in grep dirname mkdir cp env; do ln -s "$(command -v "$c")" "$stubs/$c"; done
     # A logging stub: "<name> <args>" plus the directory it ran in.
     for c in cmake ctest ninja git; do
         cat >"$tpl/$c" <<STUB
@@ -71,6 +71,11 @@ exit 0
 STUB
         chmod +x "$tpl/$c"
     done
+    # id -u: 1000 unless a test writes another uid to $state/uid (0 is a container's root).
+    cat >"$stubs/id" <<STUB
+#!/bin/bash
+if [[ -r "$state/uid" ]]; then read -r uid <"$state/uid"; echo "\$uid"; else echo 1000; fi
+STUB
     cat >"$stubs/xcode-select" <<STUB
 #!/bin/bash
 [[ -e "$state/no-xcode" ]] && exit 2
@@ -116,14 +121,15 @@ exec "\$@"
 STUB
     # Only the stubs written above: the symlinked system tools are never chmod-ed (chmod follows
     # a link to the real, possibly root-owned, file).
-    for c in xcode-select brew dpkg-query apt-get add-apt-repository sudo; do chmod +x "$stubs/$c"; done
+    for c in id xcode-select brew dpkg-query apt-get add-apt-repository sudo; do chmod +x "$stubs/$c"; done
 }
-# run <script> [args...]: runs it on the stub PATH; sets $out and $rc.
+# run <script> [args...]: runs it on the stub PATH; sets $out and $rc. The scripts see GG_REPO_REF
+# only as $RUN_REF (the job's own GG_REPO_REF, set by CI, never leaks in).
 run() {
     local script="$1"
     shift
     set +e
-    out="$(cd "$work" && PATH="$stubs" GG_REPO_URL="file:///fake/repo.git" "$bash_bin" "$src/scripts/$script" "$@" 2>&1)"
+    out="$(cd "$work" && PATH="$stubs" GG_REPO_REF="${RUN_REF:-}" GG_REPO_URL="file:///fake/repo.git" "$bash_bin" "$src/scripts/$script" "$@" 2>&1)"
     rc=$?
     set -e
 }
@@ -164,7 +170,7 @@ expect_eq "macos: --clone clones then runs the three dev presets, in the clone" 
     "git clone --recurse-submodules file:///fake/repo.git $work/mac-clone/gg @$work
 cmake --preset dev @$work/mac-clone/gg
 cmake --build --preset dev @$work/mac-clone/gg
-ctest --preset dev @$work/mac-clone/gg"
+ctest --preset dev -LE serial @$work/mac-clone/gg"
 : >"$log"
 run bootstrap-macos.sh --clone "$work/mac-clone/gg"
 : >"$work/mac-clone/gg/.git" # a clone from here on
@@ -172,13 +178,19 @@ run bootstrap-macos.sh --clone "$work/mac-clone/gg"
 run bootstrap-macos.sh --clone "$work/mac-clone/gg"
 expect_eq "macos: an existing clone is updated, not cloned again" \
     "$(grep -c 'git clone' "$log")/$(grep -c 'submodule update --init --recursive' "$log")" "0/1"
+: >"$log"
+RUN_REF=abc123 run bootstrap-macos.sh --clone "$work/mac-clone/gg"
+expect_eq "macos: GG_REPO_REF is checked out in an existing clone, then its submodules" \
+    "$(grep -E '^git' "$log" | sed 's/ @.*//')" \
+    "git -C $work/mac-clone/gg checkout abc123
+git -C $work/mac-clone/gg submodule update --init --recursive"
 
 # ---- Linux
 printf 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="22.04"\n' >"$work/os-22.04"
 printf 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\n' >"$work/os-24.04"
 printf 'ID=fedora\nVERSION_ID="40"\n' >"$work/os-fedora"
 juce="libfontconfig1-dev libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev libglu1-mesa-dev libjack-jackd2-dev"
-common="g++-13 gcc-13 cmake ninja-build git curl unzip file binutils pkg-config ca-certificates $juce libxi-dev xvfb"
+common="g++-13 gcc-13 cmake ninja-build git curl unzip file binutils pkg-config ca-certificates $juce libxi-dev xvfb fonts-dejavu-core"
 # shellcheck disable=SC2086
 sorted() { printf '%s\n' $1 | sort | tr '\n' ' '; }
 
@@ -222,16 +234,41 @@ expect_eq "linux: --clone clones then runs the three dev presets, in the clone" 
     "git clone --recurse-submodules file:///fake/repo.git $work/linux-clone/gg @$work
 cmake --preset dev @$work/linux-clone/gg
 cmake --build --preset dev @$work/linux-clone/gg
-ctest --preset dev @$work/linux-clone/gg"
+ctest --preset dev -LE serial @$work/linux-clone/gg"
 
 new_machine linux-ref
 for c in cmake ctest git; do cp "$tpl/$c" "$stubs/$c"; done
-GG_REPO_REF=abc123 run bootstrap-linux.sh --clone "$work/linux-ref/gg"
+RUN_REF=abc123 run bootstrap-linux.sh --clone "$work/linux-ref/gg"
 expect_eq "linux: GG_REPO_REF is checked out, with the submodules, after the clone" \
     "$(grep -E '^git' "$log" | sed 's/ @.*//')" \
     "git clone --recurse-submodules file:///fake/repo.git $work/linux-ref/gg
 git -C $work/linux-ref/gg checkout abc123
 git -C $work/linux-ref/gg submodule update --init --recursive"
+# An existing clone is checked out at the ref too, then its submodules updated.
+: >"$work/linux-ref/gg/.git"
+: >"$log"
+RUN_REF=def456 run bootstrap-linux.sh --clone "$work/linux-ref/gg"
+expect_eq "linux: GG_REPO_REF is checked out in an existing clone, then its submodules" \
+    "$(grep -E '^git' "$log" | sed 's/ @.*//')" \
+    "git -C $work/linux-ref/gg checkout def456
+git -C $work/linux-ref/gg submodule update --init --recursive"
+
+# A container's root: uid 0, no sudo installed. apt-get runs directly, never through sudo.
+new_machine linux-root
+rm -f "$stubs/sudo"
+echo 0 >"$state/uid"
+run bootstrap-linux.sh
+expect_eq "linux root, no sudo: bare run exits 0" "$rc" "0"
+expect_eq "linux root, no sudo: it installs exactly the package list" "$(installed_set)" "$(sorted "$common")"
+check "linux root, no sudo: apt-get runs directly" \
+    "$(grep -q '^apt-get install' "$log" && ! grep -q '^sudo' "$log" && echo 0 || echo 1)"
+# Not root and no sudo: exits 1 saying so.
+new_machine linux-nosudo
+rm -f "$stubs/sudo"
+run bootstrap-linux.sh
+expect_eq "linux non-root, no sudo: exits 1" "$rc" "1"
+check "linux non-root, no sudo: it says to run as root or install sudo" \
+    "$(grep -q 'run as root, or install sudo' <<<"$out" && echo 0 || echo 1)"
 unset GG_OS_RELEASE
 
 # ---- Syntax and shellcheck

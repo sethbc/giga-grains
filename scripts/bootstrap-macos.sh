@@ -16,7 +16,10 @@
 #   --ci           skip llvm (CI's macOS leg builds `mac-universal` and doesn't use it)
 #   --clone DIR    then clone the repository (with its submodules) into DIR, or update the clone
 #                  there, and run `cmake --preset dev`, `cmake --build --preset dev` and
-#                  `ctest --preset dev` in it
+#                  `ctest --preset dev -LE serial` in it (the timing- and memory-measuring cases
+#                  are left out of a first run). GG_REPO_URL names another repository, and
+#                  GG_REPO_REF a commit or branch to check out, after the clone or in an
+#                  existing clone
 #
 # Exit status: 0 on success, 1 when an install or a step fails, 2 for bad usage. Works in
 # macOS's bash 3.2. The whole script is one function, called last, so `curl ... | bash -s -- ...`
@@ -118,14 +121,19 @@ main() {
         echo "== Clone, build and test: $clone"
         if [[ -e "$clone/.git" ]]; then
             echo "found a clone: updating its submodules"
+            if [[ -n "${GG_REPO_REF:-}" ]]; then git -C "$clone" checkout "$GG_REPO_REF"; fi
             git -C "$clone" submodule update --init --recursive
         else
             git clone --recurse-submodules "$repo_url" "$clone"
+            if [[ -n "${GG_REPO_REF:-}" ]]; then
+                git -C "$clone" checkout "$GG_REPO_REF"
+                git -C "$clone" submodule update --init --recursive
+            fi
         fi
         cd "$clone"
         cmake --preset dev
         cmake --build --preset dev
-        ctest --preset dev
+        ctest --preset dev -LE serial
     fi
     echo "bootstrap-macos: done"
 }

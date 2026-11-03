@@ -17,7 +17,7 @@
 #   -Clone DIR   then clone the repository (with its submodules) into DIR, or update the clone
 #                there, enter the developer shell (scripts\dev-shell-windows.ps1) and run
 #                `cmake --preset windows-clangcl`, `cmake --build --preset windows-clangcl` and
-#                `ctest --preset windows-clangcl`
+#                `ctest --preset windows-clangcl -LE serial`
 #
 # Exit status (run as a file): 0 on success, 1 when a check, an install or a step fails (PowerShell
 # itself rejects an unknown option). It never calls `exit` when run as a script block, so the
@@ -140,9 +140,19 @@ function Invoke-Bootstrap {
         Write-Host "== Clone, build and test: $Clone"
         if (Test-Path (Join-Path $Clone '.git')) {
             Write-Host 'found a clone: updating its submodules'
+            if ($env:GG_REPO_REF) {
+                & git -C $Clone checkout $env:GG_REPO_REF
+                if ($LASTEXITCODE -ne 0) { throw 'git failed' }
+            }
             & git -C $Clone submodule update --init --recursive
         } else {
             & git clone --recurse-submodules $RepoUrl $Clone
+            if ($LASTEXITCODE -ne 0) { throw 'git failed' }
+            if ($env:GG_REPO_REF) {
+                & git -C $Clone checkout $env:GG_REPO_REF
+                if ($LASTEXITCODE -ne 0) { throw 'git failed' }
+                & git -C $Clone submodule update --init --recursive
+            }
         }
         if ($LASTEXITCODE -ne 0) { throw 'git failed' }
         Set-Location $Clone
@@ -150,7 +160,7 @@ function Invoke-Bootstrap {
         foreach ($step in @(
                 @('cmake', '--preset', 'windows-clangcl'),
                 @('cmake', '--build', '--preset', 'windows-clangcl'),
-                @('ctest', '--preset', 'windows-clangcl'))) {
+                @('ctest', '--preset', 'windows-clangcl', '-LE', 'serial'))) {
             & $step[0] $step[1..($step.Length - 1)]
             if ($LASTEXITCODE -ne 0) { throw "$($step -join ' ') failed ($LASTEXITCODE)" }
         }
