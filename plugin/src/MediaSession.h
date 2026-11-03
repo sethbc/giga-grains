@@ -121,7 +121,9 @@ class MediaSession
     /// layer's loaded Ring Length at `activeRate`, after a check against the budget, as an offer
     /// held from the first sample when the layer's loaded Freeze is on. Inactive (`activeRate`
     /// 0), the rings wait for activate(). A ring that can't be found, whose payload is missing,
-    /// that the cap refuses or that won't decode is left out, with its status. Never throws.
+    /// that the cap refuses or that won't decode is left out, with its status. While active, a
+    /// layer this restore offers no ring for withdraws the restore offer an older one left
+    /// waiting there (SourceExchange::withdrawRing). Never throws.
     /// `state` is taken by value: its AUDI payloads are moved into shared storage that the
     /// restored samples and held rings alias, never copied.
     Restored restore(core::SessionState state, double activeRate) noexcept;

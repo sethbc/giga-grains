@@ -1105,7 +1105,12 @@ bool Processor::applyOffer(Layer &l, const SourceOffer &offer) noexcept
     // over what they set.
     if (offer.hasRing)
     {
-        if (adoptRing(l, offer.ring))
+        if (offer.ring.storage == nullptr && !offer.ring.restore)
+        {
+            // A withdrawn ring (SourceExchange::withdrawRing): nothing to adopt or decline.
+            l.sources.markRingAdopted(offer.ringSerial);
+        }
+        else if (adoptRing(l, offer.ring))
         {
             l.sources.markRingAdopted(offer.ringSerial);
         }

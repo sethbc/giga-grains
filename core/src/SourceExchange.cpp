@@ -37,6 +37,21 @@ void SourceExchange::offerRing(std::unique_ptr<RingStorage> storage, const RingO
     publish(nullptr, true, nullptr, &ring, ringSerial_);
 }
 
+void SourceExchange::withdrawRing()
+{
+    // Only an untaken offer with a ring: one the audio side has taken is adopted or declined
+    // there. Should it take this one in between, publish() makes the offer of no ring anyway,
+    // which the audio side settles as nothing to adopt.
+    if ((middle_.load(std::memory_order_acquire) & kFresh) == 0 || !lastHasRing_ ||
+        lastRing_.storage == nullptr)
+    {
+        return;
+    }
+    const RingOffer none; // no storage: nothing to adopt (Processor::applyOffer)
+    ++ringSerial_;
+    publish(nullptr, true, nullptr, &none, ringSerial_); // frees the ring it replaces
+}
+
 RingStorage *SourceExchange::holdRing(std::unique_ptr<RingStorage> storage)
 {
     RingStorage *raw = storage.get();

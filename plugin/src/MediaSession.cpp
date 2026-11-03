@@ -583,6 +583,21 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
             }
         }
     }
+    // Carry-over row 355: a layer this load restores no ring for withdraws an older load's
+    // restore offer still waiting in its exchange, so the older session's ring never lands
+    // after this one's values. Once the withdrawal settles, pollRingLengths takes the ring of
+    // record from the storage then published.
+    if (active_ != nullptr)
+    {
+        for (uint8_t l = 0; l < kLayers; ++l)
+        {
+            const RingSlot &slot = rings_[l];
+            if (!out.rings[l].has_value() && slot.offerPending && slot.offeredRestore)
+            {
+                active_->sources(l).withdrawRing();
+            }
+        }
+    }
     refreshBudget();
     return out;
 }
@@ -838,13 +853,15 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
                         continue; // in flight
                     }
                     // Declined (the copy's gap was past kAdoptCopyFrames): made again below.
-                    const RingStorage *storage = processor.ringRead(l).storage;
-                    slot.frames = storage != nullptr ? storage->frames() : 0;
                     if (slot.offeredRestore)
                     {
                         slot.persistStatus = "ring not restored: declined";
                     }
                 }
+                // Settled: the ring of record is the storage published now, the offer's, or
+                // after a decline or a withdrawal (restore()) the one before it.
+                const RingStorage *storage = processor.ringRead(l).storage;
+                slot.frames = storage != nullptr ? storage->frames() : 0;
                 slot.offerPending = false;
                 slot.offeredRestore = false;
                 slot.offeredEntry.reset();

@@ -2054,6 +2054,64 @@ TEST_CASE("a save before the audio thread takes a restored ring writes the resto
     sameRing(decoded(b.save(), gg::core::Mode::Fx));
 }
 
+TEST_CASE("a newer load withdraws an older restore offer", "[plugin]")
+{
+    // Carry-over row 355: a state loaded while active offers its ring, which the audio thread
+    // adopts at its next process() call. A newer load before that call, with no ring for the
+    // layer, withdraws the offer: the older session's ring never lands after the newer one's
+    // values. The layer keeps the ring it had, whose length (16 s, the older state's being 2 s)
+    // the watcher takes as the ring of record once the withdrawal settles, offering no resize.
+    gg::test::useMediaScratch("ring-load-withdrawn");
+    std::string older;
+    {
+        PluginUnderTest a(kFxId);
+        REQUIRE(a.valid());
+        REQUIRE(a.loadDefaultsWithSeed(3));
+        setParam(a, idOf(LayerParam::RingLength, 0), 1.0); // 2 s
+        REQUIRE(a.activate(kRate, kBlock));
+        render(a, 94, 11);
+        setParam(a, paramId(ParamSlot::Freeze), 1.0);
+        render(a, 47, 12);
+        older = a.save();
+    }
+    REQUIRE(decoded(older, gg::core::Mode::Fx).rings[0].has_value());
+    std::string newer;
+    {
+        PluginUnderTest b(kFxId);
+        REQUIRE(b.valid());
+        REQUIRE(b.loadDefaultsWithSeed(5));
+        newer = b.save();
+    }
+    REQUIRE_FALSE(decoded(newer, gg::core::Mode::Fx).rings[0].has_value());
+
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.loadDefaultsWithSeed(4));
+    REQUIRE(fx.activate(kRate, kBlock));
+    render(fx, 40, 99); // its own ring holds other noise
+    const auto *processor = fx.impl().processor();
+    const gg::RingStorage *own = processor->ringRead(0).storage;
+    REQUIRE(own->frames() == 16 * 48000);
+    const std::size_t held = processor->sources(0).ringsHeld();
+    const std::vector<float> before = gg::test::ringWindow(*processor, 0);
+    REQUIRE(fx.load(older));
+    REQUIRE(processor->sources(0).ringAdoptionPending()); // offered, not taken
+    REQUIRE(fx.load(newer));
+    CHECK(processor->sources(0).ringsHeld() == held); // the older ring freed, never handed over
+    render(fx, 1, 0, nullptr, true);
+    CHECK(processor->ringRead(0).storage == own);
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    CHECK(processor->ringAdoptionsDeclined(0) == 0);
+    const std::vector<float> after = gg::test::ringWindow(*processor, 0);
+    REQUIRE(after.size() == before.size() + 2 * kBlock);
+    CHECK(std::equal(before.begin(), before.end(), after.begin())); // none of the older audio
+    fx.onMainThread();
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending()); // no resize offered
+    CHECK(fx.impl().media().status(0).empty());
+    render(fx, 1, 0, nullptr, true);
+    CHECK(processor->ringRead(0).storage == own);
+}
+
 TEST_CASE("a session saves no ring of a layer whose Source is Sample", "[plugin]")
 {
     // D1 (the final review's I2): a held ring is saved only when the layer's base Source builds
