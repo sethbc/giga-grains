@@ -275,7 +275,7 @@ The 0.2.0, 0.3.0 and 0.4.0 drafts are never published, so skip the publish step 
    the draft's assets on that page, then:
    - **macOS:** on a clean user account (a new standard user, no earlier Giga Grains in it or
      in `/Library/Audio/Plug-Ins/`), open the DMG and run the PKG. Gatekeeper must not object.
-     Check the five choices installed where the overview says.
+     Check the six choices installed where the overview says.
    - **Windows:** run the EXE (SmartScreen warns about an unknown publisher once: *More info* →
      *Run anyway*). It installs the CLAP and VST3 under `Common Files` and the apps under
      `Program Files\Giga Grains`.
@@ -451,6 +451,25 @@ yourself on a downloaded copy. `source=Unnotarized Developer ID` means the ticke
 wasn't signed: `pkgutil --check-signature <pkg>` and `codesign -dvv <dmg>` show the signer. For
 a product inside, `codesign --verify --strict --deep -vv <bundle>` and `codesign -dvv
 --entitlements - <app>`. A dry run without the secrets is unsigned by design (`signed: no`).
+
+**auval finds no Giga Grains component (`didn't find the component`), and `auval -a` lists only
+Apple's.** Run auval from a normal login Terminal on the logged-in desktop, not from tmux, ssh or
+an agent session: a detached tmux server can sit in another launchd bootstrap session, whose
+`AudioComponentRegistrar` doesn't see your Components folders. A session that lists only Apple's
+components (no `Sbcx`) is in one. From a login Terminal the same install lists all three
+`Sbcx` identities and the three `auval -v` runs end `AU VALIDATION SUCCEEDED`. Run the whole
+install-and-auval block of CLAUDE.md's "Validators" section from that Terminal (it uses `$p` from
+the block before it there). Three more rules:
+
+- auval needs a tty. Piped or backgrounded, `auval -a` and `auval -v` hang with no output; under
+  `script -q /dev/null auval ...` they run. In a login Terminal the block's `auval -a > file`
+  redirect is fine; a pipe (`auval -a | grep ...`) is not.
+- Don't kill `AudioComponentRegistrar` and validate at once: it rescans on its next start, so
+  wait until `auval -a` lists `Sbcx` (the loop in CLAUDE.md's "Validators" block, which skips the `-v`
+  runs and prints "the registrar never listed Sbcx" if it never does) before the `-v` runs.
+- Never use `lsregister` for an AU. Its `-10811` on a `.component` is `kLSNotAnApplicationErr`,
+  which it returns for every non-app bundle; AUs don't register through Launch Services, the
+  registrar scans the Components folders.
 
 **A tag that fails `plan`.** Its summary and the `::error` line give one of these reasons:
 

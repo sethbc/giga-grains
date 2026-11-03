@@ -45,6 +45,21 @@ make_clapfirst_plugins(
         standalone_fx "Giga Grains FX" "org.sethbc.giga-grains-fx"
 )
 
+# Windows with Ninja (INTENT §23 #76): the CLAP, the VST3 and the instrument's standalone all link
+# as "Giga Grains" from this directory, and MSVC's linker writes each one's "Giga Grains.exp" and
+# ".lib" beside the others, so two of them linking at once can collide (LNK1104 on dispatch run
+# 41543261855). The Visual Studio generator linked them one at a time; a Ninja pool of one does the
+# same for these targets alone, and every other compile and link still runs in parallel.
+if (WIN32 AND CMAKE_GENERATOR MATCHES "Ninja")
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS gg_clapfirst_link=1)
+    foreach (format IN ITEMS clap vst3 standalone standalone_fx)
+        if (NOT TARGET gg_clapfirst_${format})
+            message(FATAL_ERROR "No gg_clapfirst_${format}: clap-wrapper's format targets have new names")
+        endif ()
+        set_property(TARGET gg_clapfirst_${format} PROPERTY JOB_POOL_LINK gg_clapfirst_link)
+    endforeach ()
+endif ()
+
 # Windows: both standalones must have ASIO (INTENT §23 #56). libs/CMakeLists.txt hands
 # RTAUDIO_API_ASIO to clap-wrapper's standalone through this scope; if that ever stops reaching
 # it, nothing links RtAudio and the build still succeeds, without ASIO. So the configure fails

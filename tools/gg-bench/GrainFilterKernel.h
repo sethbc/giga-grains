@@ -23,6 +23,7 @@
 // filter from silence.
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -61,6 +62,8 @@ class GrainFilterBank
     void render(const GrainBatch &b, const float *srcL, const float *srcR, int64_t frames,
                 float *outL, float *outR, uint32_t n) noexcept
     {
+        assert(b.size() <= filters_.size());
+        assert(n <= scratchL_.size());
         float *l = scratchL_.data();
         float *r = scratchR_.data();
         for (std::size_t g = 0; g < b.size(); ++g)

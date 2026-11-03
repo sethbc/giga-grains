@@ -20,7 +20,7 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
-- **Where we are** (INTENT §20, §23 #61, #64): M0 and M1 are done, and so are the installers and
+- **Where we are** (INTENT §20, §23 #61, #64, #71): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
   is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
   agent session each (`docs/superpowers/specs/2026-10-29-m2-program-design.md`: read its §6
@@ -39,7 +39,10 @@ AGPL-3.0-or-later.
   remote-controls pages. Sub-project 5, Presets and content, is built (INTENT §23 #70; PRs #17
   and #25): the `.ggpreset` file, INIT, CLAP preset discovery, the browser and Mutate, content
   v2 (51 CC0 files, VSCO 2: CE strings and brass beside VCSL), content-relative preset samples,
-  the 48 factory presets and their 48 goldens (108 in all). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  the 48 factory presets and their 48 goldens (108 in all). Sub-project 6, Views, is built (INTENT
+  §23 #71; PRs #18 and #24): the Perform, Edit, Mod and FX views, four lanes with a pitch axis,
+  the layer strip and XY pad, the Mod view's route path, undo, two themes, the About box,
+  `gg-snap` and the GPU spike. Sub-project 7, the close, is under way. M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -71,6 +74,10 @@ resource, so machines must catch everything they can catch.
   1. lower the interpolation tier;
   2. then drop new grains;
   3. then steal grains with fades.
+
+  The order is by load, and the engine's D4 decides between the last two (INTENT §23 #81, the
+  director, 2026-11-02): lower the tier; while the oldest sounding grain is under half its window,
+  drop the new grain; past it, steal it with a fade.
 
   It never clicks and never drops out.
 - **Stability contracts** (INTENT §18, §23 #61, #62). Frozen from the first public release,
@@ -112,6 +119,9 @@ resource, so machines must catch everything they can catch.
   our control (upstream, the director's ears, a later feature) are listed in the sub-project's final
   report and recorded in that file as a plain log, with no count rules. A row stays until the thing
   it names is done; nothing is filed upstream.
+- **Models** (the director, 2026-10-30): no Fable, ever. Name `model` on every dispatch. Where
+  superpowers' Model Selection says "the most capable model", use opus; otherwise haiku for
+  mechanical work and sonnet for integration and as the reviewer floor.
 - Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
   surge-synthesizer. A session may read their local clones, when they're present:
   - shortcircuit-xt, https://github.com/surge-synthesizer/shortcircuit-xt (local clone
@@ -130,6 +140,11 @@ resource, so machines must catch everything they can catch.
   the C++ x64 tools and the C++ Clang (ClangCL) component; configure and build `windows-clangcl`
   from an "x64 Native Tools" developer shell with Visual Studio's `VC\Tools\Llvm\x64\bin` first
   on the PATH, so `clang-cl` is Visual Studio's own (INTENT §23 #76).
+- **A fresh machine:** `scripts/bootstrap-macos.sh [--ci] [--clone DIR]`,
+  `scripts/bootstrap-linux.sh [--with-format] [--clone DIR]` and
+  `scripts/bootstrap-windows.ps1 [-Verify] [-Clone DIR]` install what the build needs (the README's
+  "Building from source" has their one-liners); `scripts/dev-shell-windows.ps1` enters the x64
+  developer shell. CI's legs run them (the `scripts_bootstrap` test checks them against stubs).
 - Fetch the dependencies with `git submodule update --init --recursive` (what CI and
   `worktree-setup.sh` check out; today no nested submodule is built).
 - **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh
@@ -198,10 +213,19 @@ no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CX
 1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
 summary.
 
+**The required checks** (INTENT §23 #77). `main`'s ruleset requires two: `ci-ok` and
+`clang-format`. `ci-ok` passes only when `plan`, every build leg and every sanitizer job passed. A
+pull request whose every changed file is under `docs/`, or is `INTENT.md` or `CLAUDE.md`, is
+documents only: `plan` says so, the build legs and the sanitizers skip, and `ci-ok` passes on the
+skip in about a minute. Any other Markdown file counts as code (`THIRD_PARTY_NOTICES.md` is
+embedded in the editor, the content and installer READMEs are staged into the products, and the
+root `README.md` is checked by a test). Pushes, the nightly, dispatches and tags always run
+everything.
+
 **CI's sanitizer jobs** (INTENT §23 #74). ASan + UBSan runs in six shards side by side, each
 running every sixth test (`ctest -I <shard>,,6`; a fixture's setup test joins any shard that needs
-it), and RTSan in a seventh job. `sanitizers (asan, rtsan)`, the check the `main` ruleset requires
-and the release job needs, passes only when all seven pass. ASan leaves out the `slow` tests
+it), and RTSan in a seventh job. `sanitizers (asan, rtsan)`, the check the release job needs, passes
+only when all seven pass. ASan leaves out the `slow` tests
 (`-LE slow`) on a pull request and a push to `main`, and runs them on the nightly, a dispatch and a
 tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -I 3,,6 -LE slow`.
 
@@ -346,7 +370,8 @@ runs the tests labelled either. The labels are:
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
     outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor
     under the share of its render that it scores. About 26.5 s in `dev` (eight at a time) and
-    about 194 s under ASan; none is `slow`;
+    about 194 s under ASan, both timed over the first 20 cases (a re-time of all 30 is the close's);
+    none is `slow`;
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
@@ -524,7 +549,9 @@ multiply-add. Keep that step whenever the macOS leg changes.
 
 **The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
 Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
-cases alone, then the golden cases three `gg-render` processes at a time. On a pull request and a
+cases alone, then all 108 golden cases (the 60 and the 48 preset goldens, whose packed presets
+the native `ctest` built) three `gg-render` processes at a time, each with `--content-dir` set to
+the fetched content. On a pull request and a
 push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
 shard locally: `arch -x86_64 build/mac-universal/tests/gg-tests '~[serial]~[slow]' --order decl
 --shard-count 3 --shard-index 0`.
@@ -564,9 +591,13 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 
     ```cmake
     catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
-    catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+    catch_discover_tests(gg-tests TEST_SPEC "[serial]~[crawl48]" ADD_TAGS_AS_LABELS
             PROPERTIES RUN_SERIAL TRUE)
+    catch_discover_tests(gg-tests TEST_SPEC "[crawl48]" ADD_TAGS_AS_LABELS
+            PROPERTIES RUN_SERIAL TRUE FIXTURES_REQUIRED presets_built)
     ```
+
+    The third is the preset crawl, serial and requiring the `presets_built` fixture.
 
 **Golden renders (`gg-render`).** `gg-render` renders a render spec offline and deterministically:
 
@@ -1046,8 +1077,11 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 - **`--chain`** times the units the extremes sub-project adds after the grains, per stereo
   sample on stereo noise at 48 kHz: two `BusFilter`s (Low-pass, 1 kHz, resonance 0.5), the
   `Delay` (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and the `Limiter` (Peak,
-  ceiling 0.5, release 100 ms) (`tools/gg-bench/Bench.h` lists every setting). It takes
-  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`).
+  ceiling 0.5, release 100 ms), and in the same rounds a second stage, `spectral` (row 372): one
+  Spectral Smear source's STFT, active, over stereo noise as a sample with no grain reading it,
+  in ns per stereo sample (`tools/gg-bench/Bench.h` lists every setting). It takes
+  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`,
+  the stage under `"spectral"`).
   - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
     ctest's `bench_chain_cli` only checks that it runs. Its exit status is as `--space`'s.
 - **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` and `--chain`
@@ -1075,19 +1109,21 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   build job to 120: it outgrew 30 once M2's cases joined.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
-    7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
+    7763, 9V45 and 9V74 and Intel Xeon 8370C). For unchanged code, ratios differ by up to ~20% between models and ~6%
     on one model. So a leg's baseline has one entry per model, keyed by gg-bench's `machine`
     string, and a run is checked only against its own model's entry. The committed baselines
-    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45, Xeon 8370C and
-    EPYC 9V74 (the last from the SSE-era code, stale until a run lands on that model), and
-    Linux's EPYC 7763 and 9V45. The x86 entries were remade at the AVX2 task from three
+    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45 and Xeon 8370C,
+    and Linux's EPYC 7763 and 9V45 (Windows' stale SSE-era EPYC 9V74 entry was deleted in the M2
+    close, carry-over row 304: that model gets no verdict until runs land on it). The x86 entries were remade at the AVX2 task from three
     full-length runs (INTENT §23 #66), and the six report-only cases (`engine-layers`,
     `engine-layers-full`, `engine-sample-hq`, `engine-sample-hq-up`, `engine-overload`,
     `engine-sample-sse`) now have entries beside the four gated ones there (30 ratios an entry),
     none on `mac-universal`; they stay report-only, as the whole gate does. A model with no
     entry gets no verdict (the summary says so) until later runs on it are added to the baseline.
   - **The gate is report-only until 1.0.0** (INTENT §19, §23 #44, #60, #61): exit 3 becomes a
-    `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
+    `::warning` and the step exits 0, when the output also holds gg-bench's `verdict: N of M`
+    line (row 148); exit 3 without it fails the step. A crash, exit 1 or 2, or the timeout still
+    fails the job.
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
     no-verdict line and exit 1 for a run with no ratios.
   - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
@@ -1178,7 +1214,7 @@ sets it, and the test "the stress seam draws four lanes" covers it.
 - **On Linux,** CI runs pluginval under `xvfb-run -a` with `--skip-gui-tests`.
 - **On Windows,** CI runs clap-validator without `preset-discovery-crawl`,
   `-descriptor-consistency` and `-load`: 0.4.1-127 demands `/C:\...` for a FILE location, which
-  no Windows file function opens (carry-over row 233). Run all three on macOS and Linux.
+  no Windows file function opens (M2 carry-over row 233). Run all three on macOS and Linux.
 - **auval (macOS)** needs the AU installed for your user:
 
   ```sh
@@ -1191,7 +1227,9 @@ sets it, and the test "the stress seam draws four lanes" covers it.
     grep -q Sbcx "$TMPDIR/auval-list.txt" && break
     sleep 2
   done
-  auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  if grep -q Sbcx "$TMPDIR/auval-list.txt"; then
+    auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  else echo "the registrar never listed Sbcx" >&2; fi
   ```
 
   Each of the three runs must end with `AU VALIDATION SUCCEEDED`.

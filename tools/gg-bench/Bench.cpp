@@ -94,6 +94,7 @@
 #include "gg/grain/Tier.h"
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
+#include "gg/spectral/SpectralSource.h"
 #include "gg/ui/LayerColours.h"
 #include "gg/ui/SplatRenderer.h"
 #include "gg/ui/StressGrains.h"
@@ -379,6 +380,13 @@ uint32_t layerGrains(const EngineCase &engineCase, uint32_t grains, uint32_t lay
 /// engine-live-long's 300 s ring at each block size before timing anything.
 constexpr double kQuickMaxWarmUpSeconds = 16.0;
 
+/// The warm-up a case runs for: its own, capped at kQuickMaxWarmUpSeconds under --quick. The one
+/// place the cap is applied, for the timed configuration and for the settings a test reads.
+double warmUpSecondsFor(const EngineSetup &setup, bool quick)
+{
+    return quick ? std::min(setup.warmUpSeconds, kQuickMaxWarmUpSeconds) : setup.warmUpSeconds;
+}
+
 /// The engine cases, in report order. Each is engine-sample with its own changes.
 constexpr std::array<EngineCase, 14> kEngineCases{{
     {"engine-sample", engineSample},
@@ -512,10 +520,7 @@ class EngineConfiguration final : public Configuration
           setup_(engineCase.setup(layerGrains(engineCase, grains, 0))), noise_(noise),
           outL_(blockSize), outR_(blockSize)
     {
-        if (quick)
-        {
-            setup_.warmUpSeconds = std::min(setup_.warmUpSeconds, kQuickMaxWarmUpSeconds);
-        }
+        setup_.warmUpSeconds = warmUpSecondsFor(setup_, quick);
         // Every buffer the timed blocks use is allocated here, never in processBlock().
         for (uint32_t layer = 0; layer < engineCase.layers; ++layer)
         {
@@ -1330,8 +1335,7 @@ EngineCaseSettings engineCaseSettings(const std::string &engineCase, uint32_t gr
     settings.live = s.mode == gg::SourceMode::Live;
     settings.position = s.params.position;
     settings.spray = s.params.spray;
-    settings.warmUpSeconds =
-        quick ? std::min(s.warmUpSeconds, kQuickMaxWarmUpSeconds) : s.warmUpSeconds;
+    settings.warmUpSeconds = warmUpSecondsFor(s, quick);
     return settings;
 }
 
@@ -1774,6 +1778,86 @@ class ChainStage
     std::vector<float> left_, right_;
     int64_t at_{0}; // the next frame of the noise
 };
+
+constexpr double kSpectralPosition = 0.5; // a fraction of the sample
+constexpr uint64_t kSpectralSeed = 1;
+
+/// One Spectral Smear source, active at the Spectral kind's defaults, analyzing looped stereo
+/// noise as a sample with no grain reading its ring: the STFT's cost alone, which a layer pays
+/// whether or not it is switched on (carry-over 372; ruling 3 of INTENT 23 #69).
+class SpectralStage
+{
+  public:
+    SpectralStage()
+        : source_(kSampleRate, kChainBlock), left_(kSpaceNoiseFrames), right_(kSpaceNoiseFrames)
+    {
+        for (int64_t i = 0; i < kSpaceNoiseFrames; ++i)
+        {
+            left_[i] = noiseSample(kNoiseL, static_cast<uint64_t>(i));
+            right_[i] = noiseSample(kNoiseR, static_cast<uint64_t>(i));
+        }
+        material_.sample[0] = left_.data();
+        material_.sample[1] = right_.data();
+        material_.sampleFrames = kSpaceNoiseFrames;
+        material_.sampleMono = false;
+        material_.sampleRate = kSampleRate;
+        source_.setActive(true);
+    }
+
+    void warmUp()
+    {
+        const auto frames = static_cast<int64_t>(kChainWarmUpSeconds * kSampleRate);
+        for (int64_t done = 0; done < frames; done += kChainBlock)
+        {
+            processBlock();
+        }
+    }
+
+    /// Renders blocks for at least `seconds`; returns ns per stereo sample.
+    double timeRun(double seconds)
+    {
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        const auto deadline = start + std::chrono::duration_cast<Clock::duration>(
+                                          std::chrono::duration<double>(seconds));
+        uint64_t blocks = 0;
+        auto now = start;
+        do
+        {
+            processBlock();
+            ++blocks;
+            now = Clock::now();
+        } while (now < deadline);
+
+        const double ns = std::chrono::duration<double, std::nano>(now - start).count();
+        return ns / (static_cast<double>(blocks) * kChainBlock);
+    }
+
+  private:
+    void processBlock()
+    {
+        source_.process(material_, kSpectralPosition, kSpectralSeed, 0, clock_, kChainBlock);
+        clock_ += kChainBlock;
+    }
+
+    gg::SpectralSource source_;
+    gg::SpectralMaterial material_;
+    std::vector<float> left_, right_;
+    int64_t clock_{0}; // the output clock: blocks are contiguous from the start
+};
+
+/// The median, min, IQR and % of one core of a stage's runs.
+StageStats statsOf(std::vector<double> runs)
+{
+    StageStats st;
+    st.median = quantile(runs, 0.5);
+    st.min = *std::min_element(runs.begin(), runs.end());
+    st.iqr = quantile(runs, 0.75) - quantile(runs, 0.25);
+    // ns per stereo sample x 48,000 samples / 1e9 ns, as a percentage.
+    st.cpuPctOneCoreAt48k = st.median * kSampleRate / 1e9 * 100.0;
+    st.runs = std::move(runs);
+    return st;
+}
 } // namespace
 
 void validate(const ChainOptions &options)
@@ -1795,22 +1879,26 @@ ChainReport runChain(const ChainOptions &options, const Progress &progress)
 
     const gg::ScopedDenormalsOff noDenormals;
     ChainStage stage;
+    SpectralStage spectral;
     stage.warmUp();
+    spectral.warmUp();
+    std::vector<double> spectralRuns;
     for (int r = 0; r < options.rounds; ++r)
     {
         report.nsPerSample.push_back(stage.timeRun(options.runSeconds));
+        spectralRuns.push_back(spectral.timeRun(options.runSeconds));
         if (progress)
         {
             progress(r + 1, options.rounds);
         }
     }
 
-    const std::vector<double> &runs = report.nsPerSample;
-    report.median = quantile(runs, 0.5);
-    report.min = *std::min_element(runs.begin(), runs.end());
-    report.iqr = quantile(runs, 0.75) - quantile(runs, 0.25);
-    // ns per stereo sample x 48,000 samples / 1e9 ns, as a percentage.
-    report.cpuPctOneCoreAt48k = report.median * kSampleRate / 1e9 * 100.0;
+    const StageStats chain = statsOf(report.nsPerSample);
+    report.median = chain.median;
+    report.min = chain.min;
+    report.iqr = chain.iqr;
+    report.cpuPctOneCoreAt48k = chain.cpuPctOneCoreAt48k;
+    report.spectral = statsOf(std::move(spectralRuns));
     return report;
 }
 
@@ -1844,6 +1932,22 @@ std::string toJson(const ChainReport &report)
         {"min", report.min},
         {"iqr", report.iqr},
         {"cpuPctOneCoreAt48k", report.cpuPctOneCoreAt48k},
+        {"spectral",
+         {
+             {"settings",
+              {
+                  {"source", "SpectralSource, active, the Spectral kind's defaults"},
+                  {"material", "stereo noise as a sample, looped"},
+                  {"position", kSpectralPosition},
+                  {"blockFrames", kChainBlock},
+                  {"grainsReading", 0},
+              }},
+             {"runs", report.spectral.runs},
+             {"nsPerSample", report.spectral.median},
+             {"min", report.spectral.min},
+             {"iqr", report.spectral.iqr},
+             {"cpuPctOneCoreAt48k", report.spectral.cpuPctOneCoreAt48k},
+         }},
     };
     return j.dump(2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
 }
@@ -1867,7 +1971,10 @@ int chainMain(const ChainOptions &options, const std::string &jsonPath, std::str
         formatLine("\n%-18s %12s %12s %12s %12s\n", "stage", "median", "min", "IQR", "% core @48k");
     out += formatLine("%-18s %12.3f %12.3f %12.3f %12.3f\n", "chain", report.median, report.min,
                       report.iqr, report.cpuPctOneCoreAt48k);
+    out += formatLine("%-18s %12.3f %12.3f %12.3f %12.3f\n", "spectral", report.spectral.median,
+                      report.spectral.min, report.spectral.iqr, report.spectral.cpuPctOneCoreAt48k);
     out += "\nmedian, min and IQR: ns per stereo sample over the rounds; % core from the median\n"
+           "spectral: one Spectral Smear's STFT over stereo noise, no grain reading it\n"
            "report-only: no baseline and no ratio\n";
 
     if (!jsonPath.empty())

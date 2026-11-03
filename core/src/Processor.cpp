@@ -1106,7 +1106,12 @@ bool Processor::applyOffer(Layer &l, const SourceOffer &offer) noexcept
     // over what they set.
     if (offer.hasRing)
     {
-        if (adoptRing(l, offer.ring))
+        if (offer.ring.storage == nullptr && !offer.ring.restore)
+        {
+            // A withdrawn ring (SourceExchange::withdrawRing): nothing to adopt or decline.
+            l.sources.markRingAdopted(offer.ringSerial);
+        }
+        else if (adoptRing(l, offer.ring))
         {
             l.sources.markRingAdopted(offer.ringSerial);
         }
@@ -1158,6 +1163,10 @@ bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
         l.engine.ringResized(); // Position and Spray reach the new length
     }
     publishStorage(l);
+    if (adoptRingHook_)
+    {
+        adoptRingHook_(); // a test's (setAdoptRingHook): between the publication and the retirement
+    }
     // Only now, with the new storage published, may the main thread free the old one: a reader
     // that took the old pointer before the publication copies from it until it sees the epoch
     // change, and collect() runs on the reader's thread, between reads (core::RingRead).

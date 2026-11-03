@@ -237,7 +237,8 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   > are ignored on load, gg-render's preset path ignores them too (the defaults', unless the
   > spec's `params` set them), and a factory source may set none (`--pack-preset` refuses one).
   >
-  > > **Amended 2026-11-02 (the final review's fix wave; the controller's ruling, D8):** INIT keeps
+  > > **Amended 2026-11-02 (the final review's fix wave; the controller's ruling, D8; ratified by
+  > > the director the same day as D8a, INTENT §23 #80, the consistency review's K-3):** INIT keeps
   > > each layer's **Ring Length** alone, which is what sizes a ring, and gives Loop, Loop Length,
   > > Overdub and Splice their defaults, so it is a fresh instance in everything that is heard.
   > > A preset file load is as above and keeps all five (`gg::core::keepRingLengths`).
@@ -250,7 +251,9 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   `presetName_` and written back into the state's `name` on save, so a reopened session shows the
   preset it came from. A base value that differs from the loaded preset's marks it edited: the
   header shows the name with a trailing dot (`Glass Hold •`), computed on the editor's 30 Hz tick
-  from the 218 values (cheap). INIT shows "Init", as today.
+  from the 283 values, the ring parameters aside (a load keeps them; `GigaGrainsPlugin.cpp`;
+  **Amended**, the consistency review's R-21, 2026-11-02; first written "the 218 values"), which is
+  cheap. INIT shows "Init", as today.
 - The FX's `is_for_preset` on its remote-controls pages stays false; nothing changes there.
 
 ### 6.3 Discovery: the factory, the provider and the wrapper's bridges (INTENT §18)
@@ -562,7 +565,7 @@ only if sub-project 6 widens the slot.
   - *The alternative law* (D4, option 2): `v' = v + amount × (r − v)` with `r` a uniform draw over
     the range, a blend toward a fresh random point; at amount 1 the result is independent of where
     it started.
-- **Locks** are a bitset over the 218 slots, kept by the plugin for its life (not state; a session
+- **Locks** are a bitset over the 283 slots (**Amended**, R-21; first written 218), kept by the plugin for its life (not state; a session
   reopens with the defaults). **Locked by default** (D3, recommended, "the structure stays, the
   sound moves"): Mix, Level and Level B to D, Layer A to D On, every Source, every Freeze, Macro
   Freeze and the seven other macros, Morph X and Y, Reverb Amount, Dry to Reverb, Step Length, and
@@ -579,8 +582,10 @@ only if sub-project 6 widens the slot.
   applies one mutation: the plugin computes `out` on the main thread, then sends every changed slot
   as a host gesture (begin, value, end) through the editor queue, in batches small enough for its
   1,024 entries (the builder sizes the batch or grows the queue; a mutation touching 150 slots is
-  450 entries), so hosts record it as automation and sub-project 6's undo will see ordinary
-  gestures. The counter increments per press, so successive presses differ and a session's seed
+  450 entries), so hosts record it as automation. **Amended** (R-20, 2026-11-02; views D7, row 402): each
+  press or load is one whole-state undo entry (`pushWholeState`), not a run of ordinary gestures;
+  an undo restores the values and routes, and a recall's samples and name aren't restored (the
+  director's decision, §23 #86). The counter increments per press, so successive presses differ and a session's seed
   with the same presses reproduces the same walk; the counter isn't saved.
 - Mutate never touches the mod routes, the sample, the seed or the locks; it is a parameter move.
 
@@ -797,6 +802,19 @@ recorded provenance and our own tools"). **Decided: option 1.**
    no longer means the defaults; `fx-sine` and the other default-valued goldens would describe a
    state no button reaches.
 
+**D8a. INIT keeps each layer's Ring Length** (the director, 2026-11-02, option 1 of two; INTENT §23
+#80; the consistency review's K-3). It ratifies the controller's ruling of 2026-11-02 in the final
+review's fix wave (§6.2), which bent D8's "bit for bit" with no sign-off recorded: INIT keeps each
+layer's Ring Length (memory, not sound); Loop, Loop Length, Overdub and Splice return to their
+defaults. *Cost:* INIT differs from a fresh instance whenever a ring isn't 16 s. Declined: INIT
+resetting Ring Length to 16 s, which resizes every ring on the main thread, can be refused by the
+memory cap and cuts a held ring's audio past 16 s. Carry-over row 391's "the director's D8" is this.
+
+**Row 402's decision** (the director, 2026-11-02, option 1; §23 #86): an undo of a preset recall
+restores the values and routes; the recalled samples and the name stay, recorded as decided in
+INTENT §17. Declined: restoring the name too (M); the name and the samples (L: an undo re-decoding
+files or holding old samples against the memory cap).
+
 **D9. Which presets a product's browser lists** (§6.1, §6.8). **Decided: option 1.**
 1. **Its own:** the FX lists FX presets, the instrument instrument presets; a preset file carries
    its product. *Cost:* a sound made in one product can't be picked from the other's list (a
@@ -833,8 +851,8 @@ Engineering choices, each with its reason.
   project's one RNG, reproducible per session, no `std::` distribution; the counter isn't state
   because a walk's history isn't worth a chunk.
 - **Mutate applies through host gestures,** one per changed slot, in batches that fit the editor
-  queue: hosts record it, sub-project 6's undo sees ordinary gestures, and the audio thread learns
-  of it exactly as of a knob move.
+  queue: hosts record it, the audio thread learns
+  of it exactly as of a knob move; each press is one whole-state undo entry (views D7; row 402).
 - **Preset goldens live in `tests/golden/presets/`** with their own glob, outside the
   click-injection table (§10): 48 cases × 16 injected renders would add minutes to every test run
   for a detector already pinned on the engineered cases; each preset golden's expected click score
@@ -939,7 +957,7 @@ length, what it is and what to listen for; the host checklist) and `specs/`:
 
 | File | What | Listen for |
 |---|---|---|
-| `fx-NN-<slug>.wav` × 24 | each FX preset over the content's voice-and-strings phrase as input, 8 s; the eight `midi` ones with two held notes from 3 s | the preset's character; the MIDI ones freezing and repitching on the notes (D7) |
+| `fx-NN-<slug>.wav` × 24 | each FX preset over the content's strings phrase as input, 8 s; the eight `midi` ones with two held notes from 3 s | the preset's character; the MIDI ones freezing and repitching on the notes (D7) |
 | `inst-NN-<slug>.wav` × 24 | each instrument preset, a two-note phrase then a chord, 8 s | playable from note 1; the focus the tags promise |
 | `init-fx.wav`, `init-inst.wav` | INIT in each product over the same material | the plain defaults (D8) |
 | `mutate-ladder.wav` | one texture preset, then Mutate at 10%, 30% and 60% (seed fixed, counter 1 to 3), 4 s each | variations that stay in the family at 10%, leave it by 60% (D3, D4) |

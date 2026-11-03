@@ -310,6 +310,7 @@ class SampleLoader
         std::shared_ptr<SampleBuffer> decoded; ///< when not prepared (rate 0)
         std::shared_ptr<const PreparedSource> prepared;
         bool differentAudio{false}; ///< Relink: not the entry's fingerprint
+        bool relink{false};         ///< the job was a Relink
         std::string error;          ///< non-empty on failure
         bool cancelled{false};      ///< stopped part way by cancel_: nothing else is set
     };

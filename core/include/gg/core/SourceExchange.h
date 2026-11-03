@@ -91,12 +91,12 @@ struct SourceOffer
 /// pending (ringAdoptionPending) for the main thread to remake, and the declines are counted
 /// (ringsDeclined).
 ///
-/// **Threads.** offer(), offerRing(), hold(), holdRing(), collect(), held(), ringsHeld() and
-/// ringAdoptionPending() on the main thread; poll(), retire(), retireRing(), markRingAdopted()
-/// and markRingDeclined() on the audio thread; awaitingCollect() and ringsDeclined() on either.
-/// Each role may move to another thread only when the host orders the calls, for example the main
-/// thread may poll() and retire() while it knows the audio thread is stopped (as
-/// Processor::setSourceNow does).
+/// **Threads.** offer(), offerRing(), withdrawRing(), hold(), holdRing(), collect(), held(),
+/// ringsHeld() and ringAdoptionPending() on the main thread; poll(), retire(), retireRing(),
+/// markRingAdopted() and markRingDeclined() on the audio thread; awaitingCollect() and
+/// ringsDeclined() on either. Each role may move to another thread only when the host orders the
+/// calls, for example the main thread may poll() and retire() while it knows the audio thread is
+/// stopped (as Processor::setSourceNow does).
 class SourceExchange
 {
   public:
@@ -142,6 +142,14 @@ class SourceExchange
     /// freeing an untaken offer's ring (the class comment). Then collects (collect()). Allocates
     /// a little, unless the exchange holds no more rings than it has held before.
     void offerRing(std::unique_ptr<RingStorage> storage, const RingOffer &how);
+
+    /// Main thread. Withdraws the newest ring offer while the audio side hasn't taken it (a
+    /// session load that brings no ring for the layer supersedes an older load's restore offer;
+    /// carry-over row 355): the ring is freed here, never handed over, and an offer of no ring
+    /// takes its place, with its source (or keep) and values, which the audio side settles as
+    /// nothing to adopt (ringAdoptionPending() is then false once it has taken it). Nothing
+    /// happens when no untaken offer has a ring. Never allocates.
+    void withdrawRing();
 
     /// Main thread. Holds `storage` without offering it, for a caller that gives it to the engine
     /// itself while the audio side is stopped (Processor::setRingNow), and returns its raw pointer

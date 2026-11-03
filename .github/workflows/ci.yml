@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# The required checks (INTENT §19):
+# The checks (INTENT §19). main's ruleset requires two: ci-ok, which passes only when plan, every
+# build leg and every sanitizer job passed (or, for a pull request that changes only documents,
+# were skipped; INTENT §23 #77), and clang-format (format.yml).
 #
 #   build       macOS (universal), Windows (ClangCL) and Linux (gcc-13): gg-all and gg-products,
 #               then ctest. ctest includes the golden event-log comparison, so this job is the
@@ -18,6 +20,9 @@
 #   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
 #               20.1.8 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
 #               by side, then this one check over all seven (INTENT §23 #74).
+#
+# Not a required check: on the nightly and on a dispatch, bootstrap-fresh-linux runs
+# scripts/bootstrap-linux.sh in a bare ubuntu:22.04 container (M2 close spec §6.3).
 #
 # Once the build succeeds, every later check runs even if an earlier one failed, so one run
 # reports them all; any failure still fails the job. The clang-format check is in format.yml.
@@ -115,12 +120,36 @@ jobs:
       prerelease_suffix: ${{ steps.plan.outputs.prerelease_suffix }}
       tag: ${{ steps.plan.outputs.tag }}
       sign: ${{ steps.plan.outputs.sign }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # A pull request that changes only documents (INTENT §23 #77): every changed file under docs/,
+      # or INTENT.md or CLAUDE.md, which nothing builds or tests. Every other Markdown file is an
+      # input: THIRD_PARTY_NOTICES.md is embedded in the editor and compared byte for byte, content/
+      # and installer/ READMEs and PROVENANCE.md are staged into the products, the root README.md
+      # is checked by a scripts test. A docs-only pull request skips the build legs and the
+      # sanitizers; clang-format (format.yml) still runs, and ci-ok passes on the skip. The checkout
+      # of a pull request is its merge commit, so HEAD^1 is the base it would merge into. Every
+      # other run (a push, the nightly, a dispatch, a tag) is never docs only.
+      - name: Is the change documents only?
+        id: docs
+        run: |
+          docs_only=false
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            files="$(git diff --name-only HEAD^1 HEAD)"
+            echo "Changed files:"
+            sed 's/^/  /' <<<"$files"
+            if [[ -n "$files" ]] && ! grep -qvE '^(docs/.+|INTENT\.md|CLAUDE\.md)$' <<<"$files"; then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "### Documents only: $docs_only" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Plan the run
         id: plan
@@ -232,6 +261,7 @@ jobs:
   build:
     name: build (${{ matrix.preset }})
     needs: plan
+    if: ${{ needs.plan.outputs.docs_only != 'true' }}
     runs-on: ${{ matrix.os }}
     # 120, not 90 (INTENT §23 #73): a full-length benchmark (the nightly, a dispatch, a tag) now
     # takes more than 30 minutes a leg, after up to 22 minutes of build and tests.
@@ -305,7 +335,7 @@ jobs:
       # saved it, and a pull request can read main's but nobody reads a pull request's.
       - name: Restore the SDK checkouts
         id: sdk_cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.SDK_CACHE_DIR }}
           key: sdks-${{ matrix.preset }}-${{ hashFiles('libs/clap/clap-wrapper/cmake/base_sdks.cmake', 'scripts/fetch-sdks.sh') }}
@@ -321,7 +351,7 @@ jobs:
 
       - name: Save the SDK checkouts
         if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.sdk_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.SDK_CACHE_DIR }}
           key: ${{ steps.sdk_cache.outputs.cache-primary-key }}
@@ -332,7 +362,7 @@ jobs:
       # its SHA-256 and unpacked.
       - name: Restore the content
         id: content_cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CONTENT_CACHE_DIR }}
           key: content-${{ hashFiles('content/pin.txt', 'scripts/fetch-content.cmake') }}
@@ -344,36 +374,35 @@ jobs:
 
       - name: Save the content
         if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.content_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CONTENT_CACHE_DIR }}
           key: ${{ steps.content_cache.outputs.cache-primary-key }}
 
-      # gcc-13 for the C++23 build (the m2-layers spec, §6.1), on ubuntu-22.04: its image has GCC
-      # 10 to 12 only and its archive no gcc-13, and prepare-for-juce installs no compiler (it only
-      # points update-alternatives at /usr/bin/gcc-<gccversion>). So gcc-13 and g++-13 come from
-      # the ubuntu-toolchain-r/test PPA, installed here, before it.
-      - name: Install gcc-13 from the ubuntu-toolchain-r/test PPA (Linux)
+      # What each leg's build needs comes from the bootstrap scripts, the ones a reader of the
+      # README runs (M2 close spec §6.3), so CI keeps them honest. Linux: gcc-13 for the C++23
+      # build (the m2-layers spec, §6.1) from the ubuntu-toolchain-r/test PPA, since
+      # ubuntu-22.04's archive has none, then CMake, Ninja, the twelve JUCE development packages
+      # that prepare-for-juce used to install, libxi-dev (JUCE 9's juce_gui_basics includes
+      # <X11/extensions/XInput2.h>) and xvfb. A nightly job (bootstrap-fresh-linux, below) runs
+      # it in a bare container, so a package this image happens to carry can't hide a missing one.
+      - name: Install the build requirements (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test && sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13
+        run: scripts/bootstrap-linux.sh
 
-      - name: Prepare for JUCE
-        uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
-        with:
-          os: ${{ runner.os }}
-          gccversion: 13
-
-      # libxi-dev: JUCE 9's juce_gui_basics includes <X11/extensions/XInput2.h> on Linux
-      # (JUCE_USE_XINPUT defaults to 1), and prepare-for-juce doesn't install it.
-      - name: Install Ninja, Xvfb and libxi-dev (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y ninja-build xvfb libxi-dev
-
-      - name: Install Ninja (macOS)
+      # macOS: the image has Xcode and CMake; this adds Ninja when missing. --ci skips llvm,
+      # which this leg doesn't use.
+      - name: Install the build requirements (macOS)
         if: runner.os == 'macOS'
-        run: command -v ninja || brew install ninja
+        run: scripts/bootstrap-macos.sh --ci
+
+      # Windows: -Verify installs nothing (the image has Visual Studio; a winget install of the
+      # Build Tools would outlast the leg's budget) and fails if anything the build needs is
+      # missing.
+      - name: Verify the build requirements (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/bootstrap-windows.ps1 -Verify
 
       # ccache on every leg. (The universal macOS build compiles each file for two architectures,
       # which ccache passes through uncached; the leg still gets the cache for its single-arch
@@ -433,7 +462,7 @@ jobs:
       # Saved (below) only on main, so pull requests don't fill the repository's cache quota
       # with a 500 MB cache per leg per run.
       - name: Restore the compiler cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
@@ -604,12 +633,15 @@ jobs:
       # request.
       - name: Save the compiler cache
         if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
 
       - name: Test (unit, plugin and golden)
+        # Not skipped by an earlier failed check (the libstdc++ one on Linux): once the build
+        # succeeds, every later check runs, the event-log gate included.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The x86 legs must run the 8-wide AVX2 kernels: kernel_require_avx2 fails when this is
         # set and avx2Kernels() is null. Never set on macOS (arm64, and the universal build's
         # x86_64 slice under Rosetta, which has no AVX2).
@@ -635,9 +667,13 @@ jobs:
 
       # The arm64 runner otherwise never runs the universal build's x86_64 slice. Under Rosetta 2
       # it runs the whole Catch2 suite, then every golden case with the same commands as the
-      # golden CTests, so the slice's grain-event logs are checked against the same goldens.
+      # golden CTests, so the slice's grain-event logs are checked against the same goldens: the
+      # 60 cases in tests/golden/cases and the 48 preset goldens in tests/golden/presets/cases
+      # (108), every one rendered with --content-dir (the fetched content, as the CTests pass).
       # The x86_64 slice writes the cases' media itself first (the media go through libm), as
-      # the golden_media fixture does, and every render resolves their paths there.
+      # the golden_media fixture does, and every render resolves their paths there. The preset
+      # goldens read the packed presets that the native ctest above built (the presets_built
+      # fixture, in $build_dir/golden-media/presets), copied beside that media.
       # arch -x86_64 fails on a binary without an x86_64 slice.
       # Three at a time (INTENT §23 #75): gg-tests in three Catch2 shards side by side (--order
       # decl, so the shards are disjoint), then the [serial] cases alone, since they measure time
@@ -683,18 +719,33 @@ jobs:
           out="$build_dir/golden-x86_64"
           arch -x86_64 "$render" --write-media "$out-media"
           export render out
+          content="${CONTENT_CACHE_DIR}/content"
+          # golden <spec> <expected dir> <output dir>: one case, as the golden CTest runs it.
           golden() {
             name="$(basename "$1" .json)"
             arch -x86_64 "$render" "$1" \
               --media-dir "$out-media" \
-              -o "$out/$name.wav" \
-              --spectrogram "$out/$name.png" \
-              --compare "tests/golden/expected/$name.metrics.json" \
-              --compare-events "tests/golden/expected/$name.events.jsonl" \
+              --content-dir "$content" \
+              -o "$3/$name.wav" \
+              --spectrogram "$3/$name.png" \
+              --compare "$2/$name.metrics.json" \
+              --compare-events "$2/$name.events.jsonl" \
               || { echo "::error title=Rosetta golden::$name"; return 1; }
           }
           export -f golden
-          printf '%s\n' tests/golden/cases/*.json | xargs -P 3 -I {} bash -c 'golden "$1"' _ {} || failed=1
+          export content
+          mkdir -p "$out/presets"
+          printf '%s\n' tests/golden/cases/*.json \
+            | xargs -P 3 -I {} bash -c 'golden "$1" tests/golden/expected "$out"' _ {} || failed=1
+          # The 48 preset goldens: the presets the native ctest packed (presets_built).
+          if [[ -d "$build_dir/golden-media/presets" ]]; then
+            cp -R "$build_dir/golden-media/presets" "$out-media/"
+            printf '%s\n' tests/golden/presets/cases/*.json \
+              | xargs -P 3 -I {} bash -c 'golden "$1" tests/golden/presets/expected "$out/presets"' _ {} || failed=1
+          else
+            echo "::error title=Rosetta golden::no packed presets in $build_dir/golden-media/presets (the native ctest's presets_built did not run)"
+            failed=1
+          fi
           exit "$failed"
 
       # Full length on the nightly schedule, workflow_dispatch and a release tag; --quick on a
@@ -712,7 +763,7 @@ jobs:
       # baseline doesn't have yet, gg-bench prints "no baseline for <machine>; no verdict" and
       # exits 0; the summary repeats that line above the output. A ratio never fails the job: a
       # regression (exit 3) becomes a warning and the step exits 0, so the artifact still
-      # uploads; sub-project 6 makes it blocking. Anything else still fails the job, as before: a
+      # uploads; it turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61). Anything else still fails the job, as before: a
       # crash, an engine fault, a malformed baseline (exit 1), bad usage (2) or the timeout. The
       # bench_baseline_* tests pin exit 3 for a regression, exit 0 for a pass, and exit 0 with
       # the no-verdict line for a model the baseline lacks. A full run is time-boxed at 60
@@ -753,8 +804,14 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ $status == 3 ]]; then
-            echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only until 1.0.0)"
-            status=0
+            # Only a real verdict is a warning: exit 3 without gg-bench's "verdict: N of M" line
+            # is something else wrong, and fails the step (carry-over 148).
+            if tr -d '\r' < "$out.txt" | grep -q '^verdict: [0-9]\+ of '; then
+              echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only until 1.0.0)"
+              status=0
+            else
+              echo "::error title=gg-bench::exit 3 without a verdict line in the output"
+            fi
           fi
           exit "$status"
 
@@ -991,6 +1048,8 @@ jobs:
   # below is the one the ruleset requires and the release job needs.
   sanitizer:
     name: sanitizer (${{ matrix.sanitizer }}${{ matrix.shard && format(' {0}/6', matrix.shard) || '' }})
+    needs: plan
+    if: ${{ needs.plan.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     # 90, not 60 (INTENT §23 #68, 2026-10-31), from when one job ran both sanitizers; a shard
     # takes a fraction of it.
@@ -1037,7 +1096,7 @@ jobs:
       # downloaded one.
       - name: Restore the LLVM archive
         id: llvm_cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/llvm-archive
           key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
@@ -1066,13 +1125,13 @@ jobs:
 
       - name: Save the LLVM archive
         if: ${{ !cancelled() && matrix.sanitizer == 'rtsan' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/llvm-archive
           key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
 
       - name: Restore the compiler cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
@@ -1084,7 +1143,7 @@ jobs:
       # The content, as in the build job (the same key; saved on main alone).
       - name: Restore the content
         id: content_cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CONTENT_CACHE_DIR }}
           key: content-${{ hashFiles('content/pin.txt', 'scripts/fetch-content.cmake') }}
@@ -1096,7 +1155,7 @@ jobs:
 
       - name: Save the content
         if: ${{ matrix.sanitizer == 'rtsan' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.content_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CONTENT_CACHE_DIR }}
           key: ${{ steps.content_cache.outputs.cache-primary-key }}
@@ -1136,17 +1195,41 @@ jobs:
       # One ASan shard saves (the six build the same tree), and the RTSan job.
       - name: Save the compiler cache
         if: ${{ !cancelled() && matrix.shard <= 1 && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+
+  # Nightly and on dispatch only (M2 close spec §6.3): the README's Linux line, from nothing. A
+  # bare ubuntu:22.04 container has none of the packages the hosted image carries, so a package
+  # missing from scripts/bootstrap-linux.sh fails here and nowhere else. It installs, clones the
+  # repository (public), checks out the commit under test, then configures, builds and tests the
+  # dev preset.
+  bootstrap-fresh-linux:
+    name: bootstrap (linux, fresh container)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
+    timeout-minutes: 90
+    steps:
+      # No git in the container: the checkout action falls back to the REST archive.
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bootstrap, clone, build and test
+        env:
+          GG_REPO_URL: https://github.com/${{ github.repository }}.git
+          GG_REPO_REF: ${{ github.sha }}
+        run: scripts/bootstrap-linux.sh --clone /tmp/gg
 
   # The required check (the main ruleset's "sanitizers (asan, rtsan)") and what the release job
   # needs: it passes only when all seven sanitizer jobs passed.
   sanitizers:
     name: sanitizers (asan, rtsan)
-    needs: sanitizer
-    if: ${{ always() }}
+    needs: [plan, sanitizer]
+    if: ${{ always() && needs.plan.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1154,6 +1237,31 @@ jobs:
         run: |
           echo "sanitizer jobs: ${{ needs.sanitizer.result }}"
           [[ "${{ needs.sanitizer.result }}" == success ]]
+
+  # The one check main's ruleset requires beside clang-format (INTENT §23 #77): it passes when the
+  # plan passed and either every build leg and sanitizer job passed, or the pull request is
+  # documents only and they were skipped. A skipped matrix job never reports its per-leg names, so
+  # the ruleset can't require those.
+  ci-ok:
+    name: ci-ok
+    needs: [plan, build, sanitizer]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: The run passed, or skipped what a documents-only change needs
+        run: |
+          plan="${{ needs.plan.result }}"
+          build="${{ needs.build.result }}"
+          sanitizer="${{ needs.sanitizer.result }}"
+          docs_only="${{ needs.plan.outputs.docs_only }}"
+          echo "plan: $plan; build: $build; sanitizer: $sanitizer; documents only: $docs_only"
+          [[ $plan == success ]] || exit 1
+          if [[ $docs_only == true ]]; then
+            [[ $build == skipped && $sanitizer == skipped ]]
+          else
+            [[ $build == success && $sanitizer == success ]]
+          fi
 
   # When the kind isn't none, and only after plan, every build leg and the sanitizers passed (a
   # red sanitizer run blocks a release). The only job that may write to the repository

@@ -3,13 +3,16 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -781,5 +784,98 @@ TEST_CASE("decodeAudioBytes refuses a truncated file", "[media]")
         const auto cut = gg::media::decodeAudioBytes(view.substr(0, keep), kBound);
         REQUIRE_FALSE(cut.audio.has_value());
         REQUIRE_FALSE(cut.error.empty());
+    }
+}
+
+TEST_CASE("a bound above the decoder's ceiling is the ceiling", "[media]")
+{
+    // An RF64 IMA ADPCM file whose ds64 chunk gives 2^63 frames of mono: its planar float size
+    // (frames x 4) overflows 64 bits, and a compressed WAV is checked against the bound from its
+    // header alone. With a UINT64_MAX bound the saturated size used to pass; the bound is clamped
+    // to the decoder's ceiling, 16 GiB, so the header is refused by size.
+    gg::test::Bytes b;
+    b.raw("RF64");
+    b.le(0xFFFFFFFFu, 4);
+    b.raw("WAVE");
+    b.raw("ds64");
+    b.le(28, 4);
+    b.le(uint64_t{1} << 40, 8); // riff size
+    b.le(uint64_t{1} << 40, 8); // data size
+    b.le(uint64_t{1} << 63, 8); // sample count
+    b.le(0, 4);                 // table length
+    b.raw("fmt ");
+    b.le(20, 4);
+    b.le(0x11, 2); // IMA ADPCM
+    b.le(1, 2);    // mono
+    b.le(8000, 4); // rate
+    b.le(4055, 4); // byte rate
+    b.le(256, 2);  // block align
+    b.le(4, 2);    // bits
+    b.le(2, 2);    // cbSize
+    b.le(505, 2);  // samples per block
+    b.raw("data");
+    b.le(0xFFFFFFFFu, 4);
+    for (int i = 0; i < 512; ++i)
+    {
+        b.u8(0);
+    }
+    const auto file = dir() / "overflowing-frames.wav";
+    gg::test::writeFile(file, b.data);
+
+    const auto unbounded = decodeAudioFile(file, std::numeric_limits<uint64_t>::max());
+    REQUIRE_FALSE(unbounded.audio.has_value());
+    INFO(unbounded.error);
+    CHECK(unbounded.error.find("the memory cap allows 16384 MB") != std::string::npos);
+    const std::string_view view(reinterpret_cast<const char *>(b.data.data()), b.data.size());
+    const auto fromBytes = gg::media::decodeAudioBytes(view, std::numeric_limits<uint64_t>::max());
+    REQUIRE_FALSE(fromBytes.audio.has_value());
+    INFO(fromBytes.error);
+    CHECK(fromBytes.error.find("the memory cap allows 16384 MB") != std::string::npos);
+}
+
+TEST_CASE("a decoded float file's non-finite samples read as zero", "[media]")
+{
+    const auto audio = gg::test::makeTestAudio(2, 48000, 100);
+    auto bytes = gg::test::wavBytes(audio, SampleFormat::Float32);
+    gg::test::Bytes b{bytes};
+    // Interleaved frames of 8 bytes, the audio at byte 44: NaN, +inf and -inf, in both channels.
+    const std::pair<int, uint32_t> bad[] = {
+        {10, 0x7FC00000u}, {20, 0x7F800000u}, {30, 0xFF800000u}, {40, 0x7FA00001u}};
+    for (const auto &[frame, pattern] : bad)
+    {
+        b.patch(44 + size_t(frame) * 8 + size_t(frame % 2) * 4, pattern, 4, false);
+    }
+    const auto wav = dir() / "non-finite.wav";
+    gg::test::writeFile(wav, b.data);
+
+    const auto fromBytes = [&] {
+        const std::string_view view(reinterpret_cast<const char *>(b.data.data()), b.data.size());
+        return gg::media::decodeAudioBytes(view, kBound);
+    };
+    const auto fromFile = decodeAudioFile(wav, kBound);
+    REQUIRE(fromFile.audio.has_value());
+    const auto viaBytes = fromBytes();
+    REQUIRE(viaBytes.audio.has_value());
+    for (const auto *decoded : {&fromFile, &viaBytes})
+    {
+        const auto &buffer = *decoded->audio->buffer;
+        REQUIRE(buffer.frames() == 100);
+        for (int64_t n = 0; n < 100; ++n)
+        {
+            for (uint32_t c = 0; c < 2; ++c)
+            {
+                const float v = buffer.channel(c)[n];
+                const bool isBad =
+                    (n == 10 || n == 20 || n == 30 || n == 40) && c == uint32_t(n % 2);
+                if (isBad)
+                {
+                    CHECK(std::bit_cast<uint32_t>(v) == 0u);
+                }
+                else
+                {
+                    CHECK(v == static_cast<float>(audio.at(n, c)));
+                }
+            }
+        }
     }
 }

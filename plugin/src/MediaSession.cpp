@@ -7,11 +7,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <cstring>
 #include <fstream>
-#include <span>
 #include <system_error>
-#include <thread>
 #include <utility>
 
 #if defined(_WIN32)
@@ -27,7 +24,6 @@
 #include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 #include "gg/media/WavBytes.h"
-#include "PluginTestHooks.h"
 
 namespace gg::plugin
 {
@@ -35,11 +31,9 @@ namespace
 {
 namespace fs = std::filesystem;
 using core::kLayers;
-
-constexpr int kRingReadTries = 8;
-
-/// The ring reader's hook (PluginTestHooks.h); nullptr unless a test sets one.
-std::atomic<detail::RingReadHook> ringReadHook{nullptr};
+using detail::ReadDone;
+using detail::readWith;
+using detail::Span;
 
 constexpr const char *kResizing = "resizing";
 constexpr const char *kCapturesUnwritable = "not saved: captures folder unwritable";
@@ -113,154 +107,6 @@ bool writeWhole(const fs::path &path, const std::string &bytes)
     return true;
 }
 
-/// The span `request` names as of the head `r0` over a window of `n` frames, and the marks inside
-/// the window (`meta`'s, by ring time).
-struct Span
-{
-    int64_t from{0};
-    int64_t to{0};
-};
-
-Span spanOf(const RingSpanRequest &request, const core::RingMeta &meta, int64_t r0, int64_t n,
-            std::vector<int64_t> &marks)
-{
-    int64_t lo = std::max<int64_t>(0, r0 - n);
-    if (request.loop)
-    {
-        lo = std::max(lo, r0 - std::max<int64_t>(1, request.loopFrames));
-    }
-    marks.clear();
-    for (uint32_t k = 0; k < std::min<uint32_t>(meta.spliceCount, core::kMaxSplices); ++k)
-    {
-        if (meta.splices[k] >= lo && meta.splices[k] < r0)
-        {
-            marks.push_back(meta.splices[k]);
-        }
-    }
-    if (request.splice == 0 || marks.empty())
-    {
-        return {lo, r0};
-    }
-    // D6: from the oldest mark inside the window; past the count, the last.
-    const std::size_t k = std::min<std::size_t>(request.splice, marks.size()) - 1;
-    const int64_t to = k + 1 < marks.size() ? marks[k + 1] : r0;
-    return {marks[k], to};
-}
-
-/// The one ring reader (core::RingRead's protocol; readRing's comment). `copy(storage, from, to)`
-/// copies frames [from, to) wherever the caller wants them, each try. On success, `from`, `valid`
-/// (the first frame of the copy known good) and `to`, the head R0 and the marks inside the window.
-struct ReadDone
-{
-    int64_t from{0};
-    int64_t valid{0};
-    int64_t to{0};
-    int64_t head{0};
-    uint32_t epoch{0};  // e0, the storage epoch the copy is of
-    bool frozen{false}; // the meta's: the engine was given its freeze
-    bool cached{false}; // the probe said the caller holds this copy: nothing was copied
-    std::vector<int64_t> marks;
-};
-
-/// `probe(meta, e0, r0, span)`, before the copy, may say the caller already holds that copy
-/// (the save's cache of a frozen ring): the read then ends there, `cached`, without copying.
-/// `replaced`, when given, is set when the read failed with a ring there (the storage replaced
-/// under every try, or the whole copy lapped), as against no ring or an empty span.
-template <class Probe, class Copy>
-std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer,
-                                 const RingSpanRequest &request, int64_t maxFrames, Probe &&probe,
-                                 Copy &&copy, bool *replaced = nullptr)
-{
-    if (replaced != nullptr)
-    {
-        *replaced = false;
-    }
-    ReadDone done;
-    for (int attempt = 0; attempt < kRingReadTries; ++attempt)
-    {
-        const bool last = attempt + 1 == kRingReadTries;
-        // 1. The marks (and, for a splice, the span) from the latest meta.
-        const core::RingMeta meta = processor.ringMeta(layer);
-        // 2. The epoch: odd while an adoption swaps the storage.
-        const std::atomic<uint32_t> *epoch = processor.ringRead(layer).storageEpoch;
-        const uint32_t e0 = epoch->load(std::memory_order_acquire);
-        if ((e0 & 1u) != 0)
-        {
-            std::this_thread::yield();
-            continue;
-        }
-        // 3. The storage as of e0 or later.
-        const core::RingRead read = processor.ringRead(layer);
-        if (read.storage == nullptr)
-        {
-            return std::nullopt;
-        }
-        const int64_t n = read.storage->frames();
-        // 4. The head R0.
-        const int64_t r0 = read.head->load(std::memory_order_acquire);
-        Span span = spanOf(request, meta, r0, n, done.marks);
-        if (maxFrames > 0)
-        {
-            span.from = std::max(span.from, span.to - maxFrames);
-        }
-        if (span.to <= span.from)
-        {
-            return std::nullopt;
-        }
-        done.frozen = meta.frozen;
-        if (probe(meta, e0, r0, span))
-        {
-            done.from = span.from;
-            done.valid = span.from;
-            done.to = span.to;
-            done.head = r0;
-            done.epoch = e0;
-            done.cached = true;
-            return done;
-        }
-        // 5. The copy.
-        copy(*read.storage, span.from, span.to);
-        if (const auto hook = ringReadHook.load(std::memory_order_relaxed))
-        {
-            hook(layer, attempt);
-        }
-        // 6. No frame load completes after what follows.
-        std::atomic_thread_fence(std::memory_order_acquire);
-        // 7. R1 and the epoch again.
-        const int64_t r1 = read.head->load(std::memory_order_relaxed);
-        const uint32_t e1 = read.storageEpoch->load(std::memory_order_relaxed);
-        if (e1 != e0)
-        {
-            continue;
-        }
-        // Frame f is good when R1 − f <= N: none written meanwhile shares its slot.
-        const int64_t valid = std::max(span.from, r1 - n);
-        // A span longer than N − (R1 − R0), what the copy's own writes leave of the window,
-        // would be lapped by every try at this write rate: a try again would copy (and
-        // allocate) it once more for nothing (eight times 115 MB for a running 300 s ring), so
-        // this try is kept as the last one is.
-        const bool lapsEveryTry = span.to - span.from > n - (r1 - r0);
-        if (valid == span.from || last || lapsEveryTry)
-        {
-            if (valid >= span.to)
-            {
-                break; // the head lapped the whole copy
-            }
-            done.from = span.from;
-            done.valid = valid;
-            done.to = span.to;
-            done.head = r0;
-            done.epoch = e0;
-            return done;
-        }
-    }
-    if (replaced != nullptr)
-    {
-        *replaced = true;
-    }
-    return std::nullopt;
-}
-
 /// The RingEntry of a D1 window `done` read of layer `layer` at `rate`, with the marks inside
 /// it as offsets from its first frame; no fingerprint yet.
 core::RingEntry windowEntry(const ReadDone &done, uint8_t layer, double rate)
@@ -279,59 +125,7 @@ core::RingEntry windowEntry(const ReadDone &done, uint8_t layer, double rate)
     }
     return entry;
 }
-
-/// readWith with no cache to probe.
-template <class Copy>
-std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer,
-                                 const RingSpanRequest &request, int64_t maxFrames, Copy &&copy)
-{
-    return readWith(
-        processor, layer, request, maxFrames,
-        [](const core::RingMeta &, uint32_t, int64_t, const Span &) { return false; },
-        std::forward<Copy>(copy));
-}
 } // namespace
-
-std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer,
-                                 const RingSpanRequest &request, double rate)
-{
-    std::shared_ptr<SampleBuffer> buffer;
-    const auto done = readWith(
-        processor, layer, request, 0, [&](const RingStorage &storage, int64_t from, int64_t to) {
-            buffer =
-                media::ringToBuffer(storage.slots(), storage.capacity(), from, to - from, rate);
-        });
-    if (!done.has_value())
-    {
-        return std::nullopt;
-    }
-    RingCopy out;
-    out.oldest = done->valid;
-    out.head = done->head;
-    for (const int64_t m : done->marks)
-    {
-        if (m >= done->valid && m < done->to)
-        {
-            out.marks.push_back(m);
-        }
-    }
-    if (done->valid == done->from)
-    {
-        out.window = std::move(buffer);
-        return out;
-    }
-    // The lapped front dropped: the newest frames alone.
-    const int64_t skip = done->valid - done->from;
-    const int64_t frames = done->to - done->valid;
-    auto trimmed = std::make_shared<SampleBuffer>(2, frames, rate);
-    for (uint32_t c = 0; c < 2; ++c)
-    {
-        std::memcpy(trimmed->channel(c), buffer->channel(c) + skip,
-                    static_cast<std::size_t>(frames) * sizeof(float));
-    }
-    out.window = std::move(trimmed);
-    return out;
-}
 
 MediaSession::MediaSession(core::Mode mode, std::filesystem::path settingsFile,
                            CallbacksFor perLayer, BaseValue baseValue)
@@ -396,6 +190,13 @@ bool MediaSession::restoreInFlight(const core::Processor &processor, uint8_t lay
 
 void MediaSession::refreshBudget() noexcept { budget_.usedBytes = memoryUsedBytes(); }
 
+bool MediaSession::cacheHolds(const RingSlot &slot, bool frozen, uint32_t epoch, int64_t head,
+                              int64_t oldest) noexcept
+{
+    return frozen && slot.cached && slot.encoded != nullptr && slot.cacheEpoch == epoch &&
+           slot.cacheHead == head && slot.cacheOldest == oldest;
+}
+
 fs::path MediaSession::capturesFolder() const
 {
     const core::MachineSettings settings =
@@ -438,8 +239,7 @@ std::optional<MediaSession::SavedRing> MediaSession::readForSave(const core::Pro
     std::shared_ptr<SampleBuffer> buffer;
     const auto probe = [&slot](const core::RingMeta &meta, uint32_t e0, int64_t r0,
                                const Span &span) {
-        return meta.frozen && slot.cached && slot.encoded != nullptr && slot.cacheEpoch == e0 &&
-               slot.cacheHead == r0 && slot.cacheOldest == span.from;
+        return cacheHolds(slot, meta.frozen, e0, r0, span.from);
     };
     const auto done = readWith(
         processor, layer, request, 0, probe,
@@ -575,6 +375,10 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
                         slot.pendingEntry->fileSize = encoded->size;
                         slot.pendingBytes =
                             std::shared_ptr<const std::string>(encoded, &encoded->wavBytes);
+                        // One copy kept (carry-over row 354): the frames go now the bytes exist,
+                        // and the next activation restores the ring from these.
+                        slot.pendingWindow.reset();
+                        refreshBudget();
                     }
                     ring = SavedRing{*slot.pendingEntry, slot.pendingBytes};
                 }
@@ -785,6 +589,21 @@ MediaSession::Restored MediaSession::restore(core::SessionState state, double ac
             }
         }
     }
+    // Carry-over row 355: a layer this load restores no ring for withdraws an older load's
+    // restore offer still waiting in its exchange, so the older session's ring never lands
+    // after this one's values. Once the withdrawal settles, pollRingLengths takes the ring of
+    // record from the storage then published.
+    if (active_ != nullptr)
+    {
+        for (uint8_t l = 0; l < kLayers; ++l)
+        {
+            const RingSlot &slot = rings_[l];
+            if (!out.rings[l].has_value() && slot.offerPending && slot.offeredRestore)
+            {
+                active_->sources(l).withdrawRing();
+            }
+        }
+    }
     refreshBudget();
     return out;
 }
@@ -912,8 +731,8 @@ void MediaSession::restoreHeld(core::Processor &processor, uint8_t layer)
         slot.persistStatus = budget_.refusal(need);
         return;
     }
-    // A ring kept at deactivate is restored from its frames; one restored while inactive from
-    // its WAV bytes or its file.
+    // A ring kept at deactivate is restored from its frames while no save has encoded it since;
+    // one encoded, or restored while inactive, from its WAV bytes or its file.
     media::RestoredRing ring =
         window != nullptr
             ? media::restoreRingFrom(entry, std::move(window), rate_, frames, maxBlock_)
@@ -952,36 +771,41 @@ void MediaSession::deactivate(const core::Processor *processor,
             // The audio thread is stopped: the read passes at once. The frames are copied, not
             // encoded: the host's main thread waits for this, and four 300 s rings took seconds
             // to encode and hash. The next save() does that, or the next activation restores the
-            // frames as they are.
+            // frames as they are. A frozen window a save has just encoded (its cache, probed as
+            // the save probes it) isn't copied at all: its bytes are kept instead (carry-over
+            // row 354: the ring held once).
             std::shared_ptr<SampleBuffer> window;
-            const auto done =
-                readWith(*processor, l, windowOf(values, l, 0), 0,
-                         [&](const RingStorage &storage, int64_t from, int64_t to) {
-                             window = media::ringToBuffer(storage.slots(), storage.capacity(), from,
-                                                          to - from, rate_);
-                         });
+            const auto done = readWith(
+                *processor, l, windowOf(values, l, 0), 0,
+                [&slot](const core::RingMeta &meta, uint32_t e0, int64_t r0, const Span &span) {
+                    return cacheHolds(slot, meta.frozen, e0, r0, span.from);
+                },
+                [&](const RingStorage &storage, int64_t from, int64_t to) {
+                    window = media::ringToBuffer(storage.slots(), storage.capacity(), from,
+                                                 to - from, rate_);
+                });
             if (done.has_value())
             {
-                const auto lapped = static_cast<std::size_t>(done->valid - done->from);
-                for (uint32_t c = 0; c < 2; ++c)
-                {
-                    std::fill_n(window->channel(c), lapped, 0.0f); // none: nothing writes
-                }
                 core::RingEntry entry = windowEntry(*done, l, rate_);
                 std::shared_ptr<const std::string> bytes;
-                if (done->frozen && slot.cached && slot.encoded != nullptr &&
-                    slot.cacheEpoch == done->epoch && slot.cacheHead == done->head &&
-                    slot.cacheOldest == done->from)
+                if (done->cached)
                 {
-                    // A save encoded this very window: its bytes are kept with it.
                     entry.sha256Hex = slot.encoded->sha256Hex;
                     entry.fileSize = slot.encoded->size;
                     bytes =
                         std::shared_ptr<const std::string>(slot.encoded, &slot.encoded->wavBytes);
                 }
+                else
+                {
+                    const auto lapped = static_cast<std::size_t>(done->valid - done->from);
+                    for (uint32_t c = 0; c < 2; ++c)
+                    {
+                        std::fill_n(window->channel(c), lapped, 0.0f); // none: nothing writes
+                    }
+                }
                 slot.pendingEntry = std::move(entry);
+                slot.pendingWindow = std::move(window); // null when the bytes were kept
                 slot.pendingBytes = std::move(bytes);
-                slot.pendingWindow = std::move(window);
             }
         }
         catch (...)
@@ -1039,13 +863,15 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
                         continue; // in flight
                     }
                     // Declined (the copy's gap was past kAdoptCopyFrames): made again below.
-                    const RingStorage *storage = processor.ringRead(l).storage;
-                    slot.frames = storage != nullptr ? storage->frames() : 0;
                     if (slot.offeredRestore)
                     {
                         slot.persistStatus = "ring not restored: declined";
                     }
                 }
+                // Settled: the ring of record is the storage published now, the offer's, or
+                // after a decline or a withdrawal (restore()) the one before it.
+                const RingStorage *storage = processor.ringRead(l).storage;
+                slot.frames = storage != nullptr ? storage->frames() : 0;
                 slot.offerPending = false;
                 slot.offeredRestore = false;
                 slot.offeredEntry.reset();
@@ -1284,9 +1110,4 @@ std::string MediaSession::status(uint8_t layer) const
     }
     return loaders_[layer]->status().message;
 }
-
-namespace detail
-{
-void setRingReadHook(RingReadHook hook) { ringReadHook.store(hook); }
-} // namespace detail
 } // namespace gg::plugin

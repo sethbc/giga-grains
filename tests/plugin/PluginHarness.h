@@ -56,6 +56,19 @@ inline void useSettingsFile(const std::filesystem::path &file)
 #endif
 }
 
+/// Replaces the per-user and system content roots with the one folder `dir` (GG_SYSTEM_CONTENT_DIR,
+/// ContentPaths.h's test seam), so a test never sees the machine's installed content. Each test
+/// case runs in its own process, so it needs no restoring.
+inline void useSystemContentDir(const std::filesystem::path &dir)
+{
+    std::filesystem::create_directories(dir);
+#if defined(_WIN32)
+    _wputenv_s(L"GG_SYSTEM_CONTENT_DIR", dir.c_str());
+#else
+    setenv("GG_SYSTEM_CONTENT_DIR", dir.c_str(), 1);
+#endif
+}
+
 /// Every test process starts with the scratch settings file below, so no test reads or writes
 /// the user's (ruling R16). It is one path, shared by every process: a test that reads or writes
 /// the settings points at a file of its own (useSettingsFile) first.

@@ -43,6 +43,8 @@
 #include "gg/core/PresetInfo.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
+#include "gg/core/MachineSettings.h"
+#include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
@@ -1029,6 +1031,36 @@ TEST_CASE("a preset's content sample missing from every content root leaves the 
     const auto status = instrument.impl().media().loader(0).status();
     CHECK(status.state == SampleState::Missing);
     CHECK(status.fileName == "tone.wav");
+}
+
+TEST_CASE("a factory preset's missing sample is found by name in the sample folder",
+          "[plugin][preset]")
+{
+    // Row 401: the preset names layer A's sample by its content reference alone, no content root
+    // holds it, but the user's sample folder holds a file of its name (and bytes) in a
+    // subfolder: INTENT 18 D5's step 5 finds it, as it finds a session's sample.
+    const std::string name = "content-by-name";
+    const fs::path dir = setUpSamples(name);
+    const fs::path root = contentRootWithTone(name);
+    const fs::path file = packedWithTone(Mode::Instrument, root, name);
+    useContentRoot(dir / "elsewhere"); // a content root that holds nothing
+    const fs::path library = dir / "library";
+    fs::remove_all(library);
+    fs::create_directories(library / "mine" / "drums");
+    fs::copy_file(root / "Samples" / "Test" / "tone.wav", library / "mine" / "drums" / "tone.wav");
+    gg::core::MachineSettings folders;
+    folders.sampleFolder = utf8(library);
+    REQUIRE(gg::media::saveSettings(dir / "settings.xml", folders));
+
+    PluginUnderTest instrument(kInstrumentId);
+    REQUIRE(instrument.valid());
+    const std::string location = utf8(file);
+    REQUIRE(instrument.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    const auto &loader = instrument.impl().media().loader(0);
+    CHECK(loader.status().state == SampleState::Loaded);
+    REQUIRE(loader.entry().has_value());
+    CHECK(loader.entry()->contentPath == kToneRef); // the reference is kept
+    CHECK(fs::path(loader.entry()->absolutePath) == library / "mine" / "drums" / "tone.wav");
 }
 
 TEST_CASE("a preset load keeps each layer's ring parameters", "[plugin][preset]")

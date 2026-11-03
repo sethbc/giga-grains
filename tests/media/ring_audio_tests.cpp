@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -125,6 +126,37 @@ TEST_CASE("a ring round-trips through WAV bytes", "[media]")
     {
         REQUIRE(sameBits(out[2 * (c + g)], out[2 * g]));
         REQUIRE(sameBits(out[2 * (c + g) + 1], out[2 * g + 1]));
+    }
+}
+
+TEST_CASE("a ring's tampered non-finite samples restore as zero", "[media]")
+{
+    constexpr int64_t kCapacity = 1000 + kBlock;
+    const auto slots = ringSlots(kCapacity, 0, 800);
+    const auto window = ringToBuffer(slots.data(), kCapacity, 0, 800, 48000.0);
+    REQUIRE(window != nullptr);
+    auto wav = gg::media::encodeFloat32Wav(*window);
+    // The samples are interleaved frames of two floats after the header, which ends with the
+    // `data` chunk's size. Plant a NaN, +inf and -inf in the first frames.
+    const std::size_t dataChunk = wav.find("data");
+    REQUIRE(dataChunk != std::string::npos);
+    const std::size_t dataAt = dataChunk + 8;
+    const std::pair<std::size_t, uint32_t> bad[] = {
+        {5, 0x7FC00000u}, {6, 0x7F800000u}, {7, 0xFF800000u}};
+    for (const auto &[index, pattern] : bad)
+    {
+        std::memcpy(wav.data() + dataAt + 4 * index, &pattern, 4);
+    }
+    const RingEntry entry = entryOf(*window, {});
+    const auto restored = restoreRing(entry, wav, 48000.0, 1000, kBlock, kBound);
+    INFO(restored.error);
+    REQUIRE(restored.error.empty());
+    const float *out = restored.storage->slots();
+    for (std::size_t k = 0; k < 1600; ++k)
+    {
+        const bool isBad = k == 5 || k == 6 || k == 7;
+        const float expected = isBad ? 0.0f : slots[k];
+        REQUIRE(sameBits(out[k], expected));
     }
 }
 

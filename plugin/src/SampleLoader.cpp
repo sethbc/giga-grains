@@ -828,6 +828,7 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
         result.error = std::move(loaded.error);
         return result;
     }
+    result.relink = job.kind == JobKind::Relink;
     result.differentAudio = job.kind == JobKind::Relink && !job.expectedSha256.empty() &&
                             loaded.entry.sha256Hex != job.expectedSha256;
     result.entry = std::move(loaded.entry);
@@ -891,6 +892,14 @@ void SampleLoader::apply(Result &result)
         // names the file that failed.
         setRequestError(result.fileName, std::move(result.error));
         return;
+    }
+    // A relink to the same audio keeps the entry's content reference (a factory preset's sample
+    // relinked by hand stays portable), as the search's "moved" branch does; other audio is a
+    // different sample and drops it (row 389).
+    if (result.relink && !result.differentAudio && entry_.has_value() &&
+        entry_->sha256Hex == result.entry.sha256Hex)
+    {
+        result.entry.contentPath = entry_->contentPath;
     }
     entry_ = std::move(result.entry);
     newerMedia_.reset(); // the sample loaded replaces a newer build's manifest

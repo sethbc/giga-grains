@@ -1246,11 +1246,25 @@ TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
     CHECK(status == 0);
     CHECK(output.find("\nchain ") != std::string::npos);
     CHECK(output.find("% core @48k") != std::string::npos);
+    CHECK(output.find("\nspectral ") != std::string::npos);
 
     std::ifstream in(jsonPath, std::ios::binary);
     REQUIRE(in);
     const nlohmann::json j = nlohmann::json::parse(in);
     CHECK(j.at("benchmark").get<std::string>() == "chain");
+    // The report-only spectral stage (carry-over 372): its own runs, summary and settings.
+    const nlohmann::json &spectral = j.at("spectral");
+    REQUIRE(spectral.at("runs").is_array());
+    REQUIRE(spectral.at("runs").size() == 2);
+    for (const nlohmann::json &run : spectral.at("runs"))
+    {
+        CHECK(run.get<double>() > 0.0);
+    }
+    CHECK(spectral.at("nsPerSample").get<double>() > 0.0);
+    CHECK(spectral.at("min").get<double>() <= spectral.at("nsPerSample").get<double>());
+    CHECK(spectral.at("iqr").get<double>() >= 0.0);
+    CHECK(spectral.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
+    CHECK(spectral.at("settings").at("grainsReading").get<int>() == 0);
     CHECK(j.at("rounds").get<int>() == 2);
     const nlohmann::json &runs = j.at("runs");
     REQUIRE(runs.is_array());

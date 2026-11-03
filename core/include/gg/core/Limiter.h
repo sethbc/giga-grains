@@ -126,14 +126,20 @@ class Limiter
     /// Peak's last gain, 1 while Peak isn't in use. For tests.
     float gain() const noexcept { return static_cast<float>(gain_); }
 
+    /// A mode's slot in the weights (Off, Soft, Peak). A stray value maps to Off's slot, the
+    /// identity, which is also what a settled call does with it, so a fade toward a stray mode
+    /// and its last call agree. For tests, which can't run process() with one (it asserts).
+    static constexpr size_t lawSlot(LimiterMode m) noexcept
+    {
+        return static_cast<uint8_t>(m) <= static_cast<uint8_t>(LimiterMode::Peak)
+                   ? static_cast<size_t>(m)
+                   : static_cast<size_t>(LimiterMode::Off);
+    }
+
   private:
     static constexpr size_t kModes = 3;
 
-    /// A mode's slot in the weights, clamped so a stray value can't index past them.
-    static size_t index(LimiterMode m) noexcept
-    {
-        return std::min<size_t>(static_cast<size_t>(m), kModes - 1);
-    }
+    static constexpr size_t index(LimiterMode m) noexcept { return lawSlot(m); }
 
     static float soft(float x, float c) noexcept
     {

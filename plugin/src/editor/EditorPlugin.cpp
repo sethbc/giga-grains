@@ -26,10 +26,7 @@
 #include <clapwrapper/wrapper_host.h>
 
 #include "gg/core/PresetInfo.h"
-#include "SettingsPath.h"
-#include "gg/core/MachineSettings.h"
 #include "gg/core/Processor.h"
-#include "gg/media/SettingsFile.h"
 #include "gg/media/Utf8Path.h"
 #include "UiSettings.h"
 #include "gg/ui/Editor.h"
@@ -264,22 +261,10 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         }
         return std::string();
     };
-    context.capturesFolder = [] {
+    context.capturesFolder = [this] {
         try
         {
-            // As MediaSession's: the settings', else the default.
-            const auto file = settingsFile();
-            const gg::core::MachineSettings settings =
-                file.empty() ? gg::core::MachineSettings{} : gg::media::loadSettings(file);
-            std::filesystem::path folder = gg::media::defaultCapturesFolder();
-            if (!settings.capturesFolder.empty())
-            {
-                if (auto chosen = gg::media::fromUtf8(settings.capturesFolder))
-                {
-                    folder = *chosen;
-                }
-            }
-            return gg::media::toUtf8(folder).value_or(std::string());
+            return gg::media::toUtf8(media().capturesFolder()).value_or(std::string());
         }
         catch (...)
         {

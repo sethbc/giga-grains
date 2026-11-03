@@ -272,7 +272,8 @@ run_update() { # sets $out and $status
     out="$(cd "$repo" && PATH="$work/bin:$PATH" REAL_CMAKE="$real_cmake" FAKE_LOG="$log" \
         scripts/update-goldens.sh 2>&1)" || status=$?
 }
-echo "audio of a" >"$work/expected-a.wav"
+# The main cases are rendered with --content-dir <media folder>, as ctest does (row 349).
+echo "audio of a content build/dev/golden-media" >"$work/expected-a.wav"
 hash_a="$("$real_cmake" -E sha256sum "$work/expected-a.wav")"
 hash_a="${hash_a%% *}"
 

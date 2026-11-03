@@ -1711,6 +1711,26 @@ TEST_CASE("an entry naming a missing payload loads with its audio missing", "[co
     CHECK(d.state.ringAudioMissing == Flags{});
 }
 
+TEST_CASE("a decoded state whose missing-payload ring is replaced saves the new ring", "[core]")
+{
+    // The *AudioMissing flag excuses exactly the entry it recorded (row 342): after the embedded
+    // ring that lacked its payload is replaced by a valid filed one, the save keeps the new ring
+    // (and, in Debug and ASan, trips no assert).
+    const auto ptch = *stateChunkPayload(encodeState(someState(false)), "PTCH");
+    const std::string ring = ringElement(kGoodRing); // an embedded ring of layer 1, payload 1
+    Decoded d = distinct();
+    REQUIRE(d.decode(stateContainer({stateChunk("PTCH", ptch), stateChunk("MEDI", media2(ring))})));
+    REQUIRE(d.state.ringAudioMissing[1]);
+    REQUIRE(d.state.rings[1].has_value());
+
+    d.state.rings[1] = ringEntry(1, 0); // a filed ring of the same layer
+    Decoded again = distinct();
+    REQUIRE(again.decode(encodeState(d.state)));
+    REQUIRE(again.state.rings[1].has_value());
+    CHECK(*again.state.rings[1] == *d.state.rings[1]);
+    CHECK(again.state.ringAudioMissing == std::array<bool, gg::core::kLayers>{});
+}
+
 TEST_CASE("an unreferenced payload is ignored", "[core]")
 {
     // Review Focus 5: a payload no entry names loads, and isn't kept.

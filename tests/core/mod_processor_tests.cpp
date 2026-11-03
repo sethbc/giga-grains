@@ -1101,3 +1101,45 @@ TEST_CASE("quality modulated per cell under overload does not allocate", "[core]
     CHECK(p.stolenGrains() > 0);
     CHECK(p.stolenGrains() == log.steals.size());
 }
+
+TEST_CASE("a modulator control's base change is in effect for the cell it starts", "[core][mod]")
+{
+    // Row 371, through the Processor. LFO 1 (unipolar, depth 12) is routed to layer A's Pitch.
+    // LFO 1 Rate's base changes by an event on the cell boundary B. commitPending writes the
+    // control's effective value there (isModulatorControlSlot), and stepSources, which runs before
+    // updateEffective, reads the rates from effective_: so the phase advance at B uses the new
+    // rate. A reference Lfo stepped at the old rate before B and the new rate from B gives the
+    // value the route must show at B + 1; without the branch the LFO steps B at the old rate and
+    // the value differs. (Widening the predicate, to Bus 1 Cutoff say, is not observable through
+    // effective(): updateEffective rewrites every other slot at once.)
+    const ParamSlot rate = layerSlot(LayerParam::Lfo1Rate, 0);
+    REQUIRE(gg::core::isModulatorControlSlot(rate));
+    REQUIRE_FALSE(gg::core::isModulatorControlSlot(layerSlot(LayerParam::Bus1Cutoff, 0)));
+
+    constexpr int64_t kB = 10;       // the boundary cell
+    constexpr float kNewRate = 5.0f; // log2 Hz: 32 Hz against the default 1 Hz
+    Processor p({kRate, 512, 31, Mode::Fx});
+    p.setRoutes(only(route(ModSource::Lfo1, ParamSlot::Pitch, 0, 12.0f, ModCurve::Unipolar)));
+    ParamValues oldValues = effectiveValues(p);
+    ParamValues newValues = oldValues;
+    newValues[static_cast<size_t>(rate)] = kNewRate;
+    const gg::core::LfoParams oldRate = gg::core::lfoParams(oldValues, 0, 0);
+    const gg::core::LfoParams newRate = gg::core::lfoParams(newValues, 0, 0);
+    REQUIRE(newRate.rateHz > 30.0f * oldRate.rateHz);
+
+    // The reference: v[k] is cell k's value; the step at B (value v[B]) advances at the new rate.
+    gg::core::Lfo ref;
+    float v = 0.0f;
+    for (int64_t k = 0; k <= kB + 1; ++k)
+    {
+        v = ref.step(k < kB ? oldRate : newRate, kCellSeconds);
+    }
+
+    Stereo out = silence(400);
+    const std::vector<TimedEvent> events{{kB * 32, rate, false, kNewRate}};
+    render(p, nullptr, 0, (kB + 1) * 32 + 1, {64}, events, out);
+    CHECK(p.effective(rate) == kNewRate);
+    CAPTURE(v, p.sourceValue(ModSource::Lfo1, 0));
+    CHECK(p.sourceValue(ModSource::Lfo1, 0) == v);
+    CHECK(p.effective(ParamSlot::Pitch) == routed(ParamSlot::Pitch, 0.0f, 12.0f * v, Mode::Fx));
+}

@@ -83,9 +83,12 @@ whole file unless a span is given. No file peaks above −3.9 dBFS.
 
 Five behaviors of the build are sound choices the reviews left to the close's sitting:
 
-1. **Peak's own click score.** On hot material the Peak limiter scores 15 to 18 by the click
-   metric, from its instant gain steps (zero lookahead, D5 option 1). Hear `12` from 8 s: is it
-   clean enough?
+1. **Peak's own click score.** On hot material the Peak limiter clicks by the metric, from its
+   instant gain steps (zero lookahead, D5 option 1): carry-over row 378 measured 16.24 to 42.05
+   for Peak, and up to 19.77 for Soft, at the bottom ceilings, over hot noise, and D5b (the
+   director, 2026-10-31) kept the law; a mode change into Peak mid-sound is part of it (K-2,
+   INTENT §23 #79). Hear `12` from 8 s: is it clean enough, or should the law be revisited after
+   M2?
 2. **The Spectral kind is wide.** Each channel's phases are keyed apart, so the smear fully
    decorrelates the channels and center content comes out wide (`03`, `04`, `05`). Is that the
    width wanted, or should a mono source stay nearer the center?
