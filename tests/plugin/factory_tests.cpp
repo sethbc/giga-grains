@@ -894,6 +894,72 @@ TEST_CASE("the loader strip shows every sample state", "[plugin]")
     CHECK(status->getTooltip().isEmpty());
 }
 
+TEST_CASE("a narrow loader strip's ... menu holds Sample folder and Collect", "[plugin]")
+{
+    // Row 388 (l): below kNarrowWidth the two buttons fold into "loader.more"; each item does
+    // what its button does, through the context.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditorContext &context = recording.context;
+    std::vector<std::string> folders, collected, notices;
+    context.setSampleFolder = [&folders](const std::string &path) {
+        folders.push_back(path);
+        return gg::ui::SampleFolderResult{true, {}};
+    };
+    context.collectSamples = [&collected](const std::string &path) {
+        collected.push_back(path);
+        return std::string("Collected 3 files");
+    };
+    context.notice = [&notices](const std::string &text) { notices.push_back(text); };
+    gg::ui::LoaderStrip strip(context, 0, gg::ui::Compact::No);
+    std::vector<gg::ui::LoaderStrip::Browse> asked;
+    const juce::File chosen =
+        juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("gg-more-menu");
+    strip.browse = [&asked, &chosen](const gg::ui::LoaderStrip::Browse &b,
+                                     std::function<void(const juce::File &)> done) {
+        asked.push_back(b);
+        done(chosen);
+    };
+    std::vector<juce::PopupMenu> shown;
+    strip.showMenu = [&shown](juce::PopupMenu menu) { shown.push_back(std::move(menu)); };
+    strip.setSize(gg::ui::LoaderStrip::kNarrowWidth - 300, 28);
+    auto *more = dynamic_cast<juce::Button *>(findDeep(strip, "loader.more"));
+    REQUIRE(more != nullptr);
+    CHECK(more->isVisible());
+    CHECK_FALSE(findDeep(strip, "sampleFolder")->isVisible());
+    CHECK_FALSE(findDeep(strip, "loader.collect")->isVisible());
+    REQUIRE(more->onClick);
+    more->onClick();
+    REQUIRE(shown.size() == 1);
+    std::vector<juce::String> items;
+    for (juce::PopupMenu::MenuItemIterator it(shown[0]); it.next();)
+    {
+        items.push_back(it.getItem().text);
+    }
+    const juce::String ellipsis = juce::String::charToString(0x2026);
+    REQUIRE(items == std::vector<juce::String>{"Sample folder" + ellipsis, "Collect" + ellipsis});
+    const auto invoke = [&](int index) {
+        juce::PopupMenu::MenuItemIterator it(shown[0]);
+        for (int i = 0; i <= index; ++i)
+        {
+            REQUIRE(it.next());
+        }
+        REQUIRE(it.getItem().action);
+        it.getItem().action();
+    };
+    invoke(0);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0].folders);
+    CHECK(folders == std::vector<std::string>{chosen.getFullPathName().toStdString()});
+    CHECK(collected.empty());
+    invoke(1);
+    REQUIRE(asked.size() == 2);
+    CHECK(asked[1].folders);
+    CHECK(collected == std::vector<std::string>{chosen.getFullPathName().toStdString()});
+    CHECK(notices == std::vector<std::string>{"Collected 3 files"});
+    CHECK(folders.size() == 1);
+}
+
 TEST_CASE("the loader strip refuses other files and opens at the last folder", "[plugin]")
 {
     // Carry-over row 198: a drop the decoder can't read is refused with a message, and the
