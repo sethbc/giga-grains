@@ -218,6 +218,39 @@ TEST_CASE("the editor's capture takes the splice the engine plays", "[plugin]")
     CHECK(context.sampleWaveformFor(2).frames == ring.splices[1] - ring.splices[0]);
 }
 
+TEST_CASE("the editor's collect summarizes what it copied and what was missing", "[plugin]")
+{
+    // Row 388 (j): EditorPlugin's collectSamples over a real session, "Collected N files", and
+    // "; M missing" when a sample's file isn't there. (Its captures folder: row 384's test.)
+    const std::filesystem::path dir = gg::test::useMediaScratch("editor-collect-summary");
+    const auto a = gg::test::writeSineWav(dir / "one" / "a.wav", 48000, 0.5);
+    const auto b = gg::test::writeSineWav(dir / "two" / "b.wav", 48000, 0.5, 330.0);
+    const auto gone = gg::test::writeSineWav(dir / "three" / "c.wav", 48000, 0.5, 440.0);
+    Rig rig(kInstrumentId);
+    const auto &context = rig.context();
+    REQUIRE(context.collectSamples);
+    gg::core::SessionState s;
+    REQUIRE(gg::core::decodeState(rig.plugin.save(), gg::core::Mode::Instrument, s));
+    s.samples[0] = gg::test::entryOf(a);
+    s.samples[1] = gg::test::entryOf(gone);
+    s.samples[1]->layer = 1;
+    s.samples[2] = gg::test::entryOf(b);
+    s.samples[2]->layer = 2;
+    std::filesystem::remove(gone);
+    REQUIRE(rig.plugin.load(gg::core::encodeState(s)));
+    const std::filesystem::path folder = dir / "collected";
+    std::filesystem::remove_all(folder);
+    CHECK(context.collectSamples(gg::test::utf8(folder)) == "Collected 2 files; 1 missing");
+    CHECK(std::filesystem::exists(folder / "a.wav"));
+    CHECK(std::filesystem::exists(folder / "b.wav"));
+
+    // Nothing missing: no "missing" part.
+    Rig fresh(kInstrumentId);
+    const std::filesystem::path none = dir / "collected-none";
+    std::filesystem::remove_all(none);
+    CHECK(fresh.context().collectSamples(gg::test::utf8(none)) == "Collected 0 files");
+}
+
 TEST_CASE("capture refuses honestly", "[plugin]")
 {
     Rig rig(kFxId);
