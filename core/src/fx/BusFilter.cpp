@@ -77,7 +77,18 @@ void BusFilter::setCell(BusFilterType type, float cutoffHz, float resonance) noe
     const float hz = std::isnan(cutoffHz) ? cutoffMax_ : cutoffHz;
     cutoff_ = std::clamp(hz, 20.0f, cutoffMax_);
     res_ = 0.95f * std::clamp(std::isnan(resonance) ? 0.0f : resonance, 0.0f, 1.0f);
-    if (!fading_ && type != type_)
+    if (fading_ && type == type_)
+    {
+        // The change back to the outgoing type (A to B to A): turn the fade from its current
+        // value. Both instances are running, so the roles swap and the incoming weight
+        // 1 - fadePos_/ramp continues from where it stands. (A third type waits: two instances
+        // can't turn toward it.)
+        active_ = static_cast<uint8_t>(1 - active_);
+        type_ = nextType_;
+        nextType_ = type;
+        fadePos_ = std::min(rampSamples_ - fadePos_, rampSamples_ - 1);
+    }
+    else if (!fading_ && type != type_)
     {
         // The incoming type starts from silence on the spare filter, its coefficients snapped.
         nextType_ = type;

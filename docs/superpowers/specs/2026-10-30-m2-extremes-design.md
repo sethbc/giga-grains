@@ -374,8 +374,11 @@ octave, SIMD stereo.
 - **Declicked switches.** Each bus holds two filter instances. A type change (Off included) starts
   the incoming type on the spare instance at the boundary, from rest, and crossfades the bus from
   the outgoing instance's output to the incoming's over the 10 ms ramp (the outgoing keeps running
-  through the fade, then clears); after the fade the spare is free again. A change inside a fade
-  turns the fade from its current value, as the ramps do. A cutoff or resonance move is smoothed by
+  through the fade, then clears); after the fade the spare is free again. A change back to the
+  outgoing type inside a fade (A to B to A) turns the fade from its current value, as the ramps
+  do; a change to a third type waits for the fade to end, since two instances can't turn toward
+  it (the owner asks again each cell). **Amended 2026-11-02 (the M2 close, row 370):** the code
+  had waited for every change; it now turns for the one that returns, and no golden moves. A cutoff or resonance move is smoothed by
   the per-sample interpolation alone. Bus Split moves latch per grain, so they can't click.
   **Amended (the final review's fix wave):** the first cell after a clear (a new instance, a
   reset, the layer switched back on) takes its type at once, as the ramps jump there, so a loaded
