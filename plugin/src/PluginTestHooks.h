@@ -16,7 +16,7 @@
 
 namespace gg::plugin::detail
 {
-/// Called by the ring reader (readRing, a save's read and a resize's copy, MediaSession.h) on the
+/// Called by the ring reader (readRing, a save's read and a resize's copy, RingReader.h) on the
 /// main thread after each try's copy of layer `layer`'s ring and before its closing reads (the
 /// head R1 and the epoch), with the try's number from 0. A test renders the Processor forward
 /// there, so the frames the head writes meanwhile lap the copy's front as an audio thread's

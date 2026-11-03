@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "RingReader.h"
 #include "SampleLoader.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
@@ -29,47 +30,6 @@
 
 namespace gg::plugin
 {
-/// A copy of part of a layer's ring, read on the main thread without stopping the audio thread
-/// (readRing).
-struct RingCopy
-{
-    std::shared_ptr<SampleBuffer> window; ///< stereo, at the rate given, oldest frame first
-    int64_t oldest{0};                    ///< the ring time of window's first frame
-    int64_t head{0};                      ///< R0: the head the copy is the window as of
-    std::vector<int64_t> marks;           ///< the splice marks inside the copy, as ring times
-};
-
-/// The span of a layer's ring a read takes (readRing), by ring time, as of the head R0 with N the
-/// storage's window:
-/// - the window: [max(0, R0 − N), R0), and with Loop on its newest min(L, N) frames, L the Loop
-///   Length in frames (llround(seconds × rate), at least 1, as the Processor sets it), the Splice
-///   selection aside (Task 8's ruling: a saved ring is this window, Splice reselects on restore);
-/// - `splice` k >= 1 (a capture's): the span from the k-th mark inside the window, oldest first
-///   (D6), to the next mark or R0; k past the count is the last; with no mark inside, the window.
-struct RingSpanRequest
-{
-    bool loop{false};
-    int64_t loopFrames{0};
-    uint32_t splice{0};
-};
-
-/// Reads layer `layer`'s span `request` (RingSpanRequest) through core::RingRead's protocol (spec
-/// §6.4, as Processor.h documents it): the epoch, the storage, the head R0 with acquire order, the
-/// copy, an acquire fence, then the head R1 and the epoch again. A frame f of the copy is the one
-/// written for it when the epoch held and R1 − f <= N (the documented check, frame by frame): so a
-/// copy whose oldest frames the head lapped while it copied is still good from max(from, R1 − N)
-/// on. A read is tried up to 8 times for the whole span (a frozen ring passes at once, a running
-/// one whose head moved during the copy fails the whole-span check), and a try whose epoch held is
-/// kept with its lapped front trimmed (a capture's; a save keeps the window's length and writes
-/// silence over that front instead, MediaSession::save) when it is the last, or when its span is
-/// longer than N − (R1 − R0), so that at that write rate every try would lap it (a whole window of
-/// a running ring: its first try). nullopt with no ring, an
-/// empty span, or the storage replaced under every try. Main thread only: the storage may be read
-/// only on the thread that frees it (Processor::ringRead). Consumes the layer's RingMeta
-/// (Processor::ringMeta, which has one consumer), for the marks.
-std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer,
-                                 const RingSpanRequest &request, double rate);
-
 /// An instance's media (M2 sub-project 2's spec §6.3–§6.8), in both products: four
 /// SampleLoaders, one per layer, sharing the instance's memory budget; the rings the session
 /// saves and restores (D1, D8); the Ring Length watcher, which resizes a ring through its layer's
