@@ -13,8 +13,9 @@
 # It stops with an error when Visual Studio lacks the x64 C++ tools or the C++ Clang component
 # (scripts\bootstrap-windows.ps1 installs both).
 
+$gg_prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Stop'
-
+try {
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found: install Visual Studio 2022 or its Build Tools (scripts\bootstrap-windows.ps1)" }
 $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -26,3 +27,4 @@ Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
 Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
 $env:Path = "$llvm;$env:Path"
 & (Join-Path $llvm 'clang-cl.exe') --version
+} finally { $ErrorActionPreference = $gg_prevEap }

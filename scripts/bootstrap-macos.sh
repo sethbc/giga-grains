@@ -20,7 +20,7 @@
 #
 # Exit status: 0 on success, 1 when an install or a step fails, 2 for bad usage. Works in
 # macOS's bash 3.2. The whole script is one function, called last, so `curl ... | bash -s -- ...`
-# is safe: bash has read it all before anything runs.
+# is safe: the trailing `main "$@"` and `exit $?` are the guard.
 
 main() {
     set -euo pipefail

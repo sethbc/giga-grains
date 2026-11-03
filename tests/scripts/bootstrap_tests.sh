@@ -59,7 +59,7 @@ new_machine() {
     mkdir -p "$stubs" "$tpl" "$state/dpkg"
     : >"$log"
     local c
-    for c in id grep dirname mkdir cp; do ln -s "$(command -v "$c")" "$stubs/$c"; done
+    for c in id grep dirname mkdir cp env; do ln -s "$(command -v "$c")" "$stubs/$c"; done
     # A logging stub: "<name> <args>" plus the directory it ran in.
     for c in cmake ctest ninja git; do
         cat >"$tpl/$c" <<STUB
@@ -110,7 +110,7 @@ echo "add-apt-repository \$*" >>"$log"
 STUB
     cat >"$stubs/sudo" <<STUB
 #!/bin/bash
-echo "sudo \$1" >>"$log"
+echo "sudo \$*" >>"$log"
 exec "\$@"
 STUB
     chmod +x "$stubs"/*
@@ -184,8 +184,8 @@ for c in cmake ctest git; do cp "$tpl/$c" "$stubs/$c"; done
 export GG_OS_RELEASE="$work/os-22.04"
 run bootstrap-linux.sh
 expect_eq "linux 22.04: a bare machine gets exactly the package list" "$(installed_set)" "$(sorted "$common software-properties-common")"
-expect_eq "linux 22.04: the PPA is added" "$(grep -c 'add-apt-repository -y ppa:ubuntu-toolchain-r/test' "$log")" "1"
-check "linux 22.04: apt runs through sudo" "$(grep -q '^sudo apt-get' "$log" && echo 0 || echo 1)"
+expect_eq "linux 22.04: the PPA is added" "$(grep -c '^add-apt-repository -y ppa:ubuntu-toolchain-r/test' "$log")" "1"
+check "linux 22.04: apt runs through sudo" "$(grep -q '^sudo env DEBIAN_FRONTEND=noninteractive apt-get' "$log" && echo 0 || echo 1)"
 check "linux 22.04: gcc-13 comes after the PPA" "$(awk '/add-apt-repository/{p=1} p&&/install.*gcc-13/{f=1} END{exit !f}' "$log" && echo 0 || echo 1)"
 expect_eq "linux 22.04: bare run exits 0" "$rc" "0"
 : >"$log"
@@ -221,6 +221,15 @@ expect_eq "linux: --clone clones then runs the three dev presets, in the clone" 
 cmake --preset dev @$work/linux-clone/gg
 cmake --build --preset dev @$work/linux-clone/gg
 ctest --preset dev @$work/linux-clone/gg"
+
+new_machine linux-ref
+for c in cmake ctest git; do cp "$tpl/$c" "$stubs/$c"; done
+GG_REPO_REF=abc123 run bootstrap-linux.sh --clone "$work/linux-ref/gg"
+expect_eq "linux: GG_REPO_REF is checked out, with the submodules, after the clone" \
+    "$(grep -E '^git' "$log" | sed 's/ @.*//')" \
+    "git clone --recurse-submodules file:///fake/repo.git $work/linux-ref/gg
+git -C $work/linux-ref/gg checkout abc123
+git -C $work/linux-ref/gg submodule update --init --recursive"
 unset GG_OS_RELEASE
 
 # ---- Syntax and shellcheck

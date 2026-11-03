@@ -1146,8 +1146,8 @@ jobs:
   # Nightly and on dispatch only (M2 close spec §6.3): the README's Linux line, from nothing. A
   # bare ubuntu:22.04 container has none of the packages the hosted image carries, so a package
   # missing from scripts/bootstrap-linux.sh fails here and nowhere else. It installs, clones the
-  # repository (default branch; the token is in the URL because the repository is private until
-  # M5), then configures, builds and tests the dev preset.
+  # repository (public), checks out the commit under test, then configures, builds and tests the
+  # dev preset.
   bootstrap-fresh-linux:
     name: bootstrap (linux, fresh container)
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -1163,7 +1163,8 @@ jobs:
 
       - name: Bootstrap, clone, build and test
         env:
-          GG_REPO_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          GG_REPO_URL: https://github.com/${{ github.repository }}.git
+          GG_REPO_REF: ${{ github.sha }}
         run: scripts/bootstrap-linux.sh --clone /tmp/gg
 
   # The required check (the main ruleset's "sanitizers (asan, rtsan)") and what the release job

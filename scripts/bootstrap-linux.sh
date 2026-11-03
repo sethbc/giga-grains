@@ -24,10 +24,13 @@
 #                  hash-pinned wheel (x86_64 only), then print the CLANG_FORMAT export
 #   --clone DIR    then clone the repository (with its submodules) into DIR, or update the clone
 #                  there, and run `cmake --preset dev`, `cmake --build --preset dev` and
-#                  `ctest --preset dev` in it, with gcc-13 as the compiler
+#                  `ctest --preset dev` in it, with gcc-13 as the compiler. GG_REPO_URL names
+#                  another repository, and GG_REPO_REF a commit or branch to check out after the
+#                  clone (CI sets it to the commit under test)
 #
 # Exit status: 0 on success, 1 when an install or a step fails, 2 for bad usage. Works in bash
-# 3.2. The whole script is one function, called last, so `curl ... | bash -s -- ...` is safe.
+# 3.2. The whole script is one function, called last, so `curl ... | bash -s -- ...` is safe: the trailing
+# `main "$@"` and `exit $?` are the guard.
 
 main() {
     set -euo pipefail
@@ -109,7 +112,7 @@ main() {
     }
     apt_install() {
         apt_update || return 1
-        DEBIAN_FRONTEND=noninteractive $sudo_cmd apt-get install -y "$@"
+        $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
     }
 
     echo "== Compiler: gcc-13"
@@ -127,7 +130,7 @@ main() {
                     return 1
                 }
             fi
-            DEBIAN_FRONTEND=noninteractive $sudo_cmd add-apt-repository -y ppa:ubuntu-toolchain-r/test || {
+            $sudo_cmd env DEBIAN_FRONTEND=noninteractive add-apt-repository -y ppa:ubuntu-toolchain-r/test || {
                 echo "bootstrap-linux: adding the PPA failed" >&2
                 return 1
             }
@@ -182,6 +185,10 @@ main() {
             git -C "$clone" submodule update --init --recursive
         else
             git clone --recurse-submodules "$repo_url" "$clone"
+            if [[ -n "${GG_REPO_REF:-}" ]]; then
+                git -C "$clone" checkout "$GG_REPO_REF"
+                git -C "$clone" submodule update --init --recursive
+            fi
         fi
         cd "$clone"
         export CC=gcc-13 CXX=g++-13
