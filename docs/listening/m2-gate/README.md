@@ -196,7 +196,7 @@ picture and what's wrong (optional).
 [03-pad-path](../../../build/release/listening/m2-views/03-pad-path.wav) (the pad around the corners). No click at any step; the centre sits about
 5 dB under a corner (D1). Answer: `yes` or `no`.
 
-> *Director, 2026-11-03:* "the pad path has a bunch of static in it." The static was `03-pad-path`'s own layer C, white noise at amplitude 0.5, which the pad's law weights in everywhere but corners A, B and D (as played, clickScore 3.63; with layer C off 0.00 and no broadband left). `03` is re-rendered with layer C a 550 Hz sine (clickScore 2.02; peak -5.3 dBFS; RMS -20.9 at the centre, -16.1 at corner B, -16.0 at D, -13.8 at C, -20.2 over 9.5-10.5 s). **pending: the director judges the tonal re-render.**
+> *Director, 2026-11-03:* "the pad path has a bunch of static in it." The static was `03-pad-path`'s own layer C, white noise at amplitude 0.5, which the pad's law weights in everywhere but corners A, B and D (as played, clickScore 3.63; with layer C off 0.00 and no broadband left). `03` is re-rendered with layer C a 550 Hz sine (clickScore 2.02; peak -5.3 dBFS; RMS -20.9 at the centre, -16.1 at corner B, -16.0 at D, -13.8 at C, -20.2 over 9.5-10.5 s). **yes**, on the re-render ("16 sounds fine now", 2026-11-03).
 
 **17. Is the pad's double-click as two undo entries acceptable?** A real double-click is two
 presses, the first an ordinary click (VW-T10a), so one double-click needs two undos. In any editor,
