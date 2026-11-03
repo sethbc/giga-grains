@@ -1,0 +1,54 @@
+{
+  "benchmark": "chain",
+  "machine": "Apple M5 Max (arm64)",
+  "compiler": "AppleClang 21.0.0.21000401",
+  "commit": "ca60f54",
+  "sampleRate": 48000.0,
+  "runSeconds": 2.0,
+  "rounds": 5,
+  "settings": {
+    "busFilters": 2,
+    "filterType": "lowpass",
+    "filterHz": 1000.0,
+    "filterResonance": 0.5,
+    "delaySeconds": 0.375,
+    "delayFeedback": 0.5,
+    "delayDamping": 0.30000001192092896,
+    "delayPingPong": true,
+    "delayAmount": 1.0,
+    "limiterMode": "peak",
+    "limiterCeiling": 0.5,
+    "limiterReleaseSeconds": 0.1
+  },
+  "runs": [
+    11.70560998031962,
+    11.721270070545097,
+    11.656455281675694,
+    11.660192787195063,
+    11.709019323479401
+  ],
+  "nsPerSample": 11.70560998031962,
+  "min": 11.656455281675694,
+  "iqr": 0.04882653628433786,
+  "cpuPctOneCoreAt48k": 0.05618692790553417,
+  "spectral": {
+    "settings": {
+      "source": "SpectralSource, active, the Spectral kind's defaults",
+      "material": "stereo noise as a sample, looped",
+      "position": 0.5,
+      "blockFrames": 256,
+      "grainsReading": 0
+    },
+    "runs": [
+      26.756989273953533,
+      26.711677464561195,
+      26.561052872332017,
+      26.677139448645914,
+      26.705492467133038
+    ],
+    "nsPerSample": 26.705492467133038,
+    "min": 26.561052872332017,
+    "iqr": 0.03453801591528105,
+    "cpuPctOneCoreAt48k": 0.12818636384223858
+  }
+}

@@ -1089,7 +1089,10 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     write the JSON, or 2 for bad usage.
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16), and sub-project 6's idle run 29.44 ns, 0.141%,
-    published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60).
+    published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60). The M2 close's
+    idle re-measurement (`docs/benchmarks/2026-11-03-m2-*.json`) is 28.72 ns, 0.138%, and X
+    19.4% at block 256 (the published headline stays M1's 19.5%); its canvas figure at 8,192
+    grains is 2.85 ms.
 - **`--chain`** times the units the extremes sub-project adds after the grains, per stereo
   sample on stereo noise at 48 kHz: two `BusFilter`s (Low-pass, 1 kHz, resonance 0.5), the
   `Delay` (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and the `Limiter` (Peak,

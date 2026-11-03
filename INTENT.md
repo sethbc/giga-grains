@@ -1725,6 +1725,18 @@ which restore bit for bit and need no encoder (§18, §23 #68).
 - **Headline (measured on the reference core, published as measured):** **2,000 Normal grains
   per instance at 48 kHz in 19.5% of one Apple M5 Max performance core** (X = 19.5, at block
   256; 23.4% at block 32 and 21.2% at block 64).
+  - **M2's close re-measured it** (sub-project 7, 2026-11-03, idle, `ca60f54`;
+    `docs/benchmarks/2026-11-03-m2-headline.json`, whose README section has the conditions):
+    `engine-sample` 2.431 / 2.188 / 2.017 ns, **23.3% / 21.0% / 19.4%** at blocks 32 / 64 / 256,
+    ratios to `reference` 1.1704 / 1.0897 / 1.0302 against M1's 1.154 / 1.072 / 1.024 (+1.4% /
+    +1.6% / +0.6%, inside ruling R3's 3%). The headline above is M1's measurement and stands as
+    published; at M2's close X is 19.4%. Beside it, from the same run: `engine-live` 32.6% /
+    26.1% / 20.9% (3.399 / 2.717 / 2.177 ns), `engine-sample-eco` 16.9% / 14.9% / 12.9%,
+    `engine-live-long` 33.8% / 27.4% / 22.3%, `engine-layers` 29.4% / 27.1% / 22.9%,
+    `engine-layers-full` (8,000 grains) 139.5% / 120.0% / 90.9%, `engine-sample-hq` 160.3% /
+    155.9% / 152.6%, `engine-sample-hq-up` 162.6% / 157.7% / 153.4%, `engine-overload` 23.3% /
+    21.2% / 19.7%, `engine-sample-smear` 23.3% / 21.0% / 19.4%, `engine-buses` 23.4% / 21.1% /
+    19.4% and `engine-spectral` 32.6% / 26.1% / 21.0%.
   - X was measured at the end of M1, in sub-project 6, on 2026-10-29 at `be2291e` (main's
     engine at M1's close; §23 #60): `gg-bench`'s `engine-sample` case at 2.44 / 2.21 / 2.03 ns
     per stereo grain-sample at blocks 32 / 64 / 256, the `release` preset, AppleClang 21, five
@@ -1776,7 +1788,9 @@ which restore bit for bit and need no encoder (§18, §23 #68).
       code's.
     - HQ against X in this run: 6.8 / 7.4 / 7.8 times at blocks 32 / 64 / 256, against the
       weight's 6.79 (from `--quick` runs on a loaded machine). The weight stays provisional
-      until M5's calibration (§14).
+      until M5's calibration (§14). **The close's idle run** (`ca60f54`) measured 6.87 / 7.42 /
+      7.88 (`engine-sample-hq` 16.688 / 16.237 / 15.887 ns over `engine-sample`), the same within
+      0.1; the weights are unchanged.
   - **The AVX2 measurement** (`docs/spikes/m2-avx2.md`; §22): on both x86 floor legs
     `engine-sample`, dispatched to the 8-wide kernels, beat `engine-sample-sse` in the same
     process and rounds by 13% to 35% of the SSE ratio in all 18 leg-run-block cells of three
@@ -1794,7 +1808,9 @@ which restore bit for bit and need no encoder (§18, §23 #68).
     engine case's warm-up is capped at 16 s, the longest any other case uses, so the other cases'
     quick runs are unchanged and `engine-live-long`'s reads a partly filled ring (ruling SP-T9a).
     `engine-live`'s figure with the ring pyramid's levels (landed in sub-project 2's Task 12, §23
-    #68) is measured at sub-project 7's idle run.
+    #68) is measured at sub-project 7's idle run: `engine-live` 3.399 / 2.717 / 2.177 ns
+    (32.6% / 26.1% / 20.9%) and `engine-live-long` 3.524 / 2.851 / 2.323 ns (33.8% / 27.4% /
+    22.3%), ratios 1.6960 / 1.4143 / 1.1866 (`docs/benchmarks/2026-11-03-m2-headline.json`).
     `engine-sample`, X, is untouched by sub-project 2.
   - **Sub-project 4's cases are published beside X, report-only** (§23 #69), in the default case
     list so CI's legs time them, their ratios "not in the baseline" until three full runs add
@@ -1816,12 +1832,17 @@ which restore bit for bit and need no encoder (§18, §23 #68).
     delay and the limiter at Peak) on stereo noise at 48 kHz, as `--space` times the diffuser
     and reverb: report-only, its own JSON. At the same window
     (`docs/benchmarks/2026-11-01-m2-extremes-chain.json`): 11.781 ns per stereo sample (min
-    11.773, IQR 0.009), **0.057%** of one M5 Max core.
+    11.773, IQR 0.009), **0.057%** of one M5 Max core. The close's idle run
+    (`docs/benchmarks/2026-11-03-m2-chain.json`, `ca60f54`): 11.706 ns (min 11.656, IQR 0.049),
+    **0.056%**; and the new `spectral` stage, one Spectral Smear's STFT with no grain reading it,
+    **26.705 ns, 0.128%** of one core, which is what a Spectral layer costs while switched off
+    (the STFT keeps running; carry-over row 372, closed as measured).
   - **Space's cost is published beside X too** (`gg-bench --space`, report-only, with no ratio or
     baseline; §23 #50): the diffuser and the reverb on stereo noise at 48 kHz, per stereo sample.
     Sub-project 4's fix wave measured 28.49 ns, 0.137% of one M5 Max core, at its final code
     (`ac81dfb`; §23 #50 has the details), and sub-project 6's idle run 29.44 ns, 0.141%
-    (`docs/benchmarks/2026-10-29-m1-space.json`; §23 #60); X itself, grains only, is unchanged
+    (`docs/benchmarks/2026-10-29-m1-space.json`; §23 #60), and the close's idle run 28.718 ns,
+    **0.138%** (`docs/benchmarks/2026-11-03-m2-space.json`); X itself, grains only, is unchanged
     by it.
 - **X is measured on the real engine's render path,** not on M0's prototype kernels in
   `tools/gg-bench/Kernels.h`.
@@ -1901,6 +1922,9 @@ which restore bit for bit and need no encoder (§18, §23 #68).
     `gg-bench --canvas` times the shipped path, the banded resolve with the four layers' tints,
     and its JSON says so (`"lanes": 4`, `"resolve": "banded"`); the figures above are the
     one-tint resolve's. **M2 sub-project 6's idle run at 8,192 grains:** 2.959 ms at 8,192 grains with four lanes (mean 3.117 ms, p95 4.009 ms; splat 0.83 ms, resolve 2.071 ms), at or under the 3 ms budget by its median, the exit criterion met; the mean is just over 3 ms; 4,096 grains 2.55 ms, 16,384 grains 3.751 ms; idle window 2026-10-30 19:27-19:29 CDT, the other sessions paused, load average 3.15 falling to 2.43, Apple M5 Max, at `25c7707` (`docs/benchmarks/2026-10-30-m2-views-canvas.json`).
+     **The close's idle run** (2026-11-03, `ca60f54`, load average 1.63 before): 2.474 / **2.848**
+    / 3.592 ms at 4,096 / 8,192 / 16,384 grains, p95 2.880 ms at 8,192, four lanes, banded
+    resolve (`docs/benchmarks/2026-11-03-m2-canvas.json`): inside the 3 ms budget.
      The GPU spike read the live canvas's
     own readout at 4.10 ms, `drawImage` and the overlays included (8,192 stress grains, the
     canvas 1600 × 600 logical at 2×), under contention (load average 10.9 to 18.6, five agent
