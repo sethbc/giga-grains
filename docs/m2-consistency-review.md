@@ -267,7 +267,7 @@ own figures a 16 s ring with its levels is 11.5 MB (l.854), so four are about 46
 4 adds 8.4 MB fixed (l.299–301).
 Fix: compute the figure from the code (or measure it), state it once at l.294–295 split into rings
 with levels (counted against the cap) and fixed costs (pools, reverb, event buffers, sub-project 4's
-Spectral and delay buffers); l.226, l.837 and the sources spec point at it. Resolution: Fixed in `47c6eac` (the figure computed from its components' sizes, not measured; the sources spec's pointer, outside INTENT: fixed in the close).
+Spectral and delay buffers); l.226, l.837 and the sources spec point at it. Resolution: Fixed in `47c6eac` (the figure computed from its components' sizes, not measured; the sources spec's pointer, outside INTENT: fixed in `6bdf1b1`).
 
 **R-8** (A-7, C-7). Ring Length as a mod target: §14 l.474–476 and l.1277–1279, §18 l.871–872,
 l.2655 and l.2661–2664 say it is admitted or unsettled; sources spec §6.3 l.309–313 unamended. Ruling
