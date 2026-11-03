@@ -80,9 +80,10 @@ void BusFilter::setCell(BusFilterType type, float cutoffHz, float resonance) noe
     if (fading_ && type == type_)
     {
         // The change back to the outgoing type (A to B to A): turn the fade from its current
-        // value. Both instances are running, so the roles swap and the incoming weight
-        // 1 - fadePos_/ramp continues from where it stands. (A third type waits: two instances
-        // can't turn toward it.)
+        // value. Both instances are running, so the roles swap and the old incoming weight carries
+        // on, reversed, at (p - 1)/R for the next sample (p = fadePos_, R = the ramp); the old
+        // outgoing type is the incoming one again. (A third type waits: two instances can't turn
+        // toward it.)
         active_ = static_cast<uint8_t>(1 - active_);
         type_ = nextType_;
         nextType_ = type;

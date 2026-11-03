@@ -664,7 +664,7 @@ TEST_CASE("the delay's echo through the processor moves without a step", "[core]
     // Row 369. The same render with Delay Amount 1 and 0 (no reverb, no feedback): the difference
     // is the delay's return alone. Delay Time moves from 100 ms to 50 ms mid-render; the read
     // glides at half a sample a sample, so the echo's slope is at most 1.5 times the wet's, and no
-    // step of it after the move is more than 1.6 times the wet's own largest.
+    // step of it after the move is more than 1.6 times the Amount 0 render's own largest.
     constexpr int64_t kFrames = 24000, kMove = 12000;
     const auto renderWith = [&](float amount) {
         Processor p({kRate, 4096, 41, Mode::Fx});

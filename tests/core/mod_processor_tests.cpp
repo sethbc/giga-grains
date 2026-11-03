@@ -1102,33 +1102,44 @@ TEST_CASE("quality modulated per cell under overload does not allocate", "[core]
     CHECK(p.stolenGrains() == log.steals.size());
 }
 
-TEST_CASE("a base change keeps a routed target's offset past Step 16", "[core][mod]")
+TEST_CASE("a modulator control's base change is in effect for the cell it starts", "[core][mod]")
 {
-    // Row 371, through the Processor: layer A's Bus 1 Cutoff (a routable slot past Step 16) takes
-    // Macro 1's route at +2 whatever its base does, and a modulator control (LFO 1 Rate: no route
-    // targets it) takes base + host modulation at once, both changed inside one block.
-    const ParamSlot cutoff = layerSlot(LayerParam::Bus1Cutoff, 0);
+    // Row 371, through the Processor. LFO 1 (unipolar, depth 12) is routed to layer A's Pitch.
+    // LFO 1 Rate's base changes by an event on the cell boundary B. commitPending writes the
+    // control's effective value there (isModulatorControlSlot), and stepSources, which runs before
+    // updateEffective, reads the rates from effective_: so the phase advance at B uses the new
+    // rate. A reference Lfo stepped at the old rate before B and the new rate from B gives the
+    // value the route must show at B + 1; without the branch the LFO steps B at the old rate and
+    // the value differs. (Widening the predicate, to Bus 1 Cutoff say, is not observable through
+    // effective(): updateEffective rewrites every other slot at once.)
     const ParamSlot rate = layerSlot(LayerParam::Lfo1Rate, 0);
-    REQUIRE_FALSE(gg::core::isModulatorControlSlot(cutoff));
     REQUIRE(gg::core::isModulatorControlSlot(rate));
+    REQUIRE_FALSE(gg::core::isModulatorControlSlot(layerSlot(LayerParam::Bus1Cutoff, 0)));
 
+    constexpr int64_t kB = 10;       // the boundary cell
+    constexpr float kNewRate = 5.0f; // log2 Hz: 32 Hz against the default 1 Hz
     Processor p({kRate, 512, 31, Mode::Fx});
-    p.setRoutes(only(route(ModSource::Macro1, cutoff, 0, 2.0f, ModCurve::BipolarPositive)));
-    p.setBase(ParamSlot::Macro1, 1.0f);
-    p.setBase(cutoff, 8.0f);
-    p.setBase(rate, 1.0f);
-    Stereo out = silence(256);
-    render(p, nullptr, 0, 64, {64}, {}, out);
-    CHECK(p.effective(cutoff) == routed(cutoff, 8.0f, 2.0f, Mode::Fx));
-    CHECK(p.effective(rate) == 1.0f);
+    p.setRoutes(only(route(ModSource::Lfo1, ParamSlot::Pitch, 0, 12.0f, ModCurve::Unipolar)));
+    ParamValues oldValues = effectiveValues(p);
+    ParamValues newValues = oldValues;
+    newValues[static_cast<size_t>(rate)] = kNewRate;
+    const gg::core::LfoParams oldRate = gg::core::lfoParams(oldValues, 0, 0);
+    const gg::core::LfoParams newRate = gg::core::lfoParams(newValues, 0, 0);
+    REQUIRE(newRate.rateHz > 30.0f * oldRate.rateHz);
 
-    const std::vector<TimedEvent> events{
-        {70, cutoff, false, 9.0}, {70, rate, false, 1.5}, {70, rate, true, 0.25}};
-    render(p, nullptr, 64, 192, {128}, events, out);
-    CHECK(p.effective(cutoff) == routed(cutoff, 9.0f, 2.0f, Mode::Fx));
-    CHECK(p.effective(rate) == 1.75f);
+    // The reference: v[k] is cell k's value; the step at B (value v[B]) advances at the new rate.
+    gg::core::Lfo ref;
+    float v = 0.0f;
+    for (int64_t k = 0; k <= kB + 1; ++k)
+    {
+        v = ref.step(k < kB ? oldRate : newRate, kCellSeconds);
+    }
 
-    // A mod change alone, with no base change, is also base + mod.
-    render(p, nullptr, 192, 256, {64}, {{200, rate, true, -0.5}}, out);
-    CHECK(p.effective(rate) == 1.0f);
+    Stereo out = silence(400);
+    const std::vector<TimedEvent> events{{kB * 32, rate, false, kNewRate}};
+    render(p, nullptr, 0, (kB + 1) * 32 + 1, {64}, events, out);
+    CHECK(p.effective(rate) == kNewRate);
+    CAPTURE(v, p.sourceValue(ModSource::Lfo1, 0));
+    CHECK(p.sourceValue(ModSource::Lfo1, 0) == v);
+    CHECK(p.effective(ParamSlot::Pitch) == routed(ParamSlot::Pitch, 0.0f, 12.0f * v, Mode::Fx));
 }

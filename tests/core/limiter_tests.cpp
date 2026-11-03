@@ -398,14 +398,16 @@ TEST_CASE("a fade of one call is the new law at once", "[core][fx]")
         one.prepare(kSr, 1);
         none.prepare(kSr, 0);
         const float k = releaseCoeff(0.05);
-        for (size_t i = 0; i < frames; ++i)
+        size_t firstMismatch = frames;
+        for (size_t i = 0; i < frames && firstMismatch == frames; ++i)
         {
             const LimiterMode m = i < at ? LimiterMode::Off : to;
             float l1 = in[2 * i], r1 = in[2 * i + 1], l0 = l1, r0 = r1;
             one.process(l1, r1, m, 0.5f, k);
             none.process(l0, r0, m, 0.5f, k);
-            CHECK(std::memcmp(&l1, &l0, sizeof l1) == 0);
-            CHECK(std::memcmp(&r1, &r0, sizeof r1) == 0);
+            if (std::memcmp(&l1, &l0, sizeof l1) != 0 || std::memcmp(&r1, &r0, sizeof r1) != 0)
+                firstMismatch = i;
         }
+        CHECK(firstMismatch == frames);
     }
 }
