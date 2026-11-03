@@ -643,31 +643,70 @@ jobs:
           status=0
           # policy_origins: apt-cache policy's version table on stdin, one "<version> <origin URL>"
           # line per origin of each version (/var/lib/dpkg/status, a path, is left out).
+          # ubuntu_uri <uri>: true for Ubuntu's archive. An http(s) URI must be on ubuntu.com; a
+          # mirror+file: URI (the runner's: /etc/apt/apt-mirrors.txt, its Azure mirrors) names a
+          # file whose every mirror (the first field of each line) must be.
+          ubuntu_uri() {
+            local re='^https?://([a-z0-9-]+\.)*ubuntu\.com/' file mirror n=0
+            case "$1" in
+              http://* | https://*) [[ "$1" =~ $re ]] ;;
+              mirror+file:*)
+                file="${1#mirror+file:}"
+                [[ -r "$file" ]] || return 1
+                while read -r mirror _; do
+                  [[ -z "$mirror" || "$mirror" == \#* ]] && continue
+                  [[ "$mirror" =~ $re ]] || return 1
+                  n=$((n + 1))
+                done <"$file"
+                ((n > 0))
+                ;;
+              *) return 1 ;;
+            esac
+          }
+          # policy_origins: apt-cache policy's version table on stdin, one "<version> <origin URI>"
+          # line per origin of each version (/var/lib/dpkg/status, a path, is left out).
           policy_origins() {
             awk '/Version table:/ { t = 1; next }
-              t && $1 ~ /^[0-9]+$/ && $2 ~ /^[a-z]+:\/\// { print v, $2; next }
+              t && $1 ~ /^[0-9]+$/ && NF >= 2 && ($2 ~ /^[a-z][a-z0-9+.-]*:/ || $2 ~ /^\//) {
+                if ($2 !~ /^\//) print v, $2
+                next
+              }
               t && $1 == "***" { v = $2; next }
               t && NF >= 2 { v = $1 }'
+          }
+          # madison_ubuntu <installed version>: madison's lines on stdin; true when one from a
+          # noble, noble-updates or noble-security pocket (the suite before "/" in the third
+          # field, after the URI, whatever its scheme) of Ubuntu's archive has the same upstream
+          # version (before the Ubuntu revision).
+          madison_ubuntu() {
+            local v src uri suite found=1
+            while IFS='|' read -r _ v src; do
+              v="${v// /}"
+              read -r uri suite _ <<<"$src"
+              case "${suite%%/*}" in noble | noble-updates | noble-security) ;; *) continue ;; esac
+              ubuntu_uri "$uri" || continue
+              if [[ "${v%-*}" == "${1%-*}" ]]; then found=0; fi
+            done
+            return "$found"
           }
           # madison and policy read the package lists, so they are fetched first.
           sudo apt-get update -qq
           for pkg in libstdc++6 libc6; do
             version="$(dpkg-query -W -f='${Version}' "$pkg")"
-            # The installed version, or a candidate at or above it, from anywhere but ubuntu.com.
+            # The installed version, or a candidate at or above it, from anywhere but Ubuntu's
+            # archive.
             others=()
             while read -r v origin; do
-              if [[ -n "$v" ]] && dpkg --compare-versions "$v" ge "$version" \
-                  && ! [[ "$origin" =~ ^https?://([a-z0-9-]+\.)*ubuntu\.com/ ]]; then
+              if [[ -n "$v" ]] && dpkg --compare-versions "$v" ge "$version" && ! ubuntu_uri "$origin"; then
                 others+=("$v from $origin")
               fi
             done < <(apt-cache policy "$pkg" | policy_origins)
             if ((${#others[@]} > 0)); then
-              echo "::error::$pkg $version: a version at or above it comes from outside ubuntu.com: ${others[*]}"
+              echo "::error::$pkg $version: a version at or above it comes from outside Ubuntu's archive: ${others[*]}"
               status=1
             fi
-            if ! apt-cache madison "$pkg" | awk -F'|' -v u="${version%-*}" \
-                '{ gsub(/ /, "", $2); sub(/-[^-]*$/, "", $2) } $2 == u && $3 ~ /ubuntu\.com\/ubuntu noble(-updates|-security)?\// { found = 1 } END { exit !found }'; then
-              echo "::error::$pkg $version: no noble pocket lists upstream version ${version%-*}: $(apt-cache madison "$pkg" | tr '\n' ';')"
+            if ! apt-cache madison "$pkg" | madison_ubuntu "$version"; then
+              echo "::error::$pkg $version: no noble pocket of Ubuntu's archive lists upstream version ${version%-*}: $(apt-cache madison "$pkg" | tr '\n' ';') (apt-mirrors.txt: $(tr '\n' ' ' </etc/apt/apt-mirrors.txt 2>/dev/null || echo none))"
               status=1
             fi
           done
