@@ -5,10 +5,11 @@ synthesizer, and *Giga Grains FX*, a granular effect, both built from one shared
 engine as CLAP, VST3, AU v2 and standalone for macOS, Windows and Linux. Read
 [`INTENT.md`](INTENT.md) first: it says what the project is for and how it is built.
 
-**Status (2026-10-29):** M0 (foundations) and M1 (the Cloud core: both plugins make textures)
-are done, and so are the installers and the release pipeline; next comes M2. Nothing has been
-released yet, and nothing will be public before M5: its `0.5.0-beta.N` are the first public
-releases, and v1.0.0 follows M5 (INTENT §20).
+**Status (2026-11-02):** M0 (foundations) and M1 (the Cloud core: both plugins make textures)
+are done, and so are the installers and the release pipeline. M2 is in progress: its sub-projects
+1 to 6 (layers, sources, engine, extremes, presets, views) are built and merged, and the close
+is under way. Nothing has been released yet, and nothing will be public before M5: its
+`0.5.0-beta.N` are the first public releases, and v1.0.0 follows M5 (INTENT §20).
 
 **Downloads:** the installers will be on
 [GitHub Releases](https://github.com/sethbc/giga-grains/releases) from M5's `v0.5.0-beta.1` on:
