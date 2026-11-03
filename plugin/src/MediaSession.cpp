@@ -369,6 +369,10 @@ core::SessionState MediaSession::save(const core::ParamValues &values, uint64_t 
                         slot.pendingEntry->fileSize = encoded->size;
                         slot.pendingBytes =
                             std::shared_ptr<const std::string>(encoded, &encoded->wavBytes);
+                        // One copy kept (carry-over row 354): the frames go now the bytes exist,
+                        // and the next activation restores the ring from these.
+                        slot.pendingWindow.reset();
+                        refreshBudget();
                     }
                     ring = SavedRing{*slot.pendingEntry, slot.pendingBytes};
                 }
@@ -706,8 +710,8 @@ void MediaSession::restoreHeld(core::Processor &processor, uint8_t layer)
         slot.persistStatus = budget_.refusal(need);
         return;
     }
-    // A ring kept at deactivate is restored from its frames; one restored while inactive from
-    // its WAV bytes or its file.
+    // A ring kept at deactivate is restored from its frames while no save has encoded it since;
+    // one encoded, or restored while inactive, from its WAV bytes or its file.
     media::RestoredRing ring =
         window != nullptr
             ? media::restoreRingFrom(entry, std::move(window), rate_, frames, maxBlock_)
@@ -774,8 +778,9 @@ void MediaSession::deactivate(const core::Processor *processor,
                         std::shared_ptr<const std::string>(slot.encoded, &slot.encoded->wavBytes);
                 }
                 slot.pendingEntry = std::move(entry);
+                // One copy kept (carry-over row 354): with the bytes, the frames go.
+                slot.pendingWindow = bytes == nullptr ? std::move(window) : nullptr;
                 slot.pendingBytes = std::move(bytes);
-                slot.pendingWindow = std::move(window);
             }
         }
         catch (...)

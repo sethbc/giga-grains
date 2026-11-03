@@ -2087,9 +2087,10 @@ TEST_CASE("a ring kept at deactivation is encoded only by the next save", "[plug
 {
     // The final review's I3: deactivate() runs on the host's main thread, so it keeps a held
     // ring as the frames it copied and leaves the WAV bytes and their hash to the next save; the
-    // next activation restores those frames directly, with no decode. The bytes a save writes
-    // are the ones an active save writes, and the ring comes back bit for bit, at the same rate
-    // or converted as a restore converts it.
+    // next activation restores those frames directly, with no decode, or, once a save has made
+    // the bytes, from them (carry-over row 354). The bytes a save writes are the ones an active
+    // save writes, and the ring comes back bit for bit, at the same rate or converted as a
+    // restore converts it.
     gg::test::useMediaScratch("ring-deactivate-lazy");
     PluginUnderTest reference(kFxId);
     frozenFx(reference);
@@ -2135,6 +2136,33 @@ TEST_CASE("a ring kept at deactivation is encoded only by the next save", "[plug
     CHECK(converted.size() / 2 ==
           static_cast<std::size_t>(std::llround(window.size() / 2 * 44100.0 / kRate)));
     CHECK(converted == gg::test::ringWindow(*restored.impl().processor(), 0));
+}
+
+TEST_CASE("an inactive save keeps one copy of a ring", "[plugin]")
+{
+    // Carry-over row 354: a ring kept at deactivation is held as its frames until a save encodes
+    // it; from then on the instance holds the WAV bytes alone, so the memory cap counts the ring
+    // once, before the save and after it, and the next activation restores it from the bytes,
+    // frame for frame.
+    gg::test::useMediaScratch("ring-inactive-one-copy");
+    PluginUnderTest fx(kFxId);
+    frozenFx(fx);
+    const std::vector<float> window = gg::test::ringWindow(*fx.impl().processor(), 0);
+    const auto &media = fx.impl().media();
+    fx.deactivate();
+    // The frames copied, and nothing else: the FX holds no sample.
+    CHECK(media.memoryUsedBytes() == window.size() * sizeof(float));
+    const gg::core::SessionState inactive = decoded(fx.save(), gg::core::Mode::Fx);
+    REQUIRE(inactive.rings[0].has_value());
+    REQUIRE(inactive.rings[0]->embed);
+    REQUIRE(inactive.audio.size() == 1);
+    // The WAV bytes alone now, not the frames beside them.
+    CHECK(media.memoryUsedBytes() == inactive.audio[0].bytes.size());
+    CHECK(inactive.audio[0].bytes.size() == inactive.rings[0]->fileSize);
+    fx.save();
+    CHECK(media.memoryUsedBytes() == inactive.audio[0].bytes.size()); // a second save: the same
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
 }
 
 TEST_CASE("a deactivation with four 60 s rings copies them and encodes none", "[plugin][serial]")

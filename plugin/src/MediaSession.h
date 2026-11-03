@@ -141,9 +141,10 @@ class MediaSession
     /// The plugin's deactivate(), with the audio thread stopped: the rings of D1 in `processor`
     /// (if any) are kept for the next activation as the frames copied (no encode or hash on the
     /// host's main thread: the next save() makes the WAV bytes, cached while inactive), restored
-    /// there with no decode and converted if its rate differs, as a restore's are; the loaders
-    /// deactivate. Never throws: a ring that can't be kept is lost with its Processor, as
-    /// before.
+    /// there with no decode and converted if its rate differs, as a restore's are; once a save
+    /// has made the bytes, they replace the frames, which are dropped (one copy held against the
+    /// cap), and the activation restores from them. The loaders deactivate. Never throws: a ring
+    /// that can't be kept is lost with its Processor, as before.
     void deactivate(const core::Processor *processor, const core::ParamValues &values) noexcept;
     /// clap_plugin.on_main_thread, after the plugin has collected its exchanges: the loaders'
     /// finished work, then the Ring Length watcher while active.
@@ -200,8 +201,10 @@ class MediaSession
         std::optional<core::RingEntry> pendingEntry;
         std::shared_ptr<const std::string> pendingBytes; // null: filed, read from its path
         // A ring kept at deactivate, as the frames it copied: pendingEntry has no fingerprint
-        // and pendingBytes is null until the next save() encodes it (then both are set), and
-        // activate() restores these frames, never decoding.
+        // and pendingBytes is null until the next save() encodes it, and activate() restores
+        // these frames, never decoding. Once the bytes exist (that save, or a save's cache at
+        // deactivate), the frames are dropped and activate() restores from the bytes: the
+        // instance holds the ring once (carry-over row 354).
         std::shared_ptr<SampleBuffer> pendingWindow;
         // A ring restored while active, from its offer until the audio thread adopts it or
         // declines it (restoreInFlight): what a save writes for the layer meanwhile, since the
