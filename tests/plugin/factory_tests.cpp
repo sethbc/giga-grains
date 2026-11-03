@@ -12,6 +12,7 @@
 
 #include <clap/clap.h>
 #include <clapwrapper/auv2.h>
+#include <clapwrapper/wrapper_host.h>
 
 #include "gg/plugin/Identity.h"
 #include "PluginHarness.h"
@@ -24,6 +25,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -1848,6 +1850,71 @@ TEST_CASE("LayerStrip refresh follows the base values", "[plugin]")
         CHECK(control(freeze)->shownValue() == 1.0f);
     }
     CHECK(recording.calls.empty()); // following the base values is no gesture
+}
+
+namespace
+{
+// A host for formatOf: get_extension offers clap-wrapper's host information when `offer` is set,
+// whose get_wrapper_flavor returns `flavor` (which may be null).
+struct FormatHost
+{
+    static inline const char *flavor = nullptr;
+    static inline bool offer = false;
+    static inline bool offerFlavor = true;
+    static inline clap_wrapper_host_information_t info{};
+
+    clap_host host{};
+
+    FormatHost()
+    {
+        host.clap_version = CLAP_VERSION;
+        host.name = "format host";
+        host.vendor = "giga-grains tests";
+        host.url = "";
+        host.version = "1";
+        host.get_extension = [](const clap_host *, const char *id) -> const void * {
+            if (!offer || std::strcmp(id, CLAP_WRAPPER_HOST_INFORMATION) != 0)
+            {
+                return nullptr;
+            }
+            info.get_wrapper_flavor =
+                offerFlavor ? [](const clap_host *) { return flavor; } : nullptr;
+            return &info;
+        };
+    }
+};
+} // namespace
+
+TEST_CASE("formatOf names each wrapper flavor", "[plugin]")
+{
+    // Row 383 (row 326's remainder): the About box's format, from clap-wrapper's host
+    // information, without a wrapper host.
+    CHECK(gg::plugin::formatOf(nullptr).empty());
+    FormatHost fake;
+    FormatHost::offer = false;
+    CHECK(gg::plugin::formatOf(&fake.host) == "CLAP"); // no extension: the CLAP itself
+    FormatHost::offer = true;
+    FormatHost::offerFlavor = false;
+    CHECK(gg::plugin::formatOf(&fake.host) == "CLAP"); // the extension without its function
+    FormatHost::offerFlavor = true;
+    FormatHost::flavor = nullptr;
+    CHECK(gg::plugin::formatOf(&fake.host) == "CLAP");
+    const std::array<std::pair<const char *, const char *>, 6> flavors{{
+        {CLAP_WRAPPER_HOST_FLAVOR_VST3, "VST3"},
+        {CLAP_WRAPPER_HOST_FLAVOR_AUV2, "AU"},
+        {CLAP_WRAPPER_HOST_FLAVOR_AUV3, "AU"},
+        {CLAP_WRAPPER_HOST_FLAVOR_STANDALONE, "Standalone"},
+        {CLAP_WRAPPER_HOST_FLAVOR_AAX, ""},
+        {"something-else", ""},
+    }};
+    for (const auto &[flavor, name] : flavors)
+    {
+        INFO(flavor);
+        FormatHost::flavor = flavor;
+        CHECK(gg::plugin::formatOf(&fake.host) == name);
+    }
+    FormatHost::offer = false;
+    FormatHost::flavor = nullptr;
 }
 
 TEST_CASE("the About box lists the license set", "[plugin]")

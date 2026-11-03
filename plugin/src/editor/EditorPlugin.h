@@ -23,6 +23,13 @@ class UndoStack;      // gg/ui/UndoStack.h
 
 namespace gg::plugin
 {
+/// The format clap-wrapper loaded the plugin as, from `host`'s host-information extension
+/// (CLAP_WRAPPER_HOST_INFORMATION), as the About box shows it: "VST3", "AU" (v2 or v3) or
+/// "Standalone". A host that doesn't offer the extension, or no flavor, has loaded the CLAP
+/// itself, so "CLAP"; a null host, or a flavor not named here (AAX isn't a format of ours),
+/// gives "".
+std::string formatOf(const clap_host *host);
+
 /// A GigaGrainsPlugin with its editor. The editor (gg::ui) is a JUCE component, attached
 /// through sst-clap-helpers' clap_juce_shim the way Shortcircuit XT attaches its own. Built only
 /// with GG_BUILD_EDITOR. The audio side is GigaGrainsPlugin's, unchanged.

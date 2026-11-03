@@ -76,9 +76,17 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
             status.channels, status.fileRate, status.relinkable};
 }
 
-/// The format clap-wrapper loaded the plugin as, from its host-information extension: "VST3",
-/// "AU" (v2 or v3) or "Standalone". A host that doesn't offer it has loaded the CLAP itself, so
-/// "CLAP"; a flavor not named here (AAX isn't a format of ours) gives "".
+gg::ui::ThemeChoice choiceOf(ThemeName theme)
+{
+    return theme == ThemeName::Light ? gg::ui::ThemeChoice::Light : gg::ui::ThemeChoice::Dark;
+}
+
+ThemeName nameOf(gg::ui::ThemeChoice theme)
+{
+    return theme == gg::ui::ThemeChoice::Light ? ThemeName::Light : ThemeName::Dark;
+}
+} // namespace
+
 std::string formatOf(const clap_host *host)
 {
     if (host == nullptr)
@@ -109,17 +117,6 @@ std::string formatOf(const clap_host *host)
     }
     return {};
 }
-
-gg::ui::ThemeChoice choiceOf(ThemeName theme)
-{
-    return theme == ThemeName::Light ? gg::ui::ThemeChoice::Light : gg::ui::ThemeChoice::Dark;
-}
-
-ThemeName nameOf(gg::ui::ThemeChoice theme)
-{
-    return theme == gg::ui::ThemeChoice::Light ? ThemeName::Light : ThemeName::Dark;
-}
-} // namespace
 
 EditorPlugin::EditorPlugin(const clap_host *host, Product product)
     : GigaGrainsPlugin(host, product),
