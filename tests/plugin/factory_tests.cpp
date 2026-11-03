@@ -1008,6 +1008,16 @@ TEST_CASE("the loader strip refuses other files and opens at the last folder", "
           "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
     target->filesDropped({dir.getChildFile("noextension").getFullPathName()}, 0, 0);
     CHECK(loads.empty());
+    // A folder, its path ending in a separator, is named by its own name (row 388 (q)).
+    for (const juce::String &folder :
+         {dir.getFullPathName() + "/", dir.getFullPathName() + "\\", dir.getFullPathName() + "//"})
+    {
+        INFO(folder);
+        target->filesDropped({folder}, 0, 0);
+        CHECK(labelText(*editor, "sampleStatus") ==
+              "can't load drops: not a WAV, AIFF, FLAC or MP3 file");
+    }
+    CHECK(loads.empty());
 
     // An upper-case extension is one of them: it loads, and the next chooser opens there.
     const juce::File kick = dir.getChildFile("KICK.WAV");

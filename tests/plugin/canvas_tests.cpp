@@ -681,6 +681,10 @@ TEST_CASE("a drop onto any lane loads its layer", "[plugin]")
     REQUIRE(notices.size() == 2);
     CHECK(notices[0] == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
     CHECK(notices[1] == "can't load noextension: not a WAV, AIFF, FLAC or MP3 file");
+    // A folder dropped as "dir/" is named "dir" (row 388 (q)).
+    dropOn(0, pathOf("dir") + "/");
+    REQUIRE(notices.size() == 3);
+    CHECK(notices[2] == "can't load dir: not a WAV, AIFF, FLAC or MP3 file");
     // A drop left of the lanes is no lane's.
     canvas->filesDropped(juce::StringArray{pathOf("c.wav")}, 10,
                          canvas->laneBounds(1).getCentreY());
