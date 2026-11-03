@@ -920,14 +920,19 @@ TEST_CASE("Budget in the Output panel in both products", "[plugin]")
         auto *budget = dynamic_cast<gg::ui::ParamControl *>(
             findDeep(view, controlId(ParamSlot::Budget).toRawUTF8()));
         REQUIRE(budget != nullptr);
-        juce::Component *panel = budget->getParentComponent();
-        while (panel != nullptr && panel->getParentComponent() != &view)
-        {
-            panel = panel->getParentComponent();
-        }
-        REQUIRE(panel != nullptr);
-        CHECK(panel->isVisible());
-        CHECK(view.getLocalBounds().contains(panel->getBounds()));
+        // The Output panel, found below the view by its kind, not by walking up from the control
+        // to whatever sits under the view (the grid's viewport; row 388 (h)).
+        std::vector<gg::ui::ParamPanel *> panels;
+        collect(view, panels);
+        const auto output = std::find_if(panels.begin(), panels.end(), [](auto *p) {
+            return p->panel() == gg::ui::Panel::Output;
+        });
+        REQUIRE(output != panels.end());
+        gg::ui::ParamPanel &panel = **output;
+        CHECK(panel.isParentOf(budget));
+        CHECK(panel.isVisible());
+        CHECK(view.getLocalBounds().contains(
+            view.getLocalArea(panel.getParentComponent(), panel.getBounds())));
         CHECK(childOfType<sst::jucegui::components::Knob>(*budget) != nullptr);
         CHECK((findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) != nullptr) ==
               (mode == gg::core::Mode::Fx));
