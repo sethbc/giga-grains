@@ -3,7 +3,7 @@
   "name": "Slow Hours",
   "author": "Giga Grains",
   "description": "Reads ever further behind the live input, so whatever you play slows and stretches into a drone that trails the phrase.",
-  "tags": ["texture", "stretch", "drone", "live-input"],
+  "tags": ["texture", "stretch", "drone"],
   "params": {
     "Mix": 0.7,
     "Position": 0.258261,

@@ -3,7 +3,7 @@
   "name": "Drawn Bow",
   "author": "Giga Grains",
   "description": "Long, slow grains like a bow drawn across the input; hold a note to freeze it and the cloud swells in, and aftertouch loosens it.",
-  "tags": ["playable", "freeze", "pad", "midi", "live-input"],
+  "tags": ["playable", "freeze", "pad", "midi"],
   "params": {
     "Mix": 0.55,
     "Size": -0.514573,

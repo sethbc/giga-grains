@@ -3,7 +3,7 @@
   "name": "Snapshot Keys",
   "author": "Giga Grains",
   "description": "Plays your input almost dry; hold a key and the last moment freezes and plays back at that pitch, so the keyboard plays what just happened.",
-  "tags": ["playable", "freeze", "keys", "midi", "live-input"],
+  "tags": ["playable", "freeze", "keys", "midi"],
   "params": {
     "Mix": 0.35,
     "Position": 0.220194,

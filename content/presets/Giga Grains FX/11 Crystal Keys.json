@@ -3,7 +3,7 @@
   "name": "Crystal Keys",
   "author": "Giga Grains",
   "description": "An octave up, bright and bell-like, with a ping-pong sparkle; hold a key to freeze the input and play it as glassy keys, the mod wheel softening the grains.",
-  "tags": ["playable", "bright", "keys", "midi", "live-input"],
+  "tags": ["playable", "bright", "keys", "midi"],
   "params": {
     "Mix": 0.5,
     "Pitch": 12,

@@ -251,6 +251,11 @@ TEST_CASE("preset sources reject bad input", "[render]")
     j["tags"] = {"texture", "Loud"};
     CHECK(rejection(j) == "tags[1] 'Loud' is not in the vocabulary");
 
+    // live-input was struck from the vocabulary (the M2 gate, item 29).
+    j = fxTestJson();
+    j["tags"] = {"texture", "live-input"};
+    CHECK(rejection(j) == "tags[1] 'live-input' is not in the vocabulary");
+
     j = fxTestJson();
     j["params"]["Foo"] = 1.0;
     CHECK(rejection(j) == "params.Foo is not a parameter of Giga Grains FX");

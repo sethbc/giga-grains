@@ -464,19 +464,24 @@ tools/                      the gg-render specs and the shell script that make t
 
 ### 6.7 Tags (programme design §11: "the tag vocabulary")
 
+**Amended 2026-11-03 (the M2 gate, item 29):** the director struck `live-input` from the
+vocabulary and from all 24 FX presets; the use tags are now `midi`, `sample` and `sidechain`, and
+the vocabulary is 28 words. Every other word stands.
+
 Lowercase ASCII with hyphens, stored in `<preset tags>` and reported as CLAP features. **Focus
 tags**, one or more per preset: `texture`, `playable`, `rhythmic`, `extreme`. **Character tags:**
 `pad`, `drone`, `freeze`, `smear`, `stretch`, `glitch`, `keys`, `pluck`, `percussive`, `voice`,
 `strings`, `winds`, `brass`, `metal`, `noise`, `dark`, `bright`, `wide`, `mono`, `reverb`,
-`dry`. **Use tags:** `midi` (the FX's MIDI-driven presets), `live-input`, `sample`,
-`sidechain`. The browser's filter shows the focus tags as four buttons and the rest as a list; a
+`dry`. **Use tags:** `midi` (the FX's MIDI-driven presets), `sample`,
+`sidechain` (`live-input` struck, above). The browser's filter shows the focus tags as four buttons and the rest as a list; a
 tag no factory preset uses isn't shown. The director may strike or add words when the preset list
 is reviewed at the gate; the vocabulary is a list in `gg/core/Preset.h`, and a source with a word
 outside it fails the build.
 
 > **Amended (2026-11-01):** `brass` joins the character tags, after `winds` (the controller's
 > ruling in Task 16's review): content v2 brought VSCO-2 CE's brass, which `winds` misdescribed.
-> The vocabulary is 29 words; the list's order is otherwise unchanged.
+> The vocabulary was 29 words, then 28 after `live-input` was struck (2026-11-03, above); the
+> list's order is otherwise unchanged.
 
 ### 6.8 The browser (INTENT §17, "Presets and editing"; I25, I29)
 

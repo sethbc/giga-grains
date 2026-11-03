@@ -3,7 +3,7 @@
   "name": "Plucked Ring",
   "author": "Giga Grains",
   "description": "Short grains that thin out between notes; each key you press plucks a burst from the frozen input at its pitch, harder notes ringing longer.",
-  "tags": ["playable", "pluck", "percussive", "midi", "live-input"],
+  "tags": ["playable", "pluck", "percussive", "midi"],
   "params": {
     "Mix": 0.5,
     "Size": -4.058894,

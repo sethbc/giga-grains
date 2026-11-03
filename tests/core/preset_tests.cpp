@@ -89,7 +89,7 @@ PresetInfo someInfo()
     info.author = "Giga Grains & friends";
     info.description =
         "A held, glassy freeze \xc3\xa4 that repitches to the keys: \"&amp;\" 'q'\ttab";
-    info.tags = {"texture", "freeze", "midi", "live-input"};
+    info.tags = {"texture", "freeze", "midi", "sample"};
     return info;
 }
 
@@ -167,7 +167,7 @@ TEST_CASE("a preset round trips through encodePreset and readPreset", "[core][pr
     CHECK(stateChunkPayload(bytes, "AUDI") == std::nullopt);
     const std::string ptch = *stateChunkPayload(bytes, "PTCH");
     CHECK(ptch.find("<preset product=\"fx\"") != std::string::npos);
-    CHECK(ptch.find("tags=\"texture freeze midi live-input\"") != std::string::npos);
+    CHECK(ptch.find("tags=\"texture freeze midi sample\"") != std::string::npos);
     CHECK(ptch.find("<engine seed=\"0\" />") != std::string::npos); // a preset's seed is 0
 
     PresetInfo readInfo;
@@ -447,13 +447,13 @@ TEST_CASE("a preset past the cap or the nesting limit is refused", "[core][prese
     }
 }
 
-TEST_CASE("the tag vocabulary is the spec's 29 words", "[core][preset]")
+TEST_CASE("the tag vocabulary is the spec's 28 words", "[core][preset]")
 {
-    constexpr std::array<std::string_view, 29> kWords{
-        "texture", "playable", "rhythmic",   "extreme", "pad",        "drone", "freeze",  "smear",
-        "stretch", "glitch",   "keys",       "pluck",   "percussive", "voice", "strings", "winds",
-        "brass",   "metal",    "noise",      "dark",    "bright",     "wide",  "mono",    "reverb",
-        "dry",     "midi",     "live-input", "sample",  "sidechain"};
+    constexpr std::array<std::string_view, 28> kWords{
+        "texture", "playable", "rhythmic", "extreme", "pad",   "drone",      "freeze",
+        "smear",   "stretch",  "glitch",   "keys",    "pluck", "percussive", "voice",
+        "strings", "winds",    "brass",    "metal",   "noise", "dark",       "bright",
+        "wide",    "mono",     "reverb",   "dry",     "midi",  "sample",     "sidechain"};
     const auto vocabulary = gg::core::presetTagVocabulary();
     REQUIRE(vocabulary.size() == kWords.size());
     for (std::size_t i = 0; i < kWords.size(); ++i)
@@ -480,14 +480,14 @@ TEST_CASE("a tag outside the vocabulary is dropped on read", "[core][preset]")
     const std::string bytes = encodePreset(someInfo(), someState());
     const std::string ptch = *stateChunkPayload(bytes, "PTCH");
     const std::string edited =
-        replaced(ptch, "tags=\"texture freeze midi live-input\"",
-                 "tags=\" texture Texture  bogus freeze midi-fx live-input \"");
+        replaced(ptch, "tags=\"texture freeze midi sample\"",
+                 "tags=\" texture Texture  bogus freeze midi-fx live-input sample \"");
     PresetInfo info;
     SessionState out;
     REQUIRE(readPreset(withPatch(bytes, edited), Mode::Fx, info, out));
-    CHECK(info.tags == std::vector<std::string>{"texture", "freeze", "live-input"});
+    CHECK(info.tags == std::vector<std::string>{"texture", "freeze", "sample"});
     REQUIRE(presetInfoOf(withPatch(bytes, edited), info));
-    CHECK(info.tags == std::vector<std::string>{"texture", "freeze", "live-input"});
+    CHECK(info.tags == std::vector<std::string>{"texture", "freeze", "sample"});
 
     // A missing attribute reads empty.
     const std::string minimal =

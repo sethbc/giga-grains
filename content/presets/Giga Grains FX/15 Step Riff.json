@@ -3,7 +3,7 @@
   "name": "Step Riff",
   "author": "Giga Grains",
   "description": "Repitches the grains to an eight-step figure at four steps a second, so a held chord or a line turns into a riff.",
-  "tags": ["rhythmic", "glitch", "percussive", "live-input"],
+  "tags": ["rhythmic", "glitch", "percussive"],
   "params": {
     "Mix": 0.6,
     "Position": 0.192782,

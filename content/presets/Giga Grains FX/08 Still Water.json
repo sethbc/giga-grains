@@ -3,7 +3,7 @@
   "name": "Still Water",
   "author": "Giga Grains",
   "description": "A calm wash of your input; hold a note and it freezes into a still pool at that key, blooming slowly into the reverb.",
-  "tags": ["texture", "freeze", "pad", "midi", "live-input"],
+  "tags": ["texture", "freeze", "pad", "midi"],
   "params": {
     "Mix": 0.5,
     "Size": -1,

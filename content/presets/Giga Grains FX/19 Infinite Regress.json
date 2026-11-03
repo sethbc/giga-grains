@@ -3,7 +3,7 @@
   "name": "Infinite Regress",
   "author": "Giga Grains",
   "description": "Heavy feedback through the grains: what you play keeps regenerating into a thick, self-sustaining drone, held in check by the limiter.",
-  "tags": ["extreme", "drone", "reverb", "live-input"],
+  "tags": ["extreme", "drone", "reverb"],
   "params": {
     "Mix": 0.7,
     "Size": -1.321928,

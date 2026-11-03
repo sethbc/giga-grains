@@ -3,7 +3,7 @@
   "name": "Grain Gate",
   "author": "Giga Grains",
   "description": "A sixteen-step gate on the grain stream under a slowly sweeping filter: chopped, moving rhythm from anything you feed it.",
-  "tags": ["rhythmic", "percussive", "glitch", "live-input"],
+  "tags": ["rhythmic", "percussive", "glitch"],
   "params": {
     "Mix": 0.85,
     "Size": -4.321928,
