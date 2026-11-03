@@ -1182,6 +1182,38 @@ TEST_CASE("the lane draws the ring's marks", "[plugin]")
     CHECK(f.canvas->marksDrawn(0).empty());
 }
 
+TEST_CASE("the lane outlines the splice the engine plays with Loop on", "[plugin]")
+{
+    // Row 386: the engine numbers the splices from the first mark in storage and ignores Loop
+    // (SP-T1a/b); the lane outlined splice k inside the loop window instead (a capture's own
+    // numbering, SP-T8a), so with a mark older than the loop it showed another splice.
+    gg::test::useMediaScratch("canvas-played-splice");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(4 * 48000);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 3.0f);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 2.0f);
+    f.process(kBlock);
+    f.processWith(slotOf(gg::core::LayerParam::LoopLength, 0), 0.0); // 1 s: both marks older
+    f.processWith(slotOf(gg::core::LayerParam::Loop, 0), 1.0);
+    f.processWith(slotOf(gg::core::LayerParam::Splice, 0), 1.0);
+    f.process(kBlock);
+    const gg::ui::RingView ring = f.context().ringView(0);
+    REQUIRE(ring.spliceCount == 2);
+    REQUIRE(ring.splices[1] < ring.head - 48000); // older than the loop
+    // The engine plays [first, second): its window is that span's length.
+    CHECK(ring.windowFrames == ring.splices[1] - ring.splices[0]);
+    f.paint();
+    const auto outlined = f.canvas->spliceOutlined(0);
+    REQUIRE(outlined.has_value());
+    CHECK(outlined->from == ring.splices[0]);
+    CHECK(outlined->to == ring.splices[1]);
+    // Splice 0: the loop plays, and nothing is outlined.
+    f.processWith(slotOf(gg::core::LayerParam::Splice, 0), 0.0);
+    f.paint();
+    CHECK_FALSE(f.canvas->spliceOutlined(0).has_value());
+}
+
 TEST_CASE("a right-click adds a splice mark where clicked", "[plugin]")
 {
     gg::test::useMediaScratch("canvas-right-click");

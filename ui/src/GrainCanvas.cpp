@@ -566,6 +566,7 @@ void GrainCanvas::paint(juce::Graphics &g)
 void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
 {
     marks_[layer].clear(); // what this paint draws, even when it draws nothing
+    outlined_[layer].reset();
     const juce::Rectangle<int> b = laneBounds(layer);
     if (b.isEmpty())
     {
@@ -818,26 +819,28 @@ void GrainCanvas::drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry 
         g.setColour(pal.window.withAlpha(kLoopAlpha));
         g.fillRect(juce::Rectangle<float>(x0, top, std::max(xOf(window.to) - x0, 1.0f), height));
     }
-    // 2. The selected splice, while marks inside the window make it one: outlined, as a capture
-    // of it takes it (MediaSession::spanOf, Loop included).
+    // 2. The splice the engine plays, while a mark in storage makes one: outlined. The engine
+    // numbers the splices from the first mark in storage and ignores Loop (ruling SP-T1a/b), so
+    // the lane does too (carry-over row 386).
     const uint32_t count = std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices);
-    if (params.splice >= 1 && anyMarkIn(ring, window.from, window.to))
+    outlined_[layer] = playedSplice(ring, params.splice);
+    if (const std::optional<RingSpan> &selected = outlined_[layer])
     {
-        const RingSpan selected = spliceSpan(ring, params.loop, loopFrames, params.splice);
-        const float x0 = xOf(selected.from);
+        const float x0 = xOf(selected->from);
         g.setColour(pal.window.withAlpha(kSpliceAlpha));
-        g.drawRect(juce::Rectangle<float>(x0, top + 1.0f, std::max(xOf(selected.to) - x0, 1.0f),
+        g.drawRect(juce::Rectangle<float>(x0, top + 1.0f, std::max(xOf(selected->to) - x0, 1.0f),
                                           std::max(height - 2.0f, 1.0f)),
                    1.5f);
     }
-    // 3. Each mark on the lane: a 1 px rule, numbered from the oldest inside the window (D6).
+    // 3. Each mark on the lane: a 1 px rule, numbered from the oldest still in storage, as the
+    // Splice parameter counts them.
     const bool numbered = height >= kMarkNumberMinHeight;
     g.setFont(juce::FontOptions(10.0f));
     uint32_t number = 0;
     for (uint32_t k = 0; k < count; ++k)
     {
         const int64_t mark = ring.splices[k];
-        const bool inside = mark >= window.from && mark < window.to;
+        const bool inside = mark >= ring.head - ring.ringFrames && mark < ring.head;
         number += inside ? 1u : 0u;
         const std::optional<float> x = ringFrameX(lane, head, mark, rate);
         if (!x)
@@ -865,6 +868,11 @@ std::vector<float> GrainCanvas::marksDrawn(uint8_t layer) const
 int64_t GrainCanvas::headDrawn(uint8_t layer) const noexcept
 {
     return layer < kLaneCount ? headDrawn_[layer] : 0;
+}
+
+std::optional<RingSpan> GrainCanvas::spliceOutlined(uint8_t layer) const
+{
+    return layer < kLaneCount ? outlined_[layer] : std::nullopt;
 }
 
 juce::Rectangle<float> GrainCanvas::peaksDrawn(uint8_t layer) const

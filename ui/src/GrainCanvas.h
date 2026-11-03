@@ -44,11 +44,12 @@ namespace gg::ui
 ///
 /// **A Live lane spans its layer's ring** (ruling VW-P2d, amended): ringView's ringFrames /
 /// sampleRate seconds, 16 s while there is none (inactive). Its peaks draw over the frames the
-/// peak strip holds, its newest LivePeaks::frames(); older columns have none (the grains still
-/// draw there). Over the peaks it draws, in order, the loop window while the layer's Loop is on
-/// (spliceSpan's window, shaded), the selected splice (Splice's base value, rounded, when it is 1
-/// or more: its span outlined), and each mark: a 1 px rule, numbered from the oldest inside the
-/// window (D6) at its top when the lane is at least 40 px high.
+/// peak strip holds (the longest ring's, so the whole ring). Over the peaks it draws, in order,
+/// the loop window while the layer's Loop is on (spliceSpan's window, shaded), the splice the
+/// engine plays (playedSplice for Splice's base value, rounded, when it is 1 or more and a mark is
+/// in storage: its span outlined), and each mark: a 1 px rule, numbered as the engine numbers the
+/// splices, from the oldest still in storage, Loop ignored (ruling SP-T1a/b; carry-over row 386),
+/// at its top when the lane is at least 40 px high.
 ///
 /// **The lane menu** (ruling VW-P2a) opens on a right-click on any lane, which selects its layer
 /// and begins no drag, or on Shift+F10 on the keyboard's lane (laneMenu). A Live lane's: "Add
@@ -148,6 +149,9 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// The head (ring frames) the last paint drew layer `layer`'s marks against; 0 before. For
     /// the tests.
     int64_t headDrawn(uint8_t layer) const noexcept;
+    /// The splice the last paint outlined on layer `layer`'s lane, in ring frames; none when it
+    /// outlined none, or for a lane out of range. For the tests.
+    std::optional<RingSpan> spliceOutlined(uint8_t layer) const;
     /// The bounds of the peak bars the last paint built for layer `layer`'s lane, x in columns
     /// from the lane's left edge; empty when it drew none, or for a lane out of range. For the
     /// tests.
@@ -310,6 +314,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     // The marks the last paint drew, per lane (marksDrawn).
     std::array<std::vector<float>, kLaneCount> marks_;
     std::array<int64_t, kLaneCount> headDrawn_{};
+    std::array<std::optional<RingSpan>, kLaneCount> outlined_{};
     // The lane menu's place: the ring frame right-clicked on its layer's lane, or none (the
     // keyboard's, or a Sample lane's).
     uint8_t menuLayer_{0};

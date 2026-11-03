@@ -279,6 +279,13 @@ RingSpan spliceSpan(const RingView &ring, bool loop, int64_t loopFrames, uint32_
 /// Whether any of `ring`'s marks (the first min(spliceCount, kMaxSplices)) lies in [from, to).
 bool anyMarkIn(const RingView &ring, int64_t from, int64_t to) noexcept;
 
+/// The splice the engine plays with the Splice parameter at `k` (LiveSource::spliceAt; ruling
+/// SP-T1a/b): numbered from the first mark still in storage, [head − ringFrames, head), Loop
+/// ignored, a k past the count the last, which runs to the head (spliceSpan(ring, false, 0, k)).
+/// None when k is 0 or no mark is in storage: the engine then plays the window (the loop's while
+/// Loop is on). What the lane outlines and numbers (carry-over row 386).
+std::optional<RingSpan> playedSplice(const RingView &ring, uint32_t k) noexcept;
+
 /// The anchor of an AddSplice on `ring` with Splice `k` selected, as the engine takes it
 /// (LiveSource::anchorAt, windowEnd and spliceAt): the head when k is 0 or no mark is in
 /// storage, [head − ringFrames, head); otherwise the end of splice k numbered from the first mark
