@@ -45,8 +45,10 @@ namespace gg::plugin
 ///
 /// **Publishing** is on while any editor createEditor() made is open: each turns it on when
 /// created and off, through its own `publishing`, when destroyed (the shim has no destroy hook
-/// of its own). gui.destroy closes the shim's editor too, even when the shim keeps it (it
-/// destroys its editor only once a parent was attached), so publishing follows guiDestroy.
+/// of its own). gui.destroy closes the shim's editor too, even when the shim would keep it (it
+/// destroys its editor only once a parent was attached): guiDestroy then replaces the shim,
+/// keeping its scale, which destroys the kept editor, so publishing follows guiDestroy and the
+/// next guiCreate starts from an empty shim (carry-over row 232).
 class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::EditorProvider
 {
   public:
@@ -90,6 +92,9 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     std::unique_ptr<juce::Component> createEditor() override;
     /// The context the editors are given (see the class comment). Main thread.
     const gg::ui::EditorContext &editorContext() const noexcept { return *editorContext_; }
+    /// The editors createEditor() made that are still alive (their destructors haven't run), for
+    /// the tests. Main thread.
+    uint32_t liveEditors() const noexcept { return liveEditors_; }
     /// For the shim on Linux, which runs JUCE's event loop from host timers and file
     /// descriptors.
     bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
@@ -118,6 +123,10 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
                         const gg::core::ModRoutes &rBefore) noexcept;
     /// An editor was created (true) or destroyed (false): publishing is on while any is alive.
     void editorOpened(bool open) noexcept;
+    /// A new shim in clapJuceShim, resizable, at `scale` (1 is the shim's own default); the old
+    /// one, and any editor it holds, is destroyed. If the new one can't be made, it throws and
+    /// leaves the old one. Main thread.
+    void replaceShim(double scale);
 
     // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
     // context, and its destructor calls editorOpened(false), which reads the rest. The undo
@@ -126,6 +135,7 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     std::unique_ptr<gg::ui::UndoStack> undo_;
     std::unique_ptr<gg::ui::EditorContext> editorContext_;
     uint32_t openEditors_{0}; // main thread
+    uint32_t liveEditors_{0}; // main thread: liveEditors()
     // The view the editor last showed, which the next one opens on (spec §6.2): the instance's,
     // not its state's. Main thread.
     gg::ui::View lastView_{gg::ui::View::Perform};

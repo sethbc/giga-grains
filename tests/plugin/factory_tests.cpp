@@ -1332,6 +1332,43 @@ TEST_CASE("a refused drop is told in the header when the strip is hidden", "[plu
           "can't load more.txt: not a WAV, AIFF, FLAC or MP3 file");
 }
 
+TEST_CASE("a gui created and destroyed without a parent, then created again, holds one editor",
+          "[plugin]")
+{
+    // Row 232: sst-clap-helpers' shim destroys its editor in guiDestroy only once a parent was
+    // attached, so a host that creates and destroys the GUI without set_parent left it in the
+    // shim, and the next create replaced it (the shim's jassert(!editor)). guiDestroy now
+    // replaces the shim, which destroys the editor then.
+#if defined(__APPLE__)
+    const char *const api = CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+    const char *const api = CLAP_WINDOW_API_WIN32;
+#else
+    const char *const api = CLAP_WINDOW_API_X11;
+#endif
+    gg::test::PluginUnderTest instance("org.sethbc.giga-grains-fx");
+    REQUIRE(instance.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instance.impl());
+    REQUIRE(plugin != nullptr);
+    const auto *gui = static_cast<const clap_plugin_gui *>(
+        instance.clap()->get_extension(instance.clap(), CLAP_EXT_GUI));
+    REQUIRE(gui != nullptr);
+    CHECK(plugin->liveEditors() == 0);
+    for (int round = 0; round < 2; ++round)
+    {
+        INFO("round " << round);
+        REQUIRE(gui->create(instance.clap(), api, false));
+        CHECK(plugin->liveEditors() == 1);
+        CHECK(plugin->publishing());
+        // The second round's shim is the new one, resizable as the first was.
+        CHECK(gui->can_resize(instance.clap()));
+        gui->destroy(instance.clap());
+        // The editor's destructor ran in destroy, before the next create.
+        CHECK(plugin->liveEditors() == 0);
+        CHECK_FALSE(plugin->publishing());
+    }
+}
+
 TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
 {
     // Task 10's minor (a): the shim destroys its editor in guiDestroy only once a parent was
@@ -1356,8 +1393,9 @@ TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
         CHECK(plugin->publishing());
         gui->destroy(fx.clap());
         CHECK_FALSE(plugin->publishing());
-        // The editor the shim kept goes with the plugin, and counts nothing closed again. (A
-        // second create would replace it, which the shim asserts against in a debug build.)
+        // The editor the shim would have kept is gone (row 232), and counted nothing closed
+        // again.
+        CHECK(plugin->liveEditors() == 0);
     }
 
     // The size a host offers is held at the minimum, and any larger size is taken as it is.

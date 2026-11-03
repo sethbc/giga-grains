@@ -140,11 +140,22 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
               }})),
       editorContext_(std::make_unique<gg::ui::EditorContext>())
 {
+    replaceShim(1.0);
+}
+
+void EditorPlugin::replaceShim(double scale)
+{
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
     // starts JUCE's GUI in guiCreate, so a plugin that never shows its editor (or a headless
     // test) never does.
-    clapJuceShim = std::make_unique<sst::clap_juce_shim::ClapJuceShim>(this);
-    clapJuceShim->setResizable(true);
+    auto shim = std::make_unique<sst::clap_juce_shim::ClapJuceShim>(this);
+    shim->setResizable(true);
+    if (scale != 1.0)
+    {
+        // Safe with no editor: the shim applies a scale only to a holder it has.
+        shim->guiSetScale(scale);
+    }
+    clapJuceShim = std::move(shim); // the old shim, and any editor it holds, goes here
 }
 
 EditorPlugin::~EditorPlugin() = default;
@@ -596,8 +607,16 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     // until the editor's destructor, or guiDestroy for the shim's, turns it off. The editor
     // copies its `publishing`, so each closes its own flag, once.
     updatePublished();
+    // The editor's destructor is the one caller of publishing(false) (EditorContext), so
+    // `alive` counts it gone exactly when it is.
     auto counted = std::make_shared<bool>(true);
-    context.publishing = [this, counted](bool open) {
+    auto alive = std::make_shared<bool>(true);
+    context.publishing = [this, counted, alive](bool open) {
+        if (!open && *alive)
+        {
+            *alive = false;
+            --liveEditors_;
+        }
         if (!open && *counted)
         {
             *counted = false;
@@ -605,6 +624,7 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
         }
     };
     auto editor = gg::ui::makeEditor(context);
+    ++liveEditors_;
     editorOpened(true);
     lastEditor_ = std::move(counted);
     return editor;
@@ -622,9 +642,11 @@ bool EditorPlugin::guiCreate(const char *api, bool isFloating) noexcept
 void EditorPlugin::guiDestroy() noexcept
 {
     // With a parent attached the shim destroys its editor here, whose destructor closes it.
-    // Without one (a host that created the GUI and never showed it) the shim keeps the editor
-    // until the next guiCreate or its own end, so it is closed here: publishing follows
-    // guiDestroy either way.
+    // Without one (a host that created the GUI and never showed it) the shim would keep the
+    // editor, and the next guiCreate would replace it, which the shim asserts against (carry-over
+    // row 232). So the editor is closed here, and the shim replaced, which destroys it: publishing
+    // follows guiDestroy, and the next guiCreate finds an empty shim.
+    const bool kept = shimEditor_ != nullptr && !clapJuceShim->isEditorAttached();
     clapJuceShim->guiDestroy();
     if (shimEditor_ != nullptr && *shimEditor_)
     {
@@ -632,6 +654,17 @@ void EditorPlugin::guiDestroy() noexcept
         editorOpened(false);
     }
     shimEditor_.reset();
+    if (kept)
+    {
+        try
+        {
+            replaceShim(clapJuceShim->getGuiScale());
+        }
+        catch (...)
+        {
+            // Out of memory for a new shim: the old one stays, with its editor, as before.
+        }
+    }
 }
 
 bool EditorPlugin::guiAdjustSize(uint32_t *width, uint32_t *height) noexcept
