@@ -243,7 +243,7 @@ Fix: "5 Presets and content (PRs #17 and #25, merged; §23 #70), 6 Views (PRs #1
 baselines". The x86 baselines were remade at the AVX2 task (ES-T12d, §23 #66).
 Fix: "against the committed baselines (M1's on `mac-universal`; on x86 the entries remade at the
 AVX2 task, §23 #66), and X within 3% of M1's published headline on the reference core (§23 #41)".
-Resolution: Fixed in `47c6eac` (design §2 and I37, outside INTENT: fixed in the close).
+Resolution: Fixed in `47c6eac` (design §2 and I37, outside INTENT: fixed in `32b9d79`).
 
 **R-4** (A-6). §14 l.326: "(A top left, B top right, C bottom left, D bottom right)". §17 l.2067,
 the views spec l.331–332 and `ui/include/gg/ui/PadModel.h` l.17–19: A bottom-left, Y up.
@@ -259,7 +259,7 @@ Resolution: Fixed in `47c6eac`.
 by its own sub-bullet l.276–278; design §7.2 l.424–425; sources spec §10 l.894 ("written only while
 a Resample layer exists"). Ruling SP-T12ac (#68): the tap's history is written whatever the kinds.
 Fix: "It adds no latency; its history is two stores a sample whatever the kinds (SP-T12ac, §23
-#68)" in all three. Resolution: Fixed in `47c6eac` (design §7.2 and the sources spec §10, outside INTENT: fixed in the close).
+#68)" in all three. Resolution: Fixed in `47c6eac` (design §7.2 and the sources spec §10, outside INTENT: fixed in `32b9d79` (design) and `6bdf1b1` (sources)).
 
 **R-7** (A-13, C-25). Memory figures: §14 l.226 and l.294–295 ("about 51 MB … four rings about 25
 MB"), l.837–838 (calls 51 MB the fixed costs); sources spec l.385–386 ("about 65 MB"). By INTENT's
@@ -275,19 +275,19 @@ SP-T12c (#68): refused; `core/include/gg/core/ModMatrix.h` l.144 has `ref->param
 LayerParam::RingLength`.
 Fix: "every layer parameter but the modulators' controls and Ring Length (SP-T12c, §23 #68)" at
 each; delete l.2661–2664's "checked after the rebase" clause; add an SP-T12c amendment under sources
-§6.3 and to its status line. Resolution: Fixed in `47c6eac` (the sources spec §6.3 amendment, outside INTENT: fixed in the close).
+§6.3 and to its status line. Resolution: Fixed in `47c6eac` (the sources spec §6.3 amendment, outside INTENT: fixed in `6bdf1b1`).
 
 **R-9** (C-19). §14 l.697–700 and engine spec §6.5 (l.405–410): the steal overshoot is "8% of the
 default budget at 16,384 onsets a second". 256 / 48,000 s × 16,384/s ≈ 87 grains: 2.1% of the
 default Budget (4,096), 8.5% of the exit case's 1,024-grain quota.
 Fix: "about 87 grains, 2% of the default budget (8.5% of the exit case's 1,024-grain quota)".
-Resolution: Fixed in `47c6eac` (engine spec §6.5, outside INTENT: fixed in the close).
+Resolution: Fixed in `47c6eac` (engine spec §6.5, outside INTENT: fixed in `6bdf1b1`).
 
 **R-10** (D-3). D-glide (the director, 2026-10-31; row 379) accepted a crackle, but §14 l.1287–1290,
 extremes spec §3 l.84, §6.4 l.425 and §8 D6 l.688–689 still say "never clicks".
 Fix: add "except inside a Feedback loop at 95% or more over a near-silent tail, where the re-read
 passes crackle: an accepted law (D-glide, row 379)" at each, marked **Amended (D-glide)** in the
-spec. Resolution: Fixed in `47c6eac` (the extremes spec's amendments, outside INTENT: fixed in the close).
+spec. Resolution: Fixed in `47c6eac` (the extremes spec's amendments, outside INTENT: fixed in `6bdf1b1`).
 
 **R-11** (D-4). §14 l.1305–1307 and the extremes pack l.86–88: "Peak's own click score on hot
 material is 15 to 18 … which a listener should judge". D5b (2026-10-31) kept the law; row 378
@@ -295,13 +295,13 @@ measures 16.24 to 42.05 for Peak and up to 19.77 for Soft at the bottom ceilings
 where "15 to 18" was measured.
 Fix: cite D5b and row 378's measured range with its material; drop "15 to 18"; the pack's question 1
 becomes whether to revisit the law after M2. (Text depends on K-2's answer for the mode change.)
-Resolution: Fixed in `47c6eac` (the extremes pack's question 1, outside INTENT: fixed in the close).
+Resolution: Fixed in `47c6eac` (the extremes pack's question 1, outside INTENT: fixed in `13199cd`).
 
 **R-12** (D-5). D-specwindow (the director, 2026-11-01, option 1: defer, row 381) is in no body text:
 §14's Spectral bullet l.1245–1251 and extremes §6.2 (ends l.302).
 Fix: "**Amended (D-specwindow, 2026-11-01):** until row 381 is built, a Spectral layer's analysis
 reads Position over the whole ring whatever Loop, Loop Length and Splice say, and the ring commands
-skip it". Resolution: Fixed in `47c6eac` (extremes §6.2, outside INTENT: fixed in the close).
+skip it". Resolution: Fixed in `47c6eac` (extremes §6.2, outside INTENT: fixed in `6bdf1b1`).
 
 **R-13** (A-20). §14 l.1074–1076: Size "set, don't sweep" points at the carry-over. Row 217 is closed
 (D10, §17 l.2092–2093, #71).
@@ -348,13 +348,13 @@ whole-state entry per load and press (row 402); PR 2's batch replay and key-repe
 337) are unmarked in views §6.8.
 Fix: §17 l.2096 adds "(values and routes; a recall's samples and name aren't restored, row 402)";
 presets §6.9 and §9 "each press or load is one whole-state undo entry (views D7; row 402)"; views §6.8
-gains **Amended** notes for `pushWholeState` and PR 2's replay and merging. Resolution: Fixed in `47c6eac` (the presets and views specs, outside INTENT: fixed in the close).
+gains **Amended** notes for `pushWholeState` and PR 2's replay and merging. Resolution: Fixed in `47c6eac` (the presets and views specs, outside INTENT: fixed in `6bdf1b1`).
 
 **R-21** (D-9). The edited mark: §17 l.1896–1897 and presets §6.2 l.251–253 say any differing base
 value marks a preset edited "from the 218 values"; presets §6.9 l.565 "a bitset over the 218 slots".
 `GigaGrainsPlugin.cpp` l.1795–1801 skips the ring parameters; there are 283 slots.
 Fix: "from the 283 values, the ring parameters aside (a load keeps them)" in §17 and presets §6.2;
-"283 slots" at §6.9. Resolution: Fixed in `47c6eac` (the presets spec, outside INTENT: fixed in the close).
+"283 slots" at §6.9. Resolution: Fixed in `47c6eac` (the presets spec, outside INTENT: fixed in `6bdf1b1`).
 
 **R-22** (A-22). §18's first-ten table l.2478: Position "FX: 0–16 s". Per layer kind since sub-project
 1; Live reaches 300 s (`kPositionMax`, l.2665–2671).
@@ -385,7 +385,7 @@ describes `inst-sample-end` (#66) or drops "below"; l.2854 "(36 before main's me
 ASan". `tests/sweep/` holds 30 (`TEST_CASE` counts 19 + 5 + 3 + 2 + 1); CLAUDE.md says 30 but keeps
 the 20-case timings (engine spec l.568).
 Fix: "30 `[sweep]` cases (20 from sub-project 3, the rest from 2 and 4)"; re-time `ctest -L sweep` in
-`dev` and `asan` and update §19 and CLAUDE.md. Resolution: Fixed in `47c6eac` (the 26.5 s and 194 s timings are labeled as timed over 20 cases; re-timing `ctest -L sweep` in `dev` and `asan` waits for a quiet machine, owed to the close's Task 19; CLAUDE.md, outside INTENT: fixed in the close).
+`dev` and `asan` and update §19 and CLAUDE.md. Resolution: Fixed in `47c6eac` (the 26.5 s and 194 s timings are labeled as timed over 20 cases; re-timing `ctest -L sweep` in `dev` and `asan` waits for a quiet machine, owed to the close's Task 19; CLAUDE.md, outside INTENT: fixed in `7178176`).
 
 **R-27** (A-12, B-12). §19 l.3070–3071: "walks the 223 slots". `tests/ui/edit_layout_tests.cpp` l.49
 walks `kParamCount`, 283.
@@ -430,11 +430,11 @@ the merge); its title says "group 1" though it holds group 2. Presets spec §11 
 "voice-and-strings phrase" (the pack uses `phrase-strings.json`).
 Fix: "v1 has no voices and no orchestral strings (its Strings are folk instruments)"; "rows 389 to
 401, and 402 at the merge with views' PR 2"; title "groups 1 and 2"; presets §11 **Amended:** a
-strings phrase, since no content release has a voice. Resolution: Fixed in `47c6eac` (presets §11, outside INTENT: fixed in the close).
+strings phrase, since no content release has a voice. Resolution: Fixed in `47c6eac` (presets §11, outside INTENT: fixed in `6bdf1b1`).
 
 **R-35** (D-11). §23 #71 ("333 and 338 open, and rows 383 to 387 added") and views spec §16
 l.1212–1217. Row 338 is closed at `293cbb5`; row 388 exists; the carry-over header says 383 to 388.
-Fix: "334 to 338 closed (338 at `293cbb5`); rows 383 to 388 added". Resolution: Fixed in `47c6eac` (views spec §16, outside INTENT: fixed in the close).
+Fix: "334 to 338 closed (338 at `293cbb5`); rows 383 to 388 added". Resolution: Fixed in `47c6eac` (views spec §16, outside INTENT: fixed in `6bdf1b1`).
 
 **R-36** (A-23, B-15). Log hygiene: #48 and #49 end "pending the director's confirmation" after
 recording it; #47 and #57 (1) say "sub-project 6" makes the gate blocking (amended by #60, #61, #62);
@@ -451,7 +451,7 @@ Claude). Resolution: Fixed in `47c6eac`.
 Fix: add "Sub-project 6, Views, is built (INTENT §23 #71; PRs #18 and #24): the Perform, Edit, Mod
 and FX views, four lanes with a pitch axis, the layer strip and XY pad, the Mod view's route path,
 undo, two themes, the About box, `gg-snap` and the GPU spike"; add #71 to l.23's citations. The close
-updates it again at its end. Resolution: fixed in the close.
+updates it again at its end. Resolution: fixed in `7178176`.
 
 **R-38** (C-5, A-24; seed). The model rule is recorded nowhere in the repository. Plan l.22 ("workers
 and reviewers on the top tier (the default model), task implementers on Opus") and the brief
@@ -462,22 +462,22 @@ Name `model` on every dispatch … 'The most capable model' … means opus. Othe
 mechanical work, sonnet for integration work and as the reviewer floor."
 Fix: CLAUDE.md "Working style" gains that rule; plan l.22 and l.151–152 state it; design §12 points
 at it; presets plan l.72 is marked superseded. The sub-project plans' `Co-Authored-By: Claude Fable
-5.1` lines stay as history. Resolution: fixed in the close.
+5.1` lines stay as history. Resolution: fixed in `7178176` (CLAUDE.md), `32b9d79` (plan and design), `0115c8a` (the presets plan).
 
 **R-39** (B-6). "Benchmarks": "seen so far … Windows on EPYC 7763, 9V45 and 9V74" omits the Xeon
 8370C that the next lines and `windows-clangcl.json` hold.
-Fix: "Windows on EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C". Resolution: fixed in the close.
+Fix: "Windows on EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C". Resolution: fixed in `7178176`.
 
 **R-40** (B-10). "Tests run in parallel" shows two `catch_discover_tests` calls; `tests/CMakeLists.txt`
 l.198–205 has three (`~[serial]`, `[serial]~[crawl48]`, `[crawl48]` with `FIXTURES_REQUIRED
 presets_built`).
-Fix: show the three. Resolution: fixed in the close.
+Fix: show the three. Resolution: fixed in `7178176`.
 
 ### README.md
 
 **R-41** (B-2). l.8–9: "**Status (2026-10-29):** … next comes M2."
 Fix: re-date; M2 in progress, sub-projects 1 to 6 built, the close under way; the M5 sentence kept.
-Resolution: fixed in the close.
+Resolution: fixed in `7178176` (the status paragraph).
 
 **R-42** (B-3). l.19–21: `git submodule update --init` (CLAUDE.md and CI: `--recursive`); "Visual
 Studio 2022 with ClangCL" (Ninja + clang-cl from an x64 developer shell since #76); "downloads the
@@ -489,26 +489,26 @@ fixed in the close.
 
 **R-43** (B-4). `ci.yml` l.715: "sub-project 6 makes it blocking". #60, #61 and the file's own l.14–17:
 at 1.0.0.
-Fix: "it turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61)". Resolution: fixed in the close.
+Fix: "it turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61)". Resolution: fixed in `13199cd`.
 
 **R-44** (B-9). `format.yml` l.5–6 lists "engine core plugin ui tools tests clients"; `scripts/format.sh`
 l.17 adds `media` and `libs/thirdparty-impl`.
-Fix: "the folders `scripts/format.sh` lists". Resolution: fixed in the close.
+Fix: "the folders `scripts/format.sh` lists". Resolution: fixed in `13199cd`.
 
 **R-45** (B-14). `CMakeLists.txt` l.54–55: "'-' signs ad hoc, locally and on every CI run but a tag's or
 the nightly's". `ci.yml` l.455, l.539–541: a dry run with the secrets signs too; a nightly without them
 signs ad hoc.
 Fix: "'-' signs ad hoc: locally, and on every CI run that builds no installer or has no signing
-secrets". Resolution: fixed in the close.
+secrets". Resolution: fixed in `13199cd`.
 
 **R-46** (B-5). `tools/gg-bench/baselines/README.md` l.5–7: "Through M1 the verdict is report-only …
 Sub-project 6 makes it blocking".
 Fix: "report-only until 1.0.0 (INTENT §23 #60, #61) … turns blocking at 1.0.0, after M5".
-Resolution: fixed in the close.
+Resolution: fixed in `13199cd`.
 
 **R-47** (B-11). `docs/releasing.md` l.278: "Check the five choices"; l.34 and
 `installer/macos/distribution.xml.in` have six (the Content).
-Fix: "six". Resolution: fixed in the close.
+Fix: "six". Resolution: fixed in `13199cd`.
 
 ### The program design and plan
 
@@ -519,7 +519,7 @@ every use. Resolution: fixed in the close.
 
 **R-49** (C-13). Design l.5: "Not yet built: wave 1 starts with the programme plan".
 Fix: "In progress: sub-projects 1 to 6 built and merged (§23 #65, #66, #68 to #71); sub-project 7 (the
-close) running; amended as marked". Resolution: fixed in the close.
+close) running; amended as marked". Resolution: fixed in `32b9d79`.
 
 **R-50** (C-4, D-6; seed). Count rules retired by #67 still stated: **design §6.7 exit l.381–382 "the
 carry-over count is at or below its §8 target"**, l.377, I37 l.178, §3 l.100–101, §6 l.186–187,
@@ -541,46 +541,46 @@ ready". On `main`: #17 and #18 (wave 3) before #19 and #20; #24 (6) before #25 (
 split (#70) is unforeseen in design §6.5.
 Fix: a dated §23 row records the decision, cited from #64; design and plan say "a wave's
 sub-projects merge as each is ready, the later one merging `main` and re-verifying" (mechanism per
-K-7) and give the order that happened; §6.5 notes presets' two PRs (#70). Resolution: the INTENT half (the dated row, §23 #88, cited from #64; §19) fixed in `47c6eac`; the design and plan: fixed in the close.
+K-7) and give the order that happened; §6.5 notes presets' two PRs (#70). Resolution: the INTENT half (the dated row, §23 #88, cited from #64; §19) fixed in `47c6eac`; the design and plan: fixed in `32b9d79`.
 
 **R-52** (C-8). Design I12 l.152 "(FLAC embed, `embed=1`)", §6.2 l.261–262 "FLAC through libFLAC", exit
 l.276 "libFLAC is pinned". #68: float32 WAV payloads; libFLAC removed (§15 l.1476–1478, §18 l.2183).
 Fix: "`AUDI` (float32 WAV payloads, `embed=1`; §23 #68)"; l.276 "no new codec dependency (float32,
-§23 #68)". Resolution: fixed in the close.
+§23 #68)". Resolution: fixed in `32b9d79`.
 
 **R-53** (C-9). Rows 118 and 119 still placed in sub-project 2: design I9 l.149, §6.2 l.255–257, §8
 l.559. Closed in sub-project 1 by `263696d` (#65).
 Fix: I9 "1 (moved, §23 #65)"; §6.2 "I8, I10 to I13"; §8 "Sub-project 1 (moved 2026-10-29) | Closed
-(`263696d`)". Resolution: fixed in the close.
+(`263696d`)". Resolution: fixed in `32b9d79`.
 
 **R-54** (C-14). Design §7.7 l.502–503: "The limiter keeps M1's soft-limiter law as its default". As
 built and in §14 l.1300–1301 and #69: Off by default.
 Fix: "The global limiter is Off by default, the identity, with M1's per-layer soft limiters kept, so
-no golden moves; Soft and Peak are opt-in (§23 #69)". Resolution: fixed in the close.
+no golden moves; Soft and Peak are opt-in (§23 #69)". Resolution: fixed in `32b9d79`.
 
 **R-55** (C-15). Design §7.8 l.516–518: fetch "into `build/content`"; the installed Content "then" the
 user folder. As built (`media/include/gg/media/ContentPaths.h` l.106–116): `GG_CONTENT_DIR`, the
 user's `contentFolder`, the per-user install, the system install; `gg-content` fetches into
 `build/<preset>/content-cache/content/`.
 Fix: state the four roots in that order and the fetch paths (presets spec §6.4, §23 #70).
-Resolution: fixed in the close.
+Resolution: fixed in `32b9d79`.
 
 **R-56** (C-16). Design §6.1 l.223–224 ("XY morph … in the engine") and l.232 (`engine/` owns "the mod
 matrix and its sources"). Layers spec §5 option 1: the `Processor` (`gg-core`) owns them.
 Fix: "a mixer law in the `Processor` (`gg-core`)"; Owns "`engine/` (the per-layer Engine, the task
-runner), `gg-core`'s mod matrix and sources" (layers spec §5). Resolution: fixed in the close.
+runner), `gg-core`'s mod matrix and sources" (layers spec §5). Resolution: fixed in `32b9d79`.
 
 ### Sub-project specs 1 to 3
 
 **R-57** (C-17). Layers spec §10 l.885–886: "`static_assert(__cplusplus >= 202302L)` … checked by a
 scratch-project test". LS-T1a (§6.1 l.182–187) and `tests/smoke_tests.cpp` l.35: `> 202002L`, no
 scratch test.
-Fix: the LS-T1a form; §10 in the status line. Resolution: fixed in the close.
+Fix: the LS-T1a form; §10 in the status line. Resolution: fixed in `6bdf1b1`.
 
 **R-58** (C-22). Layers spec LS-T13a l.692–693: "The instrument's `"sample"` stays required". SP-T8c
 (#68) and #70 relax it beside `state` and `preset`.
 Fix: append "(later optional beside `state`, SP-T8c, §23 #68, and beside a `preset` that names layer
-A's, §23 #70)". Resolution: fixed in the close.
+A's, §23 #70)". Resolution: fixed in `6bdf1b1`.
 
 **R-59** (C-18). Engine spec D3 l.705–708 ("the first image sits at least 70 dB down"), withdrawn at
 stretch 0.5 by ES-T1a (§6.2 l.199–213; −37 dB, the sitting's question); §5 l.147–150 and §14 l.925
@@ -593,19 +593,19 @@ the close.
 §6.2 l.256 (`|out| ≤ 2 + |d|`). D-bound (the director, 2026-10-31; §14 l.1025): 3 + the input's peak
 with the global delay engaged.
 Fix: both add "(3 + |d| with the global delay engaged, D-bound, §23 #69)"; the tap's stability
-argument states the larger bound. Resolution: fixed in the close.
+argument states the larger bound. Resolution: fixed in `6bdf1b1`.
 
 **R-61** (C-21). Sources spec §10 l.885–886: "the admission clamp and the fade use it; a grain past a
 narrowed window fades to 0". SP-T12aa (§6.1 l.225–235): the window steers admission alone.
 Fix: "the window steers admission; a grain admitted under a wider window finishes in its old span
-(SP-T12aa)"; §10 in the status line. Resolution: fixed in the close.
+(SP-T12aa)"; §10 in the status line. Resolution: fixed in `6bdf1b1`.
 
 ### Sub-project specs 4 to 6
 
 **R-62** (D-6). Extremes spec §10 l.848: "(9 new, 45 in all …)"; §11 l.923: "Fourteen renders from
 thirteen specs" (the pack and `specs/` have fifteen).
 Fix: "60 cases on `main` after the merges (51 earlier, §23 #69)"; "Fifteen renders from fifteen
-specs". (§12's forecast is R-50.) Resolution: fixed in the close.
+specs". (§12's forecast is R-50.) Resolution: fixed in `6bdf1b1`.
 
 **R-63** (D-10). Views spec status l.5 and §6.9 l.608–611 wait on row 313 ("`ui/src/Theme.h` is back
 as a shim … until PR 2's palette pass"). Row 313 is closed in full; `Theme.h` is gone; row 331 falls
@@ -613,11 +613,11 @@ to the close. §8 D8 l.862–868 doesn't point at #72; the carry-over header l.3
 330 in part".
 Fix: status "row 313 closed by sub-project 5 group 2; row 331 is the close's"; §6.9 **Amended:**
 `Theme.h` is gone; D8 adds "M5 adds System, high contrast and user themes (§23 #72)"; the header
-l.36 says 313 closed. Resolution: fixed in the close.
+l.36 says 313 closed. Resolution: fixed in `6bdf1b1`.
 
 **R-64** (D-12). Views spec §6.7 l.538–540: "The view has no viewport". VW-T19b (l.1185) and VW-P2e
 (l.525): the FX view scrolls in the shared panel grid.
-Fix: **Amended (VW-T19b, VW-P2e)** at l.539 and after §6.5 l.411. Resolution: fixed in the close.
+Fix: **Amended (VW-T19b, VW-P2e)** at l.539 and after §6.5 l.411. Resolution: fixed in `6bdf1b1`.
 
 ### The listening packs
 
@@ -626,24 +626,24 @@ their Source is Live … until … MEDI v2") and l.87 ("the device's eight remot
 samples since #68 and views PR 2; thirteen pages since #69. Rendered before row 301's morph fix
 (`5693fe9`), which touches `01`, `05` and `14`.
 Fix: per-layer samples from the strip or a lane drop; "the first eight of the thirteen pages";
-re-render on `main` before the sitting. Resolution: fixed in the close.
+re-render on `main` before the sitting. Resolution: fixed in `13199cd` (text; the re-render before the sitting is Task 16's).
 
 **R-66** (D-15). `m2-engine` l.60 (`07`: "every grain's line reads `"lvl":0` … −76.6 dB"), stale
 since the ring pyramids (`188c436`); `04`, `05` figures predate the raised-cosine steal fade
 (`65292dc`, EF-8); `06` predates row 301; row 308's items open.
 Fix: re-render `04`–`07` on `main`, re-measure, rewrite `07` for level 1, fold in row 308, name the
-commit the figures come from. Resolution: fixed in the close.
+commit the figures come from. Resolution: Task 16's (the re-renders and re-measuring; text not yet changed).
 
 **R-67** (D-16). `m2-sources` l.75–76 ("through sub-project 6's readout once it lands"): built in
 views PR 2. l.73–74 sets Ring Length "from the generic editor", which some hosts may hide for a
 non-automatable parameter. Rows 385 and 386 bear on these checks and aren't named.
 Fix: "(the sample strip's memory readout, views PR 2)"; "from the Edit view's Ring panel (or the
-generic editor, where the host shows it)"; name rows 385 and 386. Resolution: fixed in the close.
+generic editor, where the host shows it)"; name rows 385 and 386. Resolution: fixed in `13199cd`.
 
 **R-68** (D-17). Items sent to "the director's checklist" are in no pack: the pad double-click's two
 undo entries (views spec l.336–339, #71), row 333, row 402, row 387, rows 396 and 397.
 Fix: into the close's merged gate checklist (the views items there; 396 and 397 with the presets;
-402 cross-referenced). Resolution: fixed in the close.
+402 cross-referenced). Resolution: Task 16's (the merged gate checklist).
 
 ### The carry-over
 
@@ -651,7 +651,7 @@ Fix: into the close's merged gate checklist (the views items there; 396 and 397 
 above (no M1 row has either number)". M1 had a row 233, the AUv2 order (§23 #60, "carry-over row
 233 … (185 and 233 closed)"); M1's file numbers rows by line, so the token is absent.
 Fix: "(M1's row 233, the AUv2 order, closed at M1's close, §23 #60; these name the M2 rows)";
-CLAUDE.md's validator note says "M2 carry-over row 233". Resolution: fixed in the close.
+CLAUDE.md's validator note says "M2 carry-over row 233". Resolution: fixed in `0fd8ae9` (the carry-over) and `7178176` (CLAUDE.md).
 
 ---
 
