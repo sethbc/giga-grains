@@ -113,7 +113,9 @@ STUB
 echo "sudo \$*" >>"$log"
 exec "\$@"
 STUB
-    chmod +x "$stubs"/*
+    # Only the stubs written above: the symlinked system tools are never chmod-ed (chmod follows
+    # a link to the real, possibly root-owned, file).
+    for c in xcode-select brew dpkg-query apt-get add-apt-repository sudo; do chmod +x "$stubs/$c"; done
 }
 # run <script> [args...]: runs it on the stub PATH; sets $out and $rc.
 run() {
