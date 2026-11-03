@@ -389,7 +389,7 @@ struct ChainReport
     std::vector<double> nsPerSample{};      // one per round, in round order
     double median{0.0}, min{0.0}, iqr{0.0}; // of nsPerSample
     double cpuPctOneCoreAt48k{0.0};         // from the median
-    StageStats spectral;                    // the Spectral Smear's STFT alone (below)
+    StageStats spectral{};                  // the Spectral Smear's STFT alone (below)
 };
 
 /// Throws std::invalid_argument for a run length that isn't in (0, 3600] seconds or fewer than
