@@ -191,7 +191,8 @@ Verdict SweepDriver::check(const Checks &c) const
     {
         // Every slot of the ring's storage, the mirrored ones included (LiveSource::view).
         const auto ring = processor_.engine(L).live().view();
-        const std::size_t floats = 2 * static_cast<std::size_t>(ring.capacity + kLiveGuardFrames);
+        const std::size_t floats =
+            2 * static_cast<std::size_t>(ring.capacity + gg::RingStorage::kGuardFrames);
         for (std::size_t i = 0; ring.slots != nullptr && i < floats; ++i)
         {
             if (!std::isfinite(ring.slots[i]))

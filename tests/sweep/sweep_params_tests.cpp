@@ -466,7 +466,7 @@ TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[s
         REQUIRE(ring.slots != nullptr);
         // The last mirrored slot: a check that stopped short of the guard frames would miss it.
         const_cast<float *>(
-            ring.slots)[2 * static_cast<std::size_t>(ring.capacity + SweepDriver::kLiveGuardFrames -
+            ring.slots)[2 * static_cast<std::size_t>(ring.capacity + gg::RingStorage::kGuardFrames -
                                                      1)] = std::numeric_limits<float>::quiet_NaN();
         const auto v = d.check(c);
         INFO(v.where);

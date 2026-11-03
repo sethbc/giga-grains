@@ -152,9 +152,6 @@ inline void transpose4(SIMD_M128 *r) noexcept SST_CPPUTILS_NONBLOCKING
     r[2] = SIMD_MM(movelh_ps)(t2, t3);
     r[3] = SIMD_MM(movehl_ps)(t3, t2);
 }
-
-/// clamp(x, 0, 1), with NaN read as 0: LiveSource::fade's clamp.
-inline double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 } // namespace detail
 
 /// The Normal tier's reader: the 4-point Hermite (Catmull-Rom) over taps floor(pos) − 1 ..

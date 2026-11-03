@@ -18,6 +18,12 @@
 
 namespace gg
 {
+namespace detail
+{
+/// clamp(x, 0, 1), with NaN read as 0: the head-proximity fade's clamp (LiveSource::fade).
+inline double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
+} // namespace detail
+
 /// The live ring source (spec §6.3), internal to the Engine: a stereo ring that the FX writes its
 /// input into before any grain of the same block reads it.
 ///
@@ -407,7 +413,7 @@ class LiveSource
         const double toHead = (end - 1.0 - (pos + after)) / kMargin;
         const double fromTail =
             ((pos - before) - static_cast<double>(head - readFrames_)) / kMargin;
-        return unit(toHead) * unit(fromTail);
+        return detail::unit(toHead) * detail::unit(fromTail);
     }
 
     /// How many more frames the head will advance after output sample t of the last write()
@@ -452,7 +458,7 @@ class LiveSource
         const double fromTail =
             ((pos - static_cast<double>(kBefore)) - static_cast<double>(head - readFrames_)) /
             kMargin;
-        return unit(toHead) * unit(fromTail);
+        return detail::unit(toHead) * detail::unit(fromTail);
     }
 
     /// Where the last read() or readLinear() was, so that reads moving forward find their slot
@@ -514,8 +520,8 @@ class LiveSource
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
     // A read's kTaps taps read slots s .. s + kTaps − 1, at most 16 (the sinc's). Slots
-    // C .. C + 14 mirror slots 0 .. 14, so the taps are contiguous wherever s falls.
-    static constexpr int64_t kGuardFrames = 15;
+    // C .. C + 14 (RingStorage::kGuardFrames) mirror slots 0 .. 14, so the taps are contiguous
+    // wherever s falls.
 
     // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
     // recorded in it.
@@ -534,9 +540,6 @@ class LiveSource
     template <int kTaps>
     bool readTaps(double pos, int64_t head, Cursor &cursor, float &left,
                   float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
-
-    // clamp(x, 0, 1), with NaN read as 0.
-    static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
     // The splice in effect at head R(t) for the last write() block: false when none is (no
     // selection, or no mark of the block in storage at R(t)), else its first mark and its later
@@ -617,10 +620,10 @@ class LiveSource
     RingStorage *storage_{nullptr};        // the slots' storage, owned_ or the caller's
     std::unique_ptr<RingStorage> owned_;   // the storage prepare(rate, seconds, block) allocated
     std::unique_ptr<RingStorage> retired_; // owned_ once replaced, freed by the next prepare()
-    float *slots_{nullptr};                // C + kGuardFrames slots of 2 floats: s's c at 2s + c
-    int64_t frames_{0};                    // N, the storage's window
-    int64_t capacity_{0};                  // C = N + maxBlockSize slots (ruling M1-o)
-    int64_t maxBlock_{1};                  // B, the largest block write() takes
+    float *slots_{nullptr}; // C + RingStorage::kGuardFrames slots of 2 floats: s's c at 2s + c
+    int64_t frames_{0};     // N, the storage's window
+    int64_t capacity_{0};   // C = N + maxBlockSize slots (ruling M1-o)
+    int64_t maxBlock_{1};   // B, the largest block write() takes
     // levels_[n], its index clamped to the array: a caller's check against levelCount_ comes first,
     // but GCC 13 can't see it and warns (-Warray-bounds) on a constant index past the array.
     const RingView &levelView(uint32_t n) const noexcept

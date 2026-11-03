@@ -186,9 +186,6 @@ class SweepDriver
     static constexpr int64_t kFade = 480;
     static constexpr double kInputHz = 220.0;
     static constexpr float kInputAmp = 0.5f;
-    /// LiveSource's mirrored guard frames after its ring (its kGuardFrames, private there): the
-    /// live-ring check covers them.
-    static constexpr int64_t kLiveGuardFrames = 15;
     static constexpr int16_t kNoteKey = 60;
     /// How long after a Reverb Size move, beyond the pre-delay then in effect, the click check
     /// looks away (row 217): Reverb 2's lines jump to their new lengths at the next chunk, and the

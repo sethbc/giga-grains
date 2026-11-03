@@ -96,7 +96,6 @@ void LiveSource::prepare(double sampleRate, double seconds, uint32_t maxBlockSiz
 
 void LiveSource::attach(RingStorage *storage) noexcept
 {
-    static_assert(RingStorage::kGuardFrames == kGuardFrames);
     static_assert(RingStorage::kRingLevelLagLimit == kHeadMargin);
     storage_ = storage;
     slots_ = storage != nullptr ? storage->slots() : nullptr;
@@ -434,7 +433,7 @@ void LiveSource::write(const float *const *in, uint32_t numInChannels, uint32_t 
         }
         slots[2 * writeSlot_] = l;
         slots[2 * writeSlot_ + 1] = r;
-        if (writeSlot_ < kGuardFrames)
+        if (writeSlot_ < RingStorage::kGuardFrames)
         {
             slots[2 * (capacity_ + writeSlot_)] = l;
             slots[2 * (capacity_ + writeSlot_) + 1] = r;
