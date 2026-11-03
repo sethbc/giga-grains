@@ -1000,8 +1000,9 @@ endforeach ()
 
 # The embed script (cmake/embed-text.cmake, carry-over row 319): its escaping over a fixture of a
 # quote, a backslash, control characters, UTF-8, a 40,000-byte line and an empty file, and its
-# refusal of unpaired lists. A mismatch reports the first differing byte offset.
-foreach (case IN ITEMS escapes long-line empty unpaired)
+# refusal of unpaired lists, and the fixtures' CR LF detection, byte-aligned (row 388 (r)). A
+# mismatch reports the first differing byte offset.
+foreach (case IN ITEMS escapes long-line empty unpaired newline-aligned)
     add_test(NAME embed_text_${case}
             COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/embed_text_${case}
