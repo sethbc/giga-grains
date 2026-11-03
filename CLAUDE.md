@@ -48,7 +48,9 @@ AGPL-3.0-or-later.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
-  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`).
+  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`), and the
+  dependency watch, `docs/dependency-watch.md`: the pins that trail upstream on purpose, each with
+  what would move it and what to check (not carry-over; INTENT §23 #90).
 
 Development is Claude-led. The director steers, listens and reviews. Ears are the scarce
 resource, so machines must catch everything they can catch.
