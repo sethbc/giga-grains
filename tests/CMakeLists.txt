@@ -834,8 +834,10 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
             -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli
             -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
-    # About 66 s in Debug: `slow`, so -LE slow leaves it out.
-    set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 300)
+    # About 66 s in Debug: `slow`, so -LE slow leaves it out. Under ASan with the editor it took
+    # about 250 s alone and timed out at 300 s beside seven others (row 388 (o)): 900 s, and two
+    # processors' room in ctest's schedule.
+    set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 900 PROCESSORS 2)
     # Bad usage (an unknown option, no folder, a malformed size) exits 2 with the usage; fast.
     add_test(NAME snap_cli_usage
             COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
