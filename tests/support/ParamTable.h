@@ -155,16 +155,16 @@ inline constexpr std::array<ParamRow, 1> kLayerAEngineRows{{
 // Layer A's eight Extremes parameters (M2 sub-project 4's spec §6.7), in its reserved block at
 // 0x60 to 0x67, after layer A's Quality: the cutoffs in log2 Hz, 20 Hz to 20 kHz, 1 kHz by
 // default.
-inline constexpr float kCutoffMin = 4.321928094887363f, kCutoffMax = 14.287712379549449f;
-inline constexpr float kCutoffDefault = 9.965784284662087f;
+inline constexpr float kBusCutoffMin = 4.321928094887363f, kBusCutoffMax = 14.287712379549449f;
+inline constexpr float kBusCutoffDefault = 9.965784284662087f;
 inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
     {0x010060, "A Smear", 0.0f, 1.0f, 0.0f, false},
     {0x010061, "A Bus Split", 0.0f, 1.0f, 0.0f, false},
     {0x010062, "A Bus 1 Filter", 0.0f, 4.0f, 0.0f, true},
-    {0x010063, "A Bus 1 Cutoff", kCutoffMin, kCutoffMax, kCutoffDefault, false},
+    {0x010063, "A Bus 1 Cutoff", kBusCutoffMin, kBusCutoffMax, kBusCutoffDefault, false},
     {0x010064, "A Bus 1 Resonance", 0.0f, 1.0f, 0.0f, false},
     {0x010065, "A Bus 2 Filter", 0.0f, 4.0f, 0.0f, true},
-    {0x010066, "A Bus 2 Cutoff", kCutoffMin, kCutoffMax, kCutoffDefault, false},
+    {0x010066, "A Bus 2 Cutoff", kBusCutoffMin, kBusCutoffMax, kBusCutoffDefault, false},
     {0x010067, "A Bus 2 Resonance", 0.0f, 1.0f, 0.0f, false},
 }};
 // The parameters that are neither automatable nor modulatable: every layer's Ring Length, which the

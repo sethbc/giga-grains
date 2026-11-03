@@ -1692,7 +1692,10 @@ TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
     setUp("spectral-rescan");
     const fs::path file = gg::test::sineSampleFile("spectral-rescan");
     LoaderHost host;
-    PluginUnderTest instrument(kInstrumentId, host.clap());
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    PluginUnderTest instrument(id, host.clap());
     REQUIRE(instrument.valid());
     REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, 512));
@@ -1722,8 +1725,19 @@ TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
 
     // A sample loaded in: the material becomes the sample once the audio thread takes it.
     const std::string empty = instrument.save(); // Spectral, no sample
-    loaderOf(instrument).requestLoad(file);
-    CHECK(settle(instrument).state == SampleState::Loaded);
+    if (isFx)
+    {
+        gg::core::SessionState s; // the FX has no loader strip: a state brings layer A's sample
+        REQUIRE(gg::core::decodeState(empty, gg::core::Mode::Fx, s));
+        s.samples[0] = gg::test::entryOf(file);
+        s.samples[0]->layer = 0;
+        REQUIRE(instrument.load(gg::core::encodeState(s)));
+    }
+    else
+    {
+        loaderOf(instrument).requestLoad(file);
+        CHECK(settle(instrument).state == SampleState::Loaded);
+    }
     CHECK(host.textRescans() == afterKind); // the audio thread hasn't taken it yet
     REQUIRE(instrument.process(512, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
     instrument.onMainThread();
@@ -1739,4 +1753,79 @@ TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
     instrument.onMainThread();
     CHECK(host.textRescans() == afterKind + 2);
     CHECK(positionText(0.25).find('%') == std::string::npos);
+}
+
+TEST_CASE("the material set before a spectral kind decides its units", "[plugin]")
+{
+    // Extremes carry-over rows 375 and 376: Position's units follow a Spectral layer's material
+    // (seconds over its ring, a percentage over a sample) in both products, whichever of the
+    // sample and the kind comes first. Here the sample is set while the layer is on Sample, then
+    // the kind becomes Spectral; the sample is cleared while on Sample, then the kind becomes
+    // Spectral.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    setUp("spectral-material-first");
+    const fs::path file = gg::test::sineSampleFile("spectral-material-first");
+    const bool isFx = std::string_view(id) == kFxId;
+    const auto mode = isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+    LoaderHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(0));
+    REQUIRE(plugin.activate(48000.0, 512));
+    const clap_id position = gg::core::paramId(gg::core::ParamSlot::Position);
+    const auto positionText = [&](double value) {
+        char buffer[CLAP_NAME_SIZE] = {};
+        REQUIRE(
+            plugin.params()->value_to_text(plugin.clap(), position, value, buffer, sizeof(buffer)));
+        return std::string(buffer);
+    };
+    Stereo in(512);
+    Stereo out(512);
+    const auto block = [&](const clap_event_param_value *event = nullptr) {
+        gg::test::InputEvents events;
+        if (event != nullptr)
+        {
+            events.add(&event->header);
+        }
+        REQUIRE(plugin.process(512, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread();
+    };
+    const auto setKind = [&](double kind) {
+        const auto event = gg::test::paramValue(
+            gg::core::paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0)), kind);
+        block(&event);
+    };
+    const auto percent = [&] { return positionText(0.25).find('%') != std::string::npos; };
+
+    setKind(0.0); // Sample
+    block();
+    const std::string empty = plugin.save(); // Sample, no sample
+
+    // The sample arrives while the kind is Sample; the kind then follows.
+    gg::core::SessionState s;
+    REQUIRE(gg::core::decodeState(empty, mode, s));
+    s.samples[0] = gg::test::entryOf(file);
+    s.samples[0]->layer = 0;
+    REQUIRE(plugin.load(gg::core::encodeState(s)));
+    block();          // process takes the loaded state and onMainThread rescans, in one call
+    block();          // a settling call
+    CHECK(percent()); // the kind is Sample: a percentage
+    const uint32_t beforeKind = host.textRescans();
+    setKind(3.0);
+    block();
+    CHECK(percent()); // the sample is the material
+    CHECK(host.textRescans() == beforeKind + 1);
+    block();
+    CHECK(host.textRescans() == beforeKind + 1); // once per change
+
+    // The sample is cleared while the kind is Sample; the kind then becomes Spectral.
+    REQUIRE(plugin.load(empty));
+    block(); // as above, a settling call
+    block();
+    const uint32_t beforeSecond = host.textRescans();
+    setKind(3.0);
+    block();
+    CHECK_FALSE(percent()); // the ring is the material: seconds
+    CHECK(host.textRescans() == beforeSecond + 1);
 }
