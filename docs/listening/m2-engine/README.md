@@ -19,7 +19,7 @@ repository root:
 cmake --preset release && cmake --build --preset release --target gg-render
 r=build/release/tools/gg-render/gg-render
 L=build/release/listening/m2-engine
-$r --write-media "$L/media"             # tone-44k1.wav and loop-48k.wav
+$r --write-media "$L/media"             # tone-44k1.wav, loop-48k.wav, sine-330.wav and the rest
 for s in docs/listening/m2-engine/specs/*.json; do
   n=$(basename "$s" .json)
   $r "$s" --media-dir "$L/media" -o "$L/$n.wav" --spectrogram "$L/$n.png" \
