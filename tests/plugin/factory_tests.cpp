@@ -2031,8 +2031,12 @@ struct FormatHost
             {
                 return nullptr;
             }
-            info.get_wrapper_flavor =
-                offerFlavor ? [](const clap_host *) { return flavor; } : nullptr;
+            // An if, not ?: (GCC 13 refuses a lambda and nullptr as the two arms).
+            info.get_wrapper_flavor = nullptr;
+            if (offerFlavor)
+            {
+                info.get_wrapper_flavor = [](const clap_host *) { return flavor; };
+            }
             return &info;
         };
     }
