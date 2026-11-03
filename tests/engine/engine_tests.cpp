@@ -2796,6 +2796,25 @@ TEST_CASE("two buses share the grains", "[engine]")
     }
 }
 
+TEST_CASE("a source removal keeps bus 2's flag raised", "[engine][buses]")
+{
+    // Row 361: setSource(nullptr) is a hard cut of the pool but leaves bus2Used() raised, so a
+    // layer that sums bus 2 after its filter lets the filter's tail ring out; reset() lowers it.
+    const auto input = noiseInput(48000, 13);
+    auto engine = busEngine(gg::SourceMode::Sample, 0.5);
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+    REQUIRE(engine->activeGrains() > 0);
+
+    engine->setSource(nullptr);
+    renderBuses(*engine, input, 64, kBusBlocks);
+    REQUIRE(engine->activeGrains() == 0);
+    REQUIRE(engine->bus2Used());
+
+    engine->reset();
+    REQUIRE_FALSE(engine->bus2Used());
+}
+
 TEST_CASE("bus2Used is sticky until a reset or the gate", "[engine]")
 {
     // The extremes spec §6.3: raised at the first bus-1 admission, kept while no grain is on bus
