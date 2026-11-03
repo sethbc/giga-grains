@@ -618,8 +618,10 @@ jobs:
       # INTENT §15 (§23 #91): the Linux products run on an Ubuntu 24.04 baseline, and this runner
       # is that image. The ceilings are read here, from the runner's own libstdc++6 and libc6
       # (strings on libstdc++.so.6 and libc.so.6), once both packages are shown to be Ubuntu's:
-      # no PPA in /etc/apt/sources.list.d, no origin but ubuntu.com in apt-cache policy, and the
-      # installed upstream version (before the Ubuntu revision: 2.39, 14.2.0) one that a noble,
+      # in apt-cache policy, neither the installed version nor any candidate at or above it comes
+      # from an origin other than ubuntu.com (a PPA or any other; the image's other lists, such
+      # as git-core's PPA or Microsoft's, don't matter unless they serve these packages), and the
+      # installed upstream version (before the Ubuntu revision: 2.39, 14.2.0) is one a noble,
       # noble-updates or noble-security pocket lists (madison lists each pocket's newest only, so
       # an image a revision behind still passes). The runner's glibc must also be exactly the
       # documented baseline's, GG_BASELINE_GLIBC (INTENT §15, installer/linux/README.md): ceilings
@@ -639,19 +641,28 @@ jobs:
             exit 1
           fi
           status=0
-          ppas="$(grep -rlE 'ppa\.launchpad(content)?\.net' /etc/apt/sources.list.d 2>/dev/null || true)"
-          if [[ -n "$ppas" ]]; then
-            echo "::error::a PPA is configured, so the runner's libraries may not be Ubuntu 24.04's: $(tr '\n' ' ' <<<"$ppas")"
-            status=1
-          fi
+          # policy_origins: apt-cache policy's version table on stdin, one "<version> <origin URL>"
+          # line per origin of each version (/var/lib/dpkg/status, a path, is left out).
+          policy_origins() {
+            awk '/Version table:/ { t = 1; next }
+              t && $1 ~ /^[0-9]+$/ && $2 ~ /^[a-z]+:\/\// { print v, $2; next }
+              t && $1 == "***" { v = $2; next }
+              t && NF >= 2 { v = $1 }'
+          }
           # madison and policy read the package lists, so they are fetched first.
           sudo apt-get update -qq
           for pkg in libstdc++6 libc6; do
             version="$(dpkg-query -W -f='${Version}' "$pkg")"
-            others="$(apt-cache policy "$pkg" | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[a-z]+:\/\// { print $2 }' \
-              | grep -vE '^https?://([a-z0-9-]+\.)*ubuntu\.com/' || true)"
-            if [[ -n "$others" ]]; then
-              echo "::error::$pkg has an origin other than ubuntu.com: $(tr '\n' ' ' <<<"$others")"
+            # The installed version, or a candidate at or above it, from anywhere but ubuntu.com.
+            others=()
+            while read -r v origin; do
+              if [[ -n "$v" ]] && dpkg --compare-versions "$v" ge "$version" \
+                  && ! [[ "$origin" =~ ^https?://([a-z0-9-]+\.)*ubuntu\.com/ ]]; then
+                others+=("$v from $origin")
+              fi
+            done < <(apt-cache policy "$pkg" | policy_origins)
+            if ((${#others[@]} > 0)); then
+              echo "::error::$pkg $version: a version at or above it comes from outside ubuntu.com: ${others[*]}"
               status=1
             fi
             if ! apt-cache madison "$pkg" | awk -F'|' -v u="${version%-*}" \
