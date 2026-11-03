@@ -21,6 +21,9 @@
 #               20.1.8 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
 #               by side, then this one check over all seven (INTENT §23 #74).
 #
+# Not a required check: on the nightly and on a dispatch, bootstrap-fresh-linux runs
+# scripts/bootstrap-linux.sh in a bare ubuntu:22.04 container (M2 close spec §6.3).
+#
 # Once the build succeeds, every later check runs even if an earlier one failed, so one run
 # reports them all; any failure still fails the job. The clang-format check is in format.yml.
 #
@@ -376,31 +379,30 @@ jobs:
           path: ${{ env.CONTENT_CACHE_DIR }}
           key: ${{ steps.content_cache.outputs.cache-primary-key }}
 
-      # gcc-13 for the C++23 build (the m2-layers spec, §6.1), on ubuntu-22.04: its image has GCC
-      # 10 to 12 only and its archive no gcc-13, and prepare-for-juce installs no compiler (it only
-      # points update-alternatives at /usr/bin/gcc-<gccversion>). So gcc-13 and g++-13 come from
-      # the ubuntu-toolchain-r/test PPA, installed here, before it.
-      - name: Install gcc-13 from the ubuntu-toolchain-r/test PPA (Linux)
+      # What each leg's build needs comes from the bootstrap scripts, the ones a reader of the
+      # README runs (M2 close spec §6.3), so CI keeps them honest. Linux: gcc-13 for the C++23
+      # build (the m2-layers spec, §6.1) from the ubuntu-toolchain-r/test PPA, since
+      # ubuntu-22.04's archive has none, then CMake, Ninja, the twelve JUCE development packages
+      # that prepare-for-juce used to install, libxi-dev (JUCE 9's juce_gui_basics includes
+      # <X11/extensions/XInput2.h>) and xvfb. A nightly job (bootstrap-fresh-linux, below) runs
+      # it in a bare container, so a package this image happens to carry can't hide a missing one.
+      - name: Install the build requirements (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test && sudo apt-get update
-          sudo apt-get install -y gcc-13 g++-13
+        run: scripts/bootstrap-linux.sh
 
-      - name: Prepare for JUCE
-        uses: surge-synthesizer/sst-githubactions/prepare-for-juce@5bb92ec9d3401eba6a85f8edea98395b3b866e84 # main
-        with:
-          os: ${{ runner.os }}
-          gccversion: 13
-
-      # libxi-dev: JUCE 9's juce_gui_basics includes <X11/extensions/XInput2.h> on Linux
-      # (JUCE_USE_XINPUT defaults to 1), and prepare-for-juce doesn't install it.
-      - name: Install Ninja, Xvfb and libxi-dev (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y ninja-build xvfb libxi-dev
-
-      - name: Install Ninja (macOS)
+      # macOS: the image has Xcode and CMake; this adds Ninja when missing. --ci skips llvm,
+      # which this leg doesn't use.
+      - name: Install the build requirements (macOS)
         if: runner.os == 'macOS'
-        run: command -v ninja || brew install ninja
+        run: scripts/bootstrap-macos.sh --ci
+
+      # Windows: -Verify installs nothing (the image has Visual Studio; a winget install of the
+      # Build Tools would outlast the leg's budget) and fails if anything the build needs is
+      # missing.
+      - name: Verify the build requirements (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/bootstrap-windows.ps1 -Verify
 
       # ccache on every leg. (The universal macOS build compiles each file for two architectures,
       # which ccache passes through uncached; the leg still gets the cache for its single-arch
@@ -1169,6 +1171,30 @@ jobs:
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
+
+  # Nightly and on dispatch only (M2 close spec §6.3): the README's Linux line, from nothing. A
+  # bare ubuntu:22.04 container has none of the packages the hosted image carries, so a package
+  # missing from scripts/bootstrap-linux.sh fails here and nowhere else. It installs, clones the
+  # repository (public), checks out the commit under test, then configures, builds and tests the
+  # dev preset.
+  bootstrap-fresh-linux:
+    name: bootstrap (linux, fresh container)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
+    timeout-minutes: 90
+    steps:
+      # No git in the container: the checkout action falls back to the REST archive.
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bootstrap, clone, build and test
+        env:
+          GG_REPO_URL: https://github.com/${{ github.repository }}.git
+          GG_REPO_REF: ${{ github.sha }}
+        run: scripts/bootstrap-linux.sh --clone /tmp/gg
 
   # The required check (the main ruleset's "sanitizers (asan, rtsan)") and what the release job
   # needs: it passes only when all seven sanitizer jobs passed.

@@ -352,6 +352,12 @@ if (NOT WIN32)
             COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/release_scripts_tests.sh
             ${CMAKE_CURRENT_BINARY_DIR}/release-scripts-tests)
     set_tests_properties(scripts_release PROPERTIES LABELS scripts)
+    # The bootstrap scripts (M2 close spec §6.3) against stub brew, apt-get and git, and the
+    # README's one-liners against the scripts.
+    add_test(NAME scripts_bootstrap
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bootstrap_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/bootstrap-tests)
+    set_tests_properties(scripts_bootstrap PROPERTIES LABELS scripts)
 endif ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
