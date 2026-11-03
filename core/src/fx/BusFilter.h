@@ -21,8 +21,9 @@ namespace gg::core::fx
 /// force, then process once per sample. Cutoff and resonance glide linearly across the cell
 /// (CytomicSVF::setCoeffForBlock<32>), so they never zipper. A type change starts the incoming
 /// type on the spare filter, from silence, and crossfades from the outgoing one over `rampSamples`
-/// (Off being no filter: the dry signal); a type change asked during a fade waits for it to end
-/// (the owner asks again each cell). Off with no fade in progress leaves the samples untouched
+/// (Off being no filter: the dry signal). A change back to the outgoing type during a fade turns
+/// the fade from its current value; a change to a third type waits for the fade to end (the owner
+/// asks again each cell). Off with no fade in progress leaves the samples untouched
 /// (the sign of zero included). Everything is deterministic and allocation-free.
 class BusFilter
 {
