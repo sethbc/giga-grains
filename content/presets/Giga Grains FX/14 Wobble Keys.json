@@ -3,7 +3,7 @@
   "name": "Wobble Keys",
   "author": "Giga Grains",
   "description": "A warm, wobbling tape-like copy of your input; hold notes to freeze and play it, and bend for pitch.",
-  "tags": ["playable", "keys", "dark", "midi", "live-input"],
+  "tags": ["playable", "keys", "dark", "midi"],
   "params": {
     "Mix": 0.6,
     "Size": -2.473931,

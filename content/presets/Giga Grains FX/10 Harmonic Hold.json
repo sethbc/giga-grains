@@ -3,7 +3,7 @@
   "name": "Harmonic Hold",
   "author": "Giga Grains",
   "description": "Every grain comes with its fifth and its octave; hold a note to freeze the input into a chord on that key, and the mod wheel detunes it.",
-  "tags": ["playable", "freeze", "pad", "midi", "live-input"],
+  "tags": ["playable", "freeze", "pad", "midi"],
   "params": {
     "Mix": 0.5,
     "Size": -1.736966,

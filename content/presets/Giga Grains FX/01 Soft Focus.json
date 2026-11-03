@@ -3,7 +3,7 @@
   "name": "Soft Focus",
   "author": "Giga Grains",
   "description": "A soft halo of overlapping grains around whatever you play into it, drifting gently; lovely on pads, keys and guitars.",
-  "tags": ["texture", "pad", "wide", "live-input"],
+  "tags": ["texture", "pad", "wide"],
   "params": {
     "Mix": 0.45,
     "Size": -2.184425,

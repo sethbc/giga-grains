@@ -3,7 +3,7 @@
   "name": "Haze Bloom",
   "author": "Giga Grains",
   "description": "Long, blurred grains bloom into a wide wash, with a faint octave shimmer that swells and fades on its own; play slow chords into it.",
-  "tags": ["texture", "pad", "reverb", "wide", "live-input"],
+  "tags": ["texture", "pad", "reverb", "wide"],
   "params": {
     "Mix": 0.6,
     "Size": -1.058894,

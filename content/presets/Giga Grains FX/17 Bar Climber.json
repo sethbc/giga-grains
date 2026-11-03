@@ -3,7 +3,7 @@
   "name": "Bar Climber",
   "author": "Giga Grains",
   "description": "Locked to the host's tempo (play the transport): the pitch climbs an octave over each bar while each beat sweeps the read position back, a build-up for loops.",
-  "tags": ["rhythmic", "glitch", "live-input"],
+  "tags": ["rhythmic", "glitch"],
   "params": {
     "Mix": 0.6,
     "Position": 0.17188,

@@ -3,7 +3,7 @@
   "name": "Melting Clock",
   "author": "Giga Grains",
   "description": "Spectral smear at full: the input melts into a sliding, smeared drone an octave below itself, wandering slowly in pitch.",
-  "tags": ["extreme", "smear", "drone", "dark", "live-input"],
+  "tags": ["extreme", "smear", "drone", "dark"],
   "params": {
     "Mix": 0.7,
     "A Source": 3,

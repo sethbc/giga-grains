@@ -2446,8 +2446,9 @@ program lists and AU factory presets. As built (M2 sub-project 5, group 1; §23 
   tagged. The FX's 24 include 8 MIDI-driven ones (tag `midi`); the instrument's 24 read the
   content's samples by content-relative reference (`MEDI` version 2), all 51 files used, none
   more than twice. Their sources are `content/presets/<Product>/NN Name.json`, which
-  `gg-presets` packs with `gg-render --pack-preset`. The tag vocabulary is 29 words: `brass`
-  joined the character tags after `winds` (content v2 brought brass; `winds` misdescribed it).
+  `gg-presets` packs with `gg-render --pack-preset`. The tag vocabulary is 28 words: `brass`
+  joined the character tags after `winds` (content v2 brought brass; `winds` misdescribed it),
+  and `live-input` was struck (the director, the M2 gate, item 29; §23 #92).
 - **The user presets folder** is beside the settings file (`Presets/`; on Linux
   `$XDG_DATA_HOME/giga-grains/presets/` for the default settings file). **Favorites** are per
   machine, `favorites.txt` beside the settings file, one preset key per line.

@@ -3,7 +3,7 @@
   "name": "Dust Motes",
   "author": "Giga Grains",
   "description": "Sparse, tiny, pitched-up specks scattered across the stereo field and bounced by a ping-pong delay; sprinkle it over anything.",
-  "tags": ["texture", "bright", "wide", "live-input"],
+  "tags": ["texture", "bright", "wide"],
   "params": {
     "Mix": 0.5,
     "Size": -4.836501,

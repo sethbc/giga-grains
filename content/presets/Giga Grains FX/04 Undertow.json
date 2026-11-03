@@ -3,7 +3,7 @@
   "name": "Undertow",
   "author": "Giga Grains",
   "description": "Your input an octave and two below, through a slowly breathing low-pass, over an ocean-drum bed that rises when you play.",
-  "tags": ["texture", "dark", "drone", "sidechain", "sample", "live-input"],
+  "tags": ["texture", "dark", "drone", "sidechain", "sample"],
   "params": {
     "Mix": 0.6,
     "Pitch": -12,

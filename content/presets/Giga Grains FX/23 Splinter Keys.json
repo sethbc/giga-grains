@@ -3,7 +3,7 @@
   "name": "Splinter Keys",
   "author": "Giga Grains",
   "description": "Hold a note and the frozen input shatters into shards scattered over two octaves around the key; let go and it gathers back.",
-  "tags": ["extreme", "glitch", "freeze", "midi", "live-input"],
+  "tags": ["extreme", "glitch", "freeze", "midi"],
   "params": {
     "Mix": 0.6,
     "Size": -3.643856,
