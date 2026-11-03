@@ -832,8 +832,8 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
 
     // A grain on lane D lights the accumulator inside its capsule's rectangle and nowhere else
     // (row 327: positions, not only lit pixels). It reads a quarter of the way into the 1 s
-    // sample, 100 ms at rate 2, an octave up. Queued after a frame, which clears the queue.
-    image = paintInto(900, 403);
+    // sample, 100 ms at rate 2, an octave up. The paints above have read the queue already, so
+    // the canvas takes it as new, not as a stale backlog (row 388 (p): no paint before it).
     // The canvas extrapolates its clock by wall time (up to 0.25 s past a change, never backwards)
     // and the grain lasts 100 ms, so a slow build (ASan) that spent longer than that on the paints
     // above holds now() up to kFrames + 12,000. Publish a clock past that, and draw the grain
@@ -842,6 +842,8 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     clock.store(kNow, std::memory_order_release);
     REQUIRE(queue.push(gg::core::GrainVis{kNow - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f, 3}));
     image = paintInto(900, 403);
+    // Lane D's geometry with the test's clock already stored: a Sample lane ignores the head,
+    // but a change that made it read one would read this clock's.
     const auto lane = laneOf(*canvas, 3, false, kRate, 48000);
     const auto c =
         gg::ui::grainCapsule({kNow - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f}, kNow, kNow, lane);
