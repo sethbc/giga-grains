@@ -290,6 +290,14 @@ the material with no transients and no comb; grains read it as they read the liv
   analysis frame's. `sineDet`'s quarter-wave polynomial gives cos and sin, libm-free. So the smear
   of a given seed, layer, Position history and material is a function of the sample clock alone,
   at any block size.
+
+  > **Amended 2026-11-02 (the M2 close, row 365):** DC and Nyquist keep their phase, so the
+  > overlapping frames add them in amplitude, not in power: divided by 0.75 with the rest, a
+  > constant (or a Nyquist-rate) material came out 2.5 dB loud (4/3). They are scaled by
+  > `kOverlapGain` before the inverse, so they too reconstruct at unity (a test: within 0.05 dB).
+  > Only content under about half a bin, roughly 6 Hz at 48 kHz, and the inaudible Nyquist move;
+  > the five Spectral goldens (`inst-spectral`, `fx-spectral-freeze` and the presets `fx-06`,
+  > `fx-20` and `inst-21`) were regenerated, their event logs unchanged.
 - **The output ring** is a `LiveSource` of `SpectralSource::kRingSeconds` = 5 s (Spray's 2 s,
   Size's 2 s, the 256-frame margins and a block), written one sample per output sample on every
   piece, whatever the layer's kind: silence while the kind isn't Spectral, so a layer that isn't Spectral pays a

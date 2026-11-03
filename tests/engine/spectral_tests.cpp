@@ -378,6 +378,53 @@ TEST_CASE("a block over maxBlockSize goes in pieces, the same bytes", "[engine][
     }
 }
 
+TEST_CASE("dc and nyquist reconstruct at unity", "[engine][spectral]")
+{
+    // Row 365: DC and Nyquist keep their phase, so they add in amplitude, and are scaled by
+    // kOverlapGain before the inverse as the redrawn bins' power is: a constant c and c(-1)^n
+    // come out at c within 0.05 dB (+2.5 dB before). The Hann window also puts -cN/4 into the
+    // bin beside each, whose phase is redrawn: an offset of random sign per frame, which the
+    // level here averages out over 9 s of 12 kHz (N = 1024), both channels and 128 seeds. Eight
+    // seeds scatter by about 0.1 dB; these 128 measure +0.001 dB (DC) and +0.032 dB (Nyquist).
+    constexpr double kRate = 12000.0;
+    constexpr int64_t kTotal = 10 * 12000;
+    constexpr int64_t kSettled = 12000;
+    constexpr float kLevel = 0.25f;
+    for (const bool nyquist : {false, true})
+    {
+        INFO((nyquist ? "nyquist" : "dc"));
+        Stereo s{std::vector<float>(8192), std::vector<float>(8192)};
+        for (std::size_t i = 0; i < s.left.size(); ++i)
+        {
+            s.left[i] = s.right[i] = nyquist && i % 2 == 1 ? -kLevel : kLevel;
+        }
+        const SpectralMaterial m = sampleMaterial(s);
+        double sum = 0.0;
+        int64_t count = 0;
+        for (uint64_t seed = 0; seed < 128; ++seed)
+        {
+            SpectralSource source(kRate, kMaxBlock);
+            REQUIRE(source.fftSize() == 1024);
+            source.setActive(true);
+            renderSplit(source, m, 0.5, seed, 0, kTotal, {kMaxBlock});
+            const std::vector<float> out = ringFrames(source, kTotal);
+            double seedSum = 0.0;
+            for (int64_t t = kSettled; t < kTotal; ++t)
+            {
+                const double sign = nyquist && t % 2 == 1 ? -1.0 : 1.0;
+                seedSum += sign * (static_cast<double>(out[2 * static_cast<std::size_t>(t)]) +
+                                   out[2 * static_cast<std::size_t>(t) + 1]);
+            }
+            sum += std::abs(seedSum); // the Nyquist's sign follows the window's start
+            count += 2 * (kTotal - kSettled);
+        }
+        const double level = sum / static_cast<double>(count);
+        const double db = 20.0 * std::log10(level / kLevel);
+        INFO("level " << level << ", " << db << " dB");
+        REQUIRE(std::abs(db) <= 0.05);
+    }
+}
+
 TEST_CASE("inactive writes silence, active starts under the margin", "[engine][spectral]")
 {
     const Stereo s = noiseSample(48000);

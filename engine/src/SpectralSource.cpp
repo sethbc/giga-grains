@@ -297,8 +297,12 @@ void SpectralSource::smearInto(uint32_t c, bool mono, uint64_t seed, uint32_t la
     float *const spectrum = spectrum_.get();
     pffft_transform_ordered(setup_.get(), frame, spectrum, work_.get(), PFFFT_FORWARD);
 
-    // Ordered layout: spectrum[0] is DC and spectrum[1] Nyquist, both real and kept; bin b in
-    // 1 … N/2 − 1 is (spectrum[2b], spectrum[2b + 1]).
+    // Ordered layout: spectrum[0] is DC and spectrum[1] Nyquist, both real; bin b in
+    // 1 … N/2 − 1 is (spectrum[2b], spectrum[2b + 1]). DC and Nyquist keep their phase, so the
+    // overlapping frames add them in amplitude, not in power as the redrawn bins: scaled by
+    // kOverlapGain here, they too come out at unity once the synthesis divides it out (row 365).
+    spectrum[0] *= static_cast<float>(kOverlapGain);
+    spectrum[1] *= static_cast<float>(kOverlapGain);
     const uint64_t firstIndex = static_cast<uint64_t>(k) * (n / 2 + 1);
     for (std::size_t b = 1; b < n / 2; ++b)
     {

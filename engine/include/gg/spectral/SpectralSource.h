@@ -55,8 +55,9 @@ struct SpectralMaterial
 /// Each channel's window is multiplied by the analysis Hann and transformed forward with pffft's
 /// real FFT. Bin b (1 … N/2 − 1) of channel c keeps its magnitude and takes the phase θ =
 /// uniform01(hash(seed, layer, c, Field::SpectralPhase, k × (N/2 + 1) + b)) turns, cos θ and
-/// sin θ from sineDet; DC and Nyquist are kept as they are. The inverse is scaled by 1/N, the
-/// synthesis Hann and 1/kOverlapGain, and overlap-added for spectral time [kH, kH + N). The
+/// sin θ from sineDet; DC and Nyquist keep their phase, scaled by kOverlapGain (they add in
+/// amplitude, so the synthesis' 1/kOverlapGain leaves them at unity). The inverse is scaled by 1/N,
+/// the synthesis Hann and 1/kOverlapGain, and overlap-added for spectral time [kH, kH + N). The
 /// ring's sample at output time t is the accumulation at spectral time t − N, so every sample
 /// written is complete. Mono material: channel 1 copies channel 0.
 ///
@@ -87,7 +88,9 @@ class SpectralSource
     /// not the 1.5 that Σ_k w_a·w_s sums to. The phases are redrawn every frame, so the
     /// overlapping frames are incoherent and add in power, not in amplitude: dividing by 1.5
     /// would leave a steady material 6 dB down. The intent (spec §6.2) is that a steady material
-    /// keeps its RMS within 1 dB, and 0.75 does (a test).
+    /// keeps its RMS within 1 dB, and 0.75 does (a test). DC and Nyquist, which keep their
+    /// phase, add in amplitude (Σ_k w_a·w_s = 1.5 over a frame's DC gain of 1/2): they are
+    /// scaled by 0.75 before the inverse, so they too come out at unity (row 365; a test).
     static constexpr double kOverlapGain = 0.75;
 
     /// N: the power of two nearest kWindowSeconds × sampleRate (4096 at 44.1 and 48 kHz), at
