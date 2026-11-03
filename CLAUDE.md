@@ -214,7 +214,8 @@ VST3 export their entry points alone (`clients/clap-first/CMakeLists.txt`,
 need its glibc, 2.39, and no longer run on 22.04. CI's Linux leg (`ubuntu-24.04`, gcc-13 from the
 archive) checks it after the build: "Linux products need no libstdc++ or glibc newer than Ubuntu
 24.04's" reads the ceilings from the runner's own `libstdc++.so.6` and `libc.so.6` (after
-checking both packages are 24.04's archive's), fails on a `GLIBCXX`, `CXXABI` or `GLIBC` version
+checking both packages are Ubuntu's, and that the runner's glibc is exactly the documented 2.39,
+`GG_BASELINE_GLIBC`), fails on a `GLIBCXX`, `CXXABI` or `GLIBC` version
 above them or an exported `std::` symbol, and lists the ceilings and each product's symbol
 versions in the step summary.
 

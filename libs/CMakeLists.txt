@@ -34,11 +34,6 @@ endfunction ()
 
 add_subdirectory(catch2 EXCLUDE_FROM_ALL)
 add_subdirectory(fmt EXCLUDE_FROM_ALL)
-# fmt 12.2.0 made <fmt/core.h> <fmt/base.h> alone, without fmt::format. sst-basic-blocks'
-# ParamMetadata.h includes <fmt/core.h> and calls fmt::format (still so at its upstream head on
-# 2026-11-03), so every target that links fmt gets fmt's own opt-in back to the heavy core.h.
-# Our sources include <fmt/format.h>.
-target_compile_definitions(fmt INTERFACE FMT_DEPRECATED_HEAVY_CORE)
 
 # sst-cpputils and simde must exist before sst-basic-blocks, which links them if present.
 add_subdirectory(sst/sst-cpputils)

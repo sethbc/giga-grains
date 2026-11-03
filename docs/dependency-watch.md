@@ -13,6 +13,10 @@ the SDK rows after any clap-wrapper bump: its `cmake/base_sdks.cmake` holds them
 
 ## Trailing, waiting on time
 
+The watch's default is to let a release reach about two weeks' age before a pin moves to it. That
+is a default, not a gate: the director pinned Inno Setup 7.1.1 (Task 22, §23 #90) at five days
+old (published 2026-10-28), by choice.
+
 | Pin | Ours → upstream | What would move it | What to check |
 |---|---|---|---|
 | JUCE (`libs/JUCE`) | 9.0.4 → 9.0.5 (released 2026-11-02) | Two weeks' age: about 2026-11-16, unless a fix we need lands first. | The editor and every GUI test (`ctest -L 'plugin\|ui'`), `gg-snap`'s 32 views looked at, the validators (clap-validator, pluginval at strictness 10, auval through the PM, Steinberg's validator), and the Linux packages `scripts/bootstrap-linux.sh` installs (a JUCE release can need a new one, as JUCE 9 needed `libxi-dev`). |

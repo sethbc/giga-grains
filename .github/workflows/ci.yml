@@ -617,14 +617,21 @@ jobs:
 
       # INTENT §15 (§23 #91): the Linux products run on an Ubuntu 24.04 baseline, and this runner
       # is that image. The ceilings are read here, from the runner's own libstdc++6 and libc6
-      # (strings on libstdc++.so.6 and libc.so.6), after checking that both packages are the ones
-      # Ubuntu 24.04's archive (noble, noble-updates or noble-security) ships, so a PPA's newer
-      # library can't raise them. Each ELF file under gg-products must need no GLIBCXX_, CXXABI_ or
-      # GLIBC_ version above them, and export no std:: symbol (the products link libstdc++
-      # statically and keep it local; clients/clap-first/CMakeLists.txt), so glibc is the real
-      # floor. The ceilings and the versions each file needs go in the step summary either way.
+      # (strings on libstdc++.so.6 and libc.so.6), once both packages are shown to be Ubuntu's:
+      # no PPA in /etc/apt/sources.list.d, no origin but ubuntu.com in apt-cache policy, and the
+      # installed upstream version (before the Ubuntu revision: 2.39, 14.2.0) one that a noble,
+      # noble-updates or noble-security pocket lists (madison lists each pocket's newest only, so
+      # an image a revision behind still passes). The runner's glibc must also be exactly the
+      # documented baseline's, GG_BASELINE_GLIBC (INTENT §15, installer/linux/README.md): ceilings
+      # read from the runner that linked the products can't fail them, so this is what catches the
+      # image drifting from the docs. Each ELF file under gg-products must need no GLIBCXX_,
+      # CXXABI_ or GLIBC_ version above the ceilings, and export no std:: symbol (the products
+      # link libstdc++ statically and keep it local; clients/clap-first/CMakeLists.txt), so glibc
+      # is the real floor. The ceilings and the versions each file needs go in the step summary.
       - name: Linux products need no libstdc++ or glibc newer than Ubuntu 24.04's
         if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
+        env:
+          GG_BASELINE_GLIBC: "2.39"
         run: |
           . /etc/os-release
           if [[ "$ID" != ubuntu || "$VERSION_ID" != 24.04 ]]; then
@@ -632,14 +639,24 @@ jobs:
             exit 1
           fi
           status=0
-          # Each library's package must be installed at a version from 24.04's own archive
-          # (madison reads the package lists, so they are fetched first).
+          ppas="$(grep -rlE 'ppa\.launchpad(content)?\.net' /etc/apt/sources.list.d 2>/dev/null || true)"
+          if [[ -n "$ppas" ]]; then
+            echo "::error::a PPA is configured, so the runner's libraries may not be Ubuntu 24.04's: $(tr '\n' ' ' <<<"$ppas")"
+            status=1
+          fi
+          # madison and policy read the package lists, so they are fetched first.
           sudo apt-get update -qq
           for pkg in libstdc++6 libc6; do
             version="$(dpkg-query -W -f='${Version}' "$pkg")"
-            if ! apt-cache madison "$pkg" | awk -F'|' -v v="$version" \
-                '{ gsub(/ /, "", $2) } $2 == v && $3 ~ /ubuntu\.com\/ubuntu noble(-updates|-security)?\// { found = 1 } END { exit !found }'; then
-              echo "::error::$pkg $version is not a version Ubuntu 24.04's archive ships: $(apt-cache madison "$pkg" | tr '\n' ';')"
+            others="$(apt-cache policy "$pkg" | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[a-z]+:\/\// { print $2 }' \
+              | grep -vE '^https?://([a-z0-9-]+\.)*ubuntu\.com/' || true)"
+            if [[ -n "$others" ]]; then
+              echo "::error::$pkg has an origin other than ubuntu.com: $(tr '\n' ' ' <<<"$others")"
+              status=1
+            fi
+            if ! apt-cache madison "$pkg" | awk -F'|' -v u="${version%-*}" \
+                '{ gsub(/ /, "", $2); sub(/-[^-]*$/, "", $2) } $2 == u && $3 ~ /ubuntu\.com\/ubuntu noble(-updates|-security)?\// { found = 1 } END { exit !found }'; then
+              echo "::error::$pkg $version: no noble pocket lists upstream version ${version%-*}: $(apt-cache madison "$pkg" | tr '\n' ';')"
               status=1
             fi
           done
@@ -654,6 +671,10 @@ jobs:
           if [[ -z "$max_glibcxx" || -z "$max_cxxabi" || -z "$max_glibc" ]]; then
             echo "::error::no ceiling read from $libstdcxx and $libc: '$max_glibcxx' '$max_cxxabi' '$max_glibc'"
             exit 1
+          fi
+          if [[ "$max_glibc" != "GLIBC_$GG_BASELINE_GLIBC" ]]; then
+            echo "::error::the runner's glibc is $max_glibc, not the documented baseline's GLIBC_$GG_BASELINE_GLIBC (INTENT §15, installer/linux/README.md)"
+            status=1
           fi
           {
             echo "### Ubuntu 24.04's ceilings (this runner)"
