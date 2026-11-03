@@ -524,7 +524,9 @@ multiply-add. Keep that step whenever the macOS leg changes.
 
 **The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
 Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
-cases alone, then the golden cases three `gg-render` processes at a time. On a pull request and a
+cases alone, then all 108 golden cases (the 60 and the 48 preset goldens, whose packed presets
+the native `ctest` built) three `gg-render` processes at a time, each with `--content-dir` set to
+the fetched content. On a pull request and a
 push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
 shard locally: `arch -x86_64 build/mac-universal/tests/gg-tests '~[serial]~[slow]' --order decl
 --shard-count 3 --shard-index 0`.
@@ -1046,8 +1048,11 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
 - **`--chain`** times the units the extremes sub-project adds after the grains, per stereo
   sample on stereo noise at 48 kHz: two `BusFilter`s (Low-pass, 1 kHz, resonance 0.5), the
   `Delay` (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and the `Limiter` (Peak,
-  ceiling 0.5, release 100 ms) (`tools/gg-bench/Bench.h` lists every setting). It takes
-  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`).
+  ceiling 0.5, release 100 ms), and in the same rounds a second stage, `spectral` (row 372): one
+  Spectral Smear source's STFT, active, over stereo noise as a sample with no grain reading it,
+  in ns per stereo sample (`tools/gg-bench/Bench.h` lists every setting). It takes
+  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`,
+  the stage under `"spectral"`).
   - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
     ctest's `bench_chain_cli` only checks that it runs. Its exit status is as `--space`'s.
 - **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` and `--chain`
@@ -1078,16 +1083,18 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
     on one model. So a leg's baseline has one entry per model, keyed by gg-bench's `machine`
     string, and a run is checked only against its own model's entry. The committed baselines
-    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45, Xeon 8370C and
-    EPYC 9V74 (the last from the SSE-era code, stale until a run lands on that model), and
-    Linux's EPYC 7763 and 9V45. The x86 entries were remade at the AVX2 task from three
+    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45 and Xeon 8370C,
+    and Linux's EPYC 7763 and 9V45 (Windows' stale SSE-era EPYC 9V74 entry was deleted in the M2
+    close, carry-over row 304: that model gets no verdict until runs land on it). The x86 entries were remade at the AVX2 task from three
     full-length runs (INTENT §23 #66), and the six report-only cases (`engine-layers`,
     `engine-layers-full`, `engine-sample-hq`, `engine-sample-hq-up`, `engine-overload`,
     `engine-sample-sse`) now have entries beside the four gated ones there (30 ratios an entry),
     none on `mac-universal`; they stay report-only, as the whole gate does. A model with no
     entry gets no verdict (the summary says so) until later runs on it are added to the baseline.
   - **The gate is report-only until 1.0.0** (INTENT §19, §23 #44, #60, #61): exit 3 becomes a
-    `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
+    `::warning` and the step exits 0, when the output also holds gg-bench's `verdict: N of M`
+    line (row 148); exit 3 without it fails the step. A crash, exit 1 or 2, or the timeout still
+    fails the job.
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
     no-verdict line and exit 1 for a run with no ratios.
   - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
