@@ -185,6 +185,10 @@ class MediaSession
     /// Layer `layer`'s status message (the class comment).
     std::string status(uint8_t layer) const;
 
+    /// The captures folder: the settings file's (read at each call), or
+    /// gg::media::defaultCapturesFolder(). The editor's too.
+    std::filesystem::path capturesFolder() const;
+
     /// The rings encoded (WAV bytes and hash) by save() and deactivate() so far: for tests.
     uint32_t ringsEncoded() const noexcept { return ringsEncoded_; }
 
@@ -243,8 +247,6 @@ class MediaSession
         return loaders_[layer]->hasSample() ? SourceMode::Sample : SourceMode::Live;
     }
     void refreshBudget() noexcept;
-    /// The captures folder: the settings', or gg::media::defaultCapturesFolder().
-    std::filesystem::path capturesFolder() const;
     /// Restores the held ring of `layer` into `processor` (activate()).
     void restoreHeld(core::Processor &processor, uint8_t layer);
 
