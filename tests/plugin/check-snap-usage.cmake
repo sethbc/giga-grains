@@ -5,6 +5,10 @@
 # snap_cli_usage: gg-snap's bad usage exits 2 with the usage on stderr and writes nothing.
 #   cmake -DTOOL=<gg-snap> -DOUT=<scratch dir> -P check-snap-usage.cmake
 
+# A -P script sets no policies of its own: the project's minimum, so CMake 3.x reads it as 4.x
+# does (CMP0012's TRUE in a condition among them).
+cmake_minimum_required(VERSION 3.22)
+
 file(REMOVE_RECURSE "${OUT}")
 file(MAKE_DIRECTORY "${OUT}")
 
