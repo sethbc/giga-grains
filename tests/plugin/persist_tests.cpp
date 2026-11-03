@@ -1479,6 +1479,59 @@ TEST_CASE("a whole-window read the head laps is kept at its first try", "[plugin
 
 namespace
 {
+LapRig *wholeLapRig = nullptr;
+
+// On the first try's hook, more than a whole window (kLapRing + kLapPiece frames, rounded up to
+// whole pieces) is rendered: the head laps every frame of the copy. Later tries render nothing.
+void wholeLapHook(uint8_t layer, int attempt)
+{
+    if (layer != 0)
+    {
+        return;
+    }
+    ++wholeLapRig->hooked;
+    if (attempt == 0)
+    {
+        wholeLapRig->render(kLapRing + kLapPiece);
+    }
+}
+} // namespace
+
+TEST_CASE("a copy the head laps whole is retried", "[plugin][threads]")
+{
+    // Carry-over row 353: when the head passes the whole window during one copy (R1 - R0 >= N),
+    // no frame of it is good, and the read must try again rather than give up at its first try.
+    // The hook laps the first try whole and lets the second through, which must be kept: the
+    // window as of the head after the lap, frame for frame.
+    LapRig rig;
+    REQUIRE(rig.processor.setRingNow(0, std::make_unique<gg::RingStorage>(kLapRing, kLapPiece),
+                                     gg::core::RingOffer{}));
+    rig.render(2 * kLapRing);
+    const int64_t r0 = rig.t;
+    std::optional<gg::plugin::RingCopy> copy;
+    wholeLapRig = &rig;
+    gg::plugin::detail::setRingReadHook(wholeLapHook);
+    copy = gg::plugin::readRing(rig.processor, 0, {}, kRate);
+    gg::plugin::detail::setRingReadHook(nullptr);
+    wholeLapRig = nullptr;
+    REQUIRE(rig.t - r0 >= kLapRing); // the first try was lapped whole
+    CHECK(rig.hooked == 2);          // and the read tried again
+    REQUIRE(copy.has_value());
+    CHECK(copy->head == rig.t);
+    CHECK(copy->oldest == rig.t - kLapRing);
+    const gg::SampleBuffer &w = *copy->window;
+    REQUIRE(w.frames() == kLapRing);
+    int64_t wrong = 0;
+    for (int64_t i = 0; i < w.frames(); ++i)
+    {
+        const float expected = rig.ramp(copy->oldest + i);
+        wrong += w.channel(0)[i] != expected || w.channel(1)[i] != -expected ? 1 : 0;
+    }
+    CHECK(wrong == 0);
+}
+
+namespace
+{
 LapRig *swapRig = nullptr;
 
 // On the first try's hook, a new storage of the same length is offered and the audio side

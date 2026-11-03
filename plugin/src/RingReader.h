@@ -99,7 +99,7 @@ struct ReadDone
 /// `probe(meta, e0, r0, span)`, before the copy, may say the caller already holds that copy
 /// (the save's cache of a frozen ring): the read then ends there, `cached`, without copying.
 /// `replaced`, when given, is set when the read failed with a ring there (the storage replaced
-/// under every try, or the whole copy lapped), as against no ring or an empty span.
+/// under every try, or the whole copy lapped on the last), as against no ring or an empty span.
 template <class Probe, class Copy>
 std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer,
                                  const RingSpanRequest &request, int64_t maxFrames, Probe &&probe,
@@ -178,7 +178,13 @@ std::optional<ReadDone> readWith(const core::Processor &processor, uint8_t layer
         {
             if (valid >= span.to)
             {
-                break; // the head lapped the whole copy
+                // The head lapped the whole copy (carry-over row 353): no frame of it is good,
+                // so a try is left to make, unless this was the last.
+                if (last)
+                {
+                    break;
+                }
+                continue;
             }
             done.from = span.from;
             done.valid = valid;
