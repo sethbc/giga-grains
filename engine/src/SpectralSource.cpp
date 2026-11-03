@@ -72,7 +72,9 @@ SpectralSource::SpectralSource(double sampleRate, uint32_t maxBlockSize)
     setup_.reset(pffft_new_setup(static_cast<int>(fftSize_), PFFFT_REAL));
     if (!setup_)
     {
-        throw std::bad_alloc();
+        // pffft returns no setup only for a size it rejects (below 0, past 2^26, or not a
+        // multiple of 32 for a real transform), never for want of memory.
+        throw std::logic_error("SpectralSource: pffft rejects the FFT size");
     }
     auto aligned = [n] {
         auto *p = static_cast<float *>(pffft_aligned_malloc(n * sizeof(float)));

@@ -140,6 +140,22 @@ TEST_CASE("the fft size follows the rate", "[engine][spectral]")
         REQUIRE(source.ring().frames() ==
                 static_cast<int64_t>(std::ceil(SpectralSource::kRingSeconds * rate)));
     }
+    // The range's ends: any rate, a NaN one too, gives a power of two in [128, 2^24], so a
+    // multiple of 128 and a hop that is a multiple of 32, which pffft's real transform takes.
+    for (const double rate :
+         {0.0, 1.0, 1000.0, 1.0e9, 1.0e12, std::numeric_limits<double>::infinity(),
+          std::numeric_limits<double>::quiet_NaN()})
+    {
+        INFO("rate " << rate);
+        const uint32_t n = SpectralSource::fftSizeFor(rate);
+        REQUIRE(n >= 128u);
+        REQUIRE(n <= (1u << 24));
+        REQUIRE((n & (n - 1)) == 0u);
+        REQUIRE(n % 128u == 0u);
+    }
+    REQUIRE(SpectralSource::fftSizeFor(1.0) == 128u);
+    REQUIRE(SpectralSource::fftSizeFor(std::numeric_limits<double>::quiet_NaN()) == 128u);
+    REQUIRE(SpectralSource::fftSizeFor(1.0e9) == (1u << 24));
 }
 
 TEST_CASE("the smear is the same bytes at any block split", "[engine][spectral]")

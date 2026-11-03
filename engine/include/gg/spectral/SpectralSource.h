@@ -87,7 +87,9 @@ class SpectralSource
     static uint32_t fftSizeFor(double sampleRate) noexcept;
 
     /// Allocates everything (not real-time safe). Throws std::invalid_argument unless sampleRate
-    /// is finite and > 0, and std::bad_alloc if pffft can't make its setup or buffers.
+    /// is finite and > 0, std::logic_error if pffft rejects the FFT size (it never does for
+    /// fftSizeFor's powers of two in [128, 2^24]), and std::bad_alloc if pffft can't allocate its
+    /// buffers.
     /// maxBlockSize 0 counts as 1.
     SpectralSource(double sampleRate, uint32_t maxBlockSize);
     ~SpectralSource();
