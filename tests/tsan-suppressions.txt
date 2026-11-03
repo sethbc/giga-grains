@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions for a local TSan tree (CI has no TSan job). Use with
+#   TSAN_OPTIONS="suppressions=$PWD/tests/tsan-suppressions.txt" ctest --test-dir build/tsan -L threads
+#
+# The ring reader (plugin/src/RingReader.h, readWith) copies a live ring's slots while the audio
+# thread may be overwriting them (LiveSource::write), then decides which copied frames it keeps:
+# the head R1 and the storage epoch read after an acquire fence (core::RingRead's protocol, a
+# seqlock). TSan can't see that validation and reports the slot read in ringToBuffer against the
+# write. The race is the design; every frame the reader keeps is checked (carry-over row 403).
+race:gg::media::ringToBuffer

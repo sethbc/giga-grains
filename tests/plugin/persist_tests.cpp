@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1749,6 +1750,72 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
     CHECK(freedWhilePublished == 0);
 }
 
+namespace
+{
+/// The first bad copy of "the ring reader's copies match what the audio thread wrote" (carry-over
+/// row 403): what it held, and the swaps' state at that read.
+struct Mismatch
+{
+    bool seen{false};
+    const char *kind{""};
+    uint64_t read{0};
+    int64_t oldest{0};
+    int64_t head{0};
+    int64_t frames{0};
+    bool trimmed{false};
+    bool full{false};     // the copy's head >= N
+    bool hasFrame{false}; // a bad frame (the fields below), not a copy that isn't contiguous
+    int64_t frame{0};     // the first bad frame, by ring time
+    float foundL{0.0f};
+    float foundR{0.0f};
+    float againL{0.0f};
+    float againR{0.0f};
+    float expected{0.0f};
+    int64_t badFrames{0};
+    int64_t lastBad{0};
+    uint32_t swaps{0};
+    uint32_t adopted{0};
+    uint32_t adoptedFull{0};
+    bool offerOpen{false};
+    int64_t lastSwapHead{-1};
+    int64_t headNow{0};
+};
+
+/// The mechanism a bad frame names, from the value found in frame `frame` of a ramp that holds
+/// t mod 1,000,000 (right channel negated) in rings of capacity `capacity` (the triage's classes).
+const char *classifyMismatch(int64_t frame, float left, float right, int64_t capacity)
+{
+    constexpr int64_t kWrap = 1000000;
+    const auto expected = static_cast<float>(frame % kWrap);
+    if (left == expected && right != -expected)
+    {
+        return "the right channel alone: memory reuse or a translation fault";
+    }
+    if (right != -left)
+    {
+        return "the channels disagree: memory reuse or a translation fault";
+    }
+    if (left == 0.0f)
+    {
+        return "0, a never-written slot: a gap in a swapped storage";
+    }
+    if (left < 0.0f || left >= static_cast<float>(kWrap) || left != std::floor(left))
+    {
+        return "not a frame of the ramp: memory reuse or a translation fault";
+    }
+    const int64_t d = (static_cast<int64_t>(left) - frame % kWrap + kWrap) % kWrap;
+    if (d % capacity == 0)
+    {
+        return "a newer lap's frame: an overwritten frame accepted";
+    }
+    if ((kWrap - d) % capacity == 0)
+    {
+        return "an older lap's frame: a gap in a swapped storage";
+    }
+    return "another frame of the ramp: memory reuse or a translation fault";
+}
+} // namespace
+
 TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin][threads]")
 {
     // Spec §6.4's race-free read, under a running audio thread: one thread renders a Processor
@@ -1761,6 +1828,9 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     // are only safety bounds: reaching one fails the test. Whether the head laps a copy here is up
     // to the scheduler, so the test counts the trimmed copies but needs none; "a read whose copy
     // the head laps keeps the frames still good" forces one.
+    // A bad copy reports its first bad frame, what it held and the swaps' state then
+    // (classifyMismatch names the mechanism the value points to): it failed once in CI, under
+    // Rosetta with the three shards beside it (carry-over row 403).
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
     constexpr int64_t kMaxTotal = 600 * 48000;
@@ -1825,6 +1895,8 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     bool offerFull = false;
     uint32_t adopted = 0;
     uint32_t adoptedFull = 0;
+    int64_t lastSwapHead = -1;
+    Mismatch mismatch;
     const auto settle = [&] {
         if (offerOpen && !p.sources(0).ringAdoptionPending())
         {
@@ -1877,6 +1949,7 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
                 ++swaps;
                 offerOpen = true;
                 offerFull = copy->head >= kN;
+                lastSwapHead = copy->head;
                 nextSwap = reads + 25;
             }
             holdReleased.store(request, std::memory_order_release);
@@ -1890,19 +1963,75 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         }
         ++reads;
         const gg::SampleBuffer &w = *copy->window;
-        trimmed += copy->oldest > std::max<int64_t>(0, copy->head - kN) ? 1 : 0;
+        const bool wasTrimmed = copy->oldest > std::max<int64_t>(0, copy->head - kN);
+        trimmed += wasTrimmed ? 1 : 0;
+        // Carry-over row 403's diagnostics: the first bad copy, and the swaps' state at it.
+        const auto recordBad = [&](const char *kind) {
+            Mismatch &m = mismatch;
+            m.seen = true;
+            m.kind = kind;
+            m.read = reads;
+            m.oldest = copy->oldest;
+            m.head = copy->head;
+            m.frames = w.frames();
+            m.trimmed = wasTrimmed;
+            m.full = copy->head >= kN;
+            m.swaps = swaps;
+            m.adopted = adopted;
+            m.adoptedFull = adoptedFull;
+            m.offerOpen = offerOpen;
+            m.lastSwapHead = lastSwapHead;
+            m.headNow = p.ringRead(0).head->load(std::memory_order_acquire);
+        };
         if (copy->oldest + w.frames() != copy->head)
         {
             ++bad;
+            if (!mismatch.seen)
+            {
+                recordBad("not contiguous");
+            }
             continue;
         }
+        int64_t first = -1;
         for (int64_t f = 0; f < w.frames(); ++f)
         {
             const auto v = static_cast<float>((copy->oldest + f) % 1000000);
             if (w.channel(0)[f] != v || w.channel(1)[f] != -v)
             {
-                ++bad;
+                first = f;
                 break;
+            }
+        }
+        if (first >= 0)
+        {
+            ++bad;
+            if (!mismatch.seen)
+            {
+                // What the bad frame holds names the mechanism (classifyMismatch).
+                recordBad("");
+                Mismatch &m = mismatch;
+                m.hasFrame = true;
+                m.frame = copy->oldest + first;
+                m.foundL = w.channel(0)[first];
+                m.foundR = w.channel(1)[first];
+                m.expected = static_cast<float>(m.frame % 1000000);
+                // Read the copy again, through volatile so that the compiler loads it again: a
+                // value that differs now was a load or compare fault, not a wrong copy (the copy
+                // is this thread's own buffer, written once).
+                m.againL = static_cast<const volatile float *>(w.channel(0))[first];
+                m.againR = static_cast<const volatile float *>(w.channel(1))[first];
+                for (int64_t f = first; f < w.frames(); ++f)
+                {
+                    const auto v = static_cast<float>((copy->oldest + f) % 1000000);
+                    if (w.channel(0)[f] != v || w.channel(1)[f] != -v)
+                    {
+                        ++m.badFrames;
+                        m.lastBad = copy->oldest + f;
+                    }
+                }
+                // Every storage in this test is RingStorage(kN, kPiece): capacity kN + kPiece.
+                m.kind = classifyMismatch(m.frame, m.foundL, m.foundR,
+                                          kN + static_cast<int64_t>(kPiece));
             }
         }
     }
@@ -1913,6 +2042,32 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     INFO("reads " << reads << ", trimmed " << trimmed << ", swaps " << swaps << ", adopted "
                   << adopted << " (" << adoptedFull << " of a full ring), declined "
                   << p.ringAdoptionsDeclined(0));
+    // Carry-over row 403: the first bad copy, which names the mechanism (classifyMismatch).
+    std::ostringstream firstBad;
+    if (mismatch.seen)
+    {
+        const Mismatch &m = mismatch;
+        firstBad << "first bad read: " << m.kind << "; read " << m.read << ", oldest " << m.oldest
+                 << ", head " << m.head << ", frames " << m.frames
+                 << (m.trimmed ? ", trimmed" : ", untrimmed")
+                 << (m.full ? ", head >= N" : ", head < N");
+        if (m.hasFrame)
+        {
+            firstBad << "; frame " << m.frame << " (index " << m.frame - m.oldest << "): found L "
+                     << m.foundL << " R " << m.foundR << " (read again: L " << m.againL << " R "
+                     << m.againR << "), expected L " << m.expected << "; bad frames in the copy "
+                     << m.badFrames << ", the last " << m.lastBad;
+        }
+        firstBad << "; at that read: swaps " << m.swaps << ", adopted " << m.adopted << " ("
+                 << m.adoptedFull << " of a full ring), an offer "
+                 << (m.offerOpen ? "open" : "settled") << ", the last swap's head "
+                 << m.lastSwapHead << ", the head now " << m.headNow;
+    }
+    else
+    {
+        firstBad << "no bad read";
+    }
+    INFO(firstBad.str());
     // Reaching a safety bound before the work was done fails here.
     CHECK_FALSE(hung.load());
     CHECK(reads >= kReads);
