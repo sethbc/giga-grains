@@ -270,10 +270,14 @@ onsets tick at drum transients (its golden uses a sweep because its click score 
 by seed on `loop-48k.wav`). Play [fx-22-shard-storm](../../../build/release/listening/m2-presets/fx-22-shard-storm.wav), then put it on a drum loop in a
 host. Answer: `accept` or `no`.
 
+> *Director, 2026-11-03:* **accept**.
+
 **28. Row 395: do 17 and 18 need to say more about the transport?** They sound like plain
 clouds without a playing transport (their descriptions say so; the renders run at 120 BPM). Play
 [fx-17-bar-climber](../../../build/release/listening/m2-presets/fx-17-bar-climber.wav) and [fx-18-dotted-echoes](../../../build/release/listening/m2-presets/fx-18-dotted-echoes.wav); 18 and 21 are quiet over
 the sparse loop. Answer: `accept` or `reword`.
+
+> *Director, 2026-11-03:* **accept**, no reword.
 
 **29. Row 396: any tag word to strike or add?** The 29 words: focus `texture` `playable`
 `rhythmic` `extreme`; character `pad` `drone` `freeze` `smear` `stretch` `glitch` `keys` `pluck`
@@ -284,14 +288,20 @@ it: the content has no voice) and `dry` (none uses it either; the browser hides 
 (one preset), `mono` (two) and `live-input` (all 24 FX presets). The other 24 words stand as
 `keep`. Answer: for example `voice strike, dry strike, others keep`; to add a word, name it.
 
+> *Director, 2026-11-03:* **strike `live-input`** (confirmed); every other word stays (`voice`, `dry`, `sidechain`, `mono` and the rest). The strike itself is Task 17b's.
+
 **30. Row 396: any name or tag to change?** "Horizon" is in both products' names (Event
 Horizon, Bowed Horizon); 18 Dotted Echoes' fixed 375 ms is a dotted eighth only at 120 BPM (its
 description says so); all 24 FX presets are tagged `live-input` though only 04 reads a content
 sample. Answer: `none`, or the change.
 
+> *Director, 2026-11-03:* **none**: no rename.
+
 **31. Row 397: does the dark browser's list ground look right?** It changed slightly with
 row 313: the lane's dark became the header's ground. Open the preset browser in the dark theme in
 any host, over the strip. Answer: `ok` or `no`.
+
+> *Director, 2026-11-03:* **yes**.
 
 ## The host matrix
 
