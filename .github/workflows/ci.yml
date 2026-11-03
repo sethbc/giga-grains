@@ -639,6 +639,9 @@ jobs:
           key: ccache-${{ runner.os }}-${{ matrix.preset }}-${{ matrix.os }}-${{ github.sha }}
 
       - name: Test (unit, plugin and golden)
+        # Not skipped by an earlier failed check (the libstdc++ one on Linux): once the build
+        # succeeds, every later check runs, the event-log gate included.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The x86 legs must run the 8-wide AVX2 kernels: kernel_require_avx2 fails when this is
         # set and avx2Kernels() is null. Never set on macOS (arm64, and the universal build's
         # x86_64 slice under Rosetta, which has no AVX2).
@@ -664,9 +667,13 @@ jobs:
 
       # The arm64 runner otherwise never runs the universal build's x86_64 slice. Under Rosetta 2
       # it runs the whole Catch2 suite, then every golden case with the same commands as the
-      # golden CTests, so the slice's grain-event logs are checked against the same goldens.
+      # golden CTests, so the slice's grain-event logs are checked against the same goldens: the
+      # 60 cases in tests/golden/cases and the 48 preset goldens in tests/golden/presets/cases
+      # (108), every one rendered with --content-dir (the fetched content, as the CTests pass).
       # The x86_64 slice writes the cases' media itself first (the media go through libm), as
-      # the golden_media fixture does, and every render resolves their paths there.
+      # the golden_media fixture does, and every render resolves their paths there. The preset
+      # goldens read the packed presets that the native ctest above built (the presets_built
+      # fixture, in $build_dir/golden-media/presets), copied beside that media.
       # arch -x86_64 fails on a binary without an x86_64 slice.
       # Three at a time (INTENT §23 #75): gg-tests in three Catch2 shards side by side (--order
       # decl, so the shards are disjoint), then the [serial] cases alone, since they measure time
@@ -712,18 +719,33 @@ jobs:
           out="$build_dir/golden-x86_64"
           arch -x86_64 "$render" --write-media "$out-media"
           export render out
+          content="${CONTENT_CACHE_DIR}/content"
+          # golden <spec> <expected dir> <output dir>: one case, as the golden CTest runs it.
           golden() {
             name="$(basename "$1" .json)"
             arch -x86_64 "$render" "$1" \
               --media-dir "$out-media" \
-              -o "$out/$name.wav" \
-              --spectrogram "$out/$name.png" \
-              --compare "tests/golden/expected/$name.metrics.json" \
-              --compare-events "tests/golden/expected/$name.events.jsonl" \
+              --content-dir "$content" \
+              -o "$3/$name.wav" \
+              --spectrogram "$3/$name.png" \
+              --compare "$2/$name.metrics.json" \
+              --compare-events "$2/$name.events.jsonl" \
               || { echo "::error title=Rosetta golden::$name"; return 1; }
           }
           export -f golden
-          printf '%s\n' tests/golden/cases/*.json | xargs -P 3 -I {} bash -c 'golden "$1"' _ {} || failed=1
+          export content
+          mkdir -p "$out/presets"
+          printf '%s\n' tests/golden/cases/*.json \
+            | xargs -P 3 -I {} bash -c 'golden "$1" tests/golden/expected "$out"' _ {} || failed=1
+          # The 48 preset goldens: the presets the native ctest packed (presets_built).
+          if [[ -d "$build_dir/golden-media/presets" ]]; then
+            cp -R "$build_dir/golden-media/presets" "$out-media/"
+            printf '%s\n' tests/golden/presets/cases/*.json \
+              | xargs -P 3 -I {} bash -c 'golden "$1" tests/golden/presets/expected "$out/presets"' _ {} || failed=1
+          else
+            echo "::error title=Rosetta golden::no packed presets in $build_dir/golden-media/presets (the native ctest's presets_built did not run)"
+            failed=1
+          fi
           exit "$failed"
 
       # Full length on the nightly schedule, workflow_dispatch and a release tag; --quick on a
@@ -782,8 +804,14 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ $status == 3 ]]; then
-            echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only until 1.0.0)"
-            status=0
+            # Only a real verdict is a warning: exit 3 without gg-bench's "verdict: N of M" line
+            # is something else wrong, and fails the step (carry-over 148).
+            if tr -d '\r' < "$out.txt" | grep -q '^verdict: [0-9]\+ of '; then
+              echo "::warning title=gg-bench::a ratio regressed, or a baseline entry is missing from the run, against $baseline (report-only until 1.0.0)"
+              status=0
+            else
+              echo "::error title=gg-bench::exit 3 without a verdict line in the output"
+            fi
           fi
           exit "$status"
 
