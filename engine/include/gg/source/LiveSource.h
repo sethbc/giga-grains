@@ -18,6 +18,12 @@
 
 namespace gg
 {
+namespace detail
+{
+/// clamp(x, 0, 1), with NaN read as 0: the head-proximity fade's clamp (LiveSource::fade).
+inline double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
+} // namespace detail
+
 /// The live ring source (spec §6.3), internal to the Engine: a stereo ring that the FX writes its
 /// input into before any grain of the same block reads it.
 ///
@@ -299,14 +305,43 @@ class LiveSource
         return blockHead_ + std::min(t - blockStart_ + 1, blockAdvance_);
     }
 
+    /// The last write() block's window at head R(t) = `head`: its end E (the head, or while a
+    /// splice is in effect its later mark, at most the head) and its oldest frame O = E − W, which
+    /// the admission limit N′ (ruling SP-T12ad) holds to never below R(t) − N′ (+ kCapSlack while
+    /// the read limit waits), nor past E. One splice lookup serves both.
+    struct Window
+    {
+        int64_t end;
+        int64_t oldest;
+    };
+    Window windowAt(int64_t head) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        if (spliceAt(head, start, end))
+        {
+            const int64_t e = std::min(head, end);
+            if (blockAdmit_ == 0)
+            {
+                return {e, start};
+            }
+            return {e, std::min(e, std::max(start, head - blockAdmit_ + blockSlack_))};
+        }
+        if (blockAdmit_ == 0)
+        {
+            return {head, head - window_};
+        }
+        return {head, std::max(head - window_, head - blockAdmit_ + blockSlack_)};
+    }
+
     /// The window's end E at output sample t of the last write() block: headAt(t), or while a
     /// splice is in effect its later mark (at most the head), or headAt(t) for the last splice.
     /// Position and Spray read seconds behind it (Engine's admission clamp).
-    int64_t anchorAt(int64_t t) const noexcept { return windowEnd(headAt(t)); }
+    int64_t anchorAt(int64_t t) const noexcept { return windowAt(headAt(t)).end; }
 
     /// The window's oldest frame E − W at output sample t of the last write() block: never below
     /// R(t) − N, and R(t) − N itself with Loop off and no splice.
-    int64_t windowOldestAt(int64_t t) const noexcept { return windowOldest(headAt(t)); }
+    int64_t windowOldestAt(int64_t t) const noexcept { return windowAt(headAt(t)).oldest; }
 
     /// headRunAfter(t), or 0 while a splice is in effect at t: a splice's window doesn't move
     /// with the head (the last splice's end does, which admission then treats as still,
@@ -347,12 +382,17 @@ class LiveSource
     int64_t windowFramesAt(int64_t t) const noexcept
     {
         const int64_t head = headAt(t);
-        return windowEnd(head) - windowOldest(head);
+        const Window w = windowAt(head);
+        return w.end - w.oldest;
     }
 
     /// W in effect at the end of the last write() block (a splice's span, the loop or N): the
     /// length of the window as of head(), which a capture reads.
-    int64_t windowFrames() const noexcept { return windowEnd(head_) - windowOldest(head_); }
+    int64_t windowFrames() const noexcept
+    {
+        const Window w = windowAt(head_);
+        return w.end - w.oldest;
+    }
 
     /// The sample of the last write() block from which on the head stands still for the rest of
     /// the block: blockStart + the frames written in the block, which is the block's end unless
@@ -416,7 +456,7 @@ class LiveSource
         const double toHead = (end - 1.0 - (pos + after)) / kMargin;
         const double fromTail =
             ((pos - before) - static_cast<double>(head - readFrames_)) / kMargin;
-        return unit(toHead) * unit(fromTail);
+        return detail::unit(toHead) * detail::unit(fromTail);
     }
 
     /// How many more frames the head will advance after output sample t of the last write()
@@ -461,7 +501,7 @@ class LiveSource
         const double fromTail =
             ((pos - static_cast<double>(kBefore)) - static_cast<double>(head - readFrames_)) /
             kMargin;
-        return unit(toHead) * unit(fromTail);
+        return detail::unit(toHead) * detail::unit(fromTail);
     }
 
     /// Where the last read() or readLinear() was, so that reads moving forward find their slot
@@ -523,8 +563,8 @@ class LiveSource
   private:
     static constexpr double kMargin = static_cast<double>(kHeadMargin);
     // A read's kTaps taps read slots s .. s + kTaps − 1, at most 16 (the sinc's). Slots
-    // C .. C + 14 mirror slots 0 .. 14, so the taps are contiguous wherever s falls.
-    static constexpr int64_t kGuardFrames = 15;
+    // C .. C + 14 (RingStorage::kGuardFrames) mirror slots 0 .. 14, so the taps are contiguous
+    // wherever s falls.
 
     // The slot of ring-time frame first >= 0, found from the cursor when reads move forward, and
     // recorded in it.
@@ -543,9 +583,6 @@ class LiveSource
     template <int kTaps>
     bool readTaps(double pos, int64_t head, Cursor &cursor, float &left,
                   float &right) const noexcept SST_CPPUTILS_NONBLOCKING;
-
-    // clamp(x, 0, 1), with NaN read as 0.
-    static double unit(double x) noexcept { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; }
 
     // The splice in effect at head R(t) for the last write() block: false when none is (no
     // selection, or no mark of the block in storage at R(t)), else its first mark and its later
@@ -580,35 +617,6 @@ class LiveSource
         return first;
     }
 
-    // The last write() block's window at head R(t): its end E, and its oldest frame E − W, never
-    // below R(t) − N.
-    int64_t windowEnd(int64_t head) const noexcept
-    {
-        int64_t start = 0;
-        int64_t end = 0;
-        return spliceAt(head, start, end) ? std::min(head, end) : head;
-    }
-    // With the admission limit N′ (ruling SP-T12ad), never below R(t) − N′ (+ kCapSlack while the
-    // read limit waits), nor past the window's end.
-    int64_t windowOldest(int64_t head) const noexcept
-    {
-        int64_t start = 0;
-        int64_t end = 0;
-        if (spliceAt(head, start, end))
-        {
-            if (blockAdmit_ == 0)
-            {
-                return start;
-            }
-            return std::min(std::min(head, end), std::max(start, head - blockAdmit_ + blockSlack_));
-        }
-        if (blockAdmit_ == 0)
-        {
-            return head - window_;
-        }
-        return std::max(head - window_, head - blockAdmit_ + blockSlack_);
-    }
-
     // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and
     // restoreStorage(); the head and the write slot are the caller's.
     void attach(RingStorage *storage) noexcept;
@@ -626,10 +634,10 @@ class LiveSource
     RingStorage *storage_{nullptr};        // the slots' storage, owned_ or the caller's
     std::unique_ptr<RingStorage> owned_;   // the storage prepare(rate, seconds, block) allocated
     std::unique_ptr<RingStorage> retired_; // owned_ once replaced, freed by the next prepare()
-    float *slots_{nullptr};                // C + kGuardFrames slots of 2 floats: s's c at 2s + c
-    int64_t frames_{0};                    // N, the storage's window
-    int64_t capacity_{0};                  // C = N + maxBlockSize slots (ruling M1-o)
-    int64_t maxBlock_{1};                  // B, the largest block write() takes
+    float *slots_{nullptr}; // C + RingStorage::kGuardFrames slots of 2 floats: s's c at 2s + c
+    int64_t frames_{0};     // N, the storage's window
+    int64_t capacity_{0};   // C = N + maxBlockSize slots (ruling M1-o)
+    int64_t maxBlock_{1};   // B, the largest block write() takes
     // levels_[n], its index clamped to the array: a caller's check against levelCount_ comes first,
     // but GCC 13 can't see it and warns (-Warray-bounds) on a constant index past the array.
     const RingView &levelView(uint32_t n) const noexcept

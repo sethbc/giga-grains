@@ -867,6 +867,17 @@ class Processor
         int64_t first{-1};
         int64_t last{-1};
     };
+    /// The span of the last process() call, as sample offsets into it, over which the limiter's
+    /// mode crossfade toward Peak was running (the director's K-2: entering Peak mid-sound over
+    /// hot material clicks, part of Peak's zero-attack law): [first, last], or first = -1 when
+    /// there was none. For the sweep harness's kLimiterDrive (tests only); reset every call.
+    struct PeakFadeSpan
+    {
+        int64_t first{-1};
+        int64_t last{-1};
+    };
+    PeakFadeSpan peakFadeSpan() const noexcept { return {tapPeakFadeFirst_, tapPeakFadeLast_}; }
+
     DelayGlideSpan delayGlideSpan() const noexcept { return {tapGlideFirst_, tapGlideLast_}; }
 
   private:
@@ -1211,6 +1222,8 @@ class Processor
     bool tapSoftDriven_{false};
     int64_t tapGlideFirst_{-1};
     int64_t tapGlideLast_{-1};
+    int64_t tapPeakFadeFirst_{-1};
+    int64_t tapPeakFadeLast_{-1};
     DelayParams delayParams_{};
     LimiterParams limiterParams_{};
     float delayDampCoeff_{1.0f};      ///< The damper's one-pole coefficient for Delay Damping.

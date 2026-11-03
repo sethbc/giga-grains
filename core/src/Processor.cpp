@@ -1593,6 +1593,8 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     tapSoftDriven_ = false;
     tapGlideFirst_ = -1;
     tapGlideLast_ = -1;
+    tapPeakFadeFirst_ = -1;
+    tapPeakFadeLast_ = -1;
     takeOffers();
     // The input feeds the rings in both products (M2 sub-project 1's spec §6.2), and the mix in
     // the FX alone (render).
@@ -2280,6 +2282,12 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                     std::max(std::abs(side[0]), std::abs(side[1])) > 2.0f * ceiling)
                 {
                     tapSoftDriven_ = true;
+                }
+                if (limiter_.fadeToPeakWith(limiterParams_.mode))
+                {
+                    const int64_t at = t - b.callStart;
+                    tapPeakFadeFirst_ = tapPeakFadeFirst_ < 0 ? at : tapPeakFadeFirst_;
+                    tapPeakFadeLast_ = at;
                 }
                 limiter_.process(side[0], side[1], limiterParams_.mode, ceiling,
                                  limiterRelease_.at(t, rampSamples_));

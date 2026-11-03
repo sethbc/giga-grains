@@ -26,7 +26,9 @@
 // - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 378): the limiter's
 //   laws stand (zero lookahead, no attack), so a ceiling far under the material is a law
 //   consequence, not a defect. The check looks away over every call in which Peak's gain fell
-//   below -6 dB, or Soft's input passed twice the ceiling, and 10 ms after it.
+//   below -6 dB, or Soft's input passed twice the ceiling, and 10 ms after it; and every sample
+//   of a limiter mode fade toward Peak (Processor::peakFadeSpan), and 10 ms after, whatever the
+//   calls (the director's K-2, 2026-11-02; INTENT §23 #79): entering Peak mid-sound clicks.
 // - kDelayGlideHold (D-glide, option 1, 2026-10-31; row 379): the delay's Time glide is
 //   tape-like by design, and inside a Feedback 100% loop it re-reads each pass a fifth higher.
 //   The check looks away over the samples where Delay Amount is above 0, the delay's Feedback is
@@ -186,9 +188,6 @@ class SweepDriver
     static constexpr int64_t kFade = 480;
     static constexpr double kInputHz = 220.0;
     static constexpr float kInputAmp = 0.5f;
-    /// LiveSource's mirrored guard frames after its ring (its kGuardFrames, private there): the
-    /// live-ring check covers them.
-    static constexpr int64_t kLiveGuardFrames = 15;
     static constexpr int16_t kNoteKey = 60;
     /// How long after a Reverb Size move, beyond the pre-delay then in effect, the click check
     /// looks away (row 217): Reverb 2's lines jump to their new lengths at the next chunk, and the
@@ -196,7 +195,8 @@ class SweepDriver
     /// this sine, and up to 0.36 s past a 0.3 s pre-delay in a burst.
     static constexpr int64_t kReverbSizeExempt = 28800;
     /// kLimiterDrive: Peak's gain below this (-6 dB) over a call, or Soft's input past twice the
-    /// ceiling (Processor::limiterDrive reads that one), exempts the call...
+    /// ceiling (Processor::limiterDrive reads that one), exempts the call, and so does every
+    /// sample of a mode fade into Peak (Processor::peakFadeSpan; K-2, INTENT §23 #79)...
     static constexpr float kPeakDriveGain = 0.5011872336f; // 10^(-6/20)
     /// ...and this many samples after it (10 ms).
     static constexpr int64_t kLimiterDriveTail = 480;

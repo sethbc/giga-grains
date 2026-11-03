@@ -123,6 +123,14 @@ class Limiter
         r = outR;
     }
 
+    /// True when the next process() call with `mode` is a sample of a mode fade toward Peak: a
+    /// fade is running toward Peak (its last call included) or `mode` is Peak and not yet the
+    /// mode. For the sweep harness's tap (tests only).
+    bool fadeToPeakWith(LimiterMode mode) const noexcept
+    {
+        return mode == LimiterMode::Peak && (fading_ || mode_ != LimiterMode::Peak);
+    }
+
     /// Peak's last gain, 1 while Peak isn't in use. For tests.
     float gain() const noexcept { return static_cast<float>(gain_); }
 

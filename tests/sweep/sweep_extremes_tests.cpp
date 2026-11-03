@@ -54,13 +54,15 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
 struct Shares
 {
     double fadeIn, reverbSize, limiterDrive, delayGlideHold;
+    double frames; ///< The render's length in samples.
 };
 
 Shares sharesOf(const SweepDriver &d)
 {
     using gg::test::Exemption;
     return {d.exemptShare(Exemption::FadeIn), d.exemptShare(Exemption::ReverbSize),
-            d.exemptShare(Exemption::LimiterDrive), d.exemptShare(Exemption::DelayGlideHold)};
+            d.exemptShare(Exemption::LimiterDrive), d.exemptShare(Exemption::DelayGlideHold),
+            static_cast<double>(d.clock())};
 }
 
 std::string describe(const Shares &s)
@@ -215,26 +217,38 @@ Shares chainCorners(Mode mode, uint64_t seed, double minScored)
 }
 } // namespace
 
+namespace
+{
+/// The eight Soft-to-Peak mode fades of the chain corners (480 samples and 480 after each), as a
+/// share of `frames`.
+constexpr double kPeakFadeShare(double frames) { return 8 * 960.0 / frames; }
+/// Slack on a share: a rounding error's worth, not a sample.
+constexpr double kShareEpsilon = 1e-6;
+} // namespace
+
 // The floors, a little under what each case measures (the integration review's Minor 2,
 // 2026-11-01): the FX scores 0.4253 of its render (it scored 0.3323 while the reverb's onset was
 // exempt, row 302), the instrument 0.3698 (0.2795). Each exemption's own share in the FX: the
-// fade-in 0.08%, Reverb Size moves 45.3%, kLimiterDrive 0 and kDelayGlideHold 31.5%; in the
-// instrument 0.08%, 44.8%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling is held at 0 dB,
-// so a share there means the limiter is driven where the case says it isn't. (Row 381 moved the
-// FX's largest click score from 8.81 to 8.71 when its Spectral layers' analysis began to follow
-// their rings' windows; measured with the reverb's onset still exempt.)
+// fade-in 0.08%, Reverb Size moves 45.3%, kLimiterDrive 0.84% and kDelayGlideHold 31.5%; in the
+// instrument 0.08%, 44.8%, 0.84% and 24.9%. kLimiterDrive is pinned to the stretches it must
+// cover (K-2): the render starts at Off and `setChainCorner` alternates Soft (even corners) and
+// Peak (odd ones), so there are eight Soft-to-Peak mode fades, each 480 samples and the 480 after
+// (kPeakFadeShare below). The ceiling is held at 0 dB, so more means the limiter is driven where
+// the case says it isn't. (Row 381 moved the FX's largest click score from 8.81 to 8.71 when
+// its Spectral layers' analysis began to follow their rings' windows; measured with the reverb's
+// onset still exempt.)
 TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, fx", "[sweep]")
 {
     const Shares shares = chainCorners(Mode::Fx, 2104, 0.42);
     INFO(describe(shares));
-    CHECK(shares.limiterDrive == 0.0);
+    CHECK(shares.limiterDrive <= kPeakFadeShare(shares.frames) + kShareEpsilon);
 }
 
 TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, instrument", "[sweep]")
 {
     const Shares shares = chainCorners(Mode::Instrument, 2105, 0.365);
     INFO(describe(shares));
-    CHECK(shares.limiterDrive == 0.0);
+    CHECK(shares.limiterDrive <= kPeakFadeShare(shares.frames) + kShareEpsilon);
 }
 
 namespace

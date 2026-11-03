@@ -841,7 +841,7 @@ TEST_CASE("sinc reference follows the spec's arithmetic", "[kernel]")
         constexpr int64_t kFreezeAt = 3000;
         constexpr int64_t kLength = 4500;
         constexpr auto kMargin = static_cast<double>(gg::LiveSource::kHeadMargin);
-        const auto unit = [](double x) { return x > 0.0 ? (x < 1.0 ? x : 1.0) : 0.0; };
+        using gg::detail::unit;
         const int64_t ramp = gg::LiveSource::freezeRampSamples(kRate);
         const std::vector<float> input[2] = {noise(kLength, 5, 0), noise(kLength, 5, 1)};
         std::vector<float> stored[2] = {input[0], input[1]};

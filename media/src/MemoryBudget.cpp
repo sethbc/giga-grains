@@ -15,7 +15,7 @@ namespace
 {
 constexpr uint64_t kMiB = uint64_t{1} << 20;
 constexpr uint64_t kFloat = sizeof(float);
-/// A ring's guard slots past each level's end (RingStorage::kGuardFrames, LiveSource's).
+/// A ring's guard slots past each level's end (RingStorage::kGuardFrames).
 constexpr auto kRingGuard = static_cast<uint64_t>(RingStorage::kGuardFrames);
 /// The guard frames a source's interleaved copy and each pyramid level carry, before and after.
 constexpr auto kSourceGuards = 2 * static_cast<uint64_t>(InterleavedStereo::kGuardFrames);
