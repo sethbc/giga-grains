@@ -1561,6 +1561,35 @@ TEST_CASE("a narrow strip draws the Source kinds' short forms and keeps their na
     }
 }
 
+TEST_CASE("a theme switch lays a narrow strip out again", "[plugin]")
+{
+    // Row 388 (i): LayerStrip measures its menus in resized() and relies on lookAndFeelChanged
+    // (which a theme switch sends to every component) to run it again for a new sheet's fonts.
+    // Pinned in the editor at its smallest: a stale layout is put right by the switch, in both
+    // directions, and the Source button still fits its short form.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const auto editor = gg::ui::makeEditor(recording.context);
+    editor->setSize(gg::ui::kEditorMinWidth, gg::ui::kEditorMinHeight);
+    REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Perform));
+    juce::Component *perform = findDeep(*editor, "view.perform");
+    REQUIRE(perform != nullptr);
+    auto *source = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(*perform, controlId(ParamSlot::B_Source).toRawUTF8()));
+    REQUIRE(source != nullptr);
+    const juce::Rectangle<int> laidOut = source->getBounds();
+    REQUIRE_FALSE(laidOut.isEmpty());
+    CHECK(source->labelFits());
+    for (const gg::ui::ThemeChoice theme : {gg::ui::ThemeChoice::Light, gg::ui::ThemeChoice::Dark})
+    {
+        INFO((theme == gg::ui::ThemeChoice::Light ? "light" : "dark"));
+        source->setBounds(laidOut.withWidth(4)); // stale: as an old sheet's fonts left it
+        REQUIRE(gg::ui::setTheme(*editor, theme));
+        CHECK(source->getBounds() == laidOut);
+        CHECK(source->labelFits());
+    }
+}
+
 TEST_CASE("selecting a layer in the strip", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
