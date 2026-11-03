@@ -48,7 +48,7 @@ float ceilingGain(float dB)
     return static_cast<float>(gg::exp2Det(static_cast<double>(dB) * kLog2Of10 / 20.0));
 }
 
-// Four Sample layers over four sines at the pad's centre, Mix 1, hot (Level +12 dB): the wet sum
+// Four Sample layers over four sines at the pad's center, Mix 1, hot (Level +12 dB): the wet sum
 // is well past 0.5 and the reverb idle.
 void hotLayers(Processor &p)
 {

@@ -93,7 +93,7 @@ struct DecodeResult
 /// The file is opened once, by its native path (wide, with `_wfopen`, on Windows), and each
 /// decoder reads it in turn.
 /// `cancel`, when given, is read before each chunk the decoder reads: once it is set, the decode
-/// stops and fails with an error saying it was cancelled (the sample loader's prompt stop,
+/// stops and fails with an error saying it was canceled (the sample loader's prompt stop,
 /// carry-over [194]). Never set, it changes nothing.
 DecodeResult decodeAudioFile(const std::filesystem::path &path, uint64_t maxDecodedBytes,
                              const std::atomic<bool> *cancel = nullptr);

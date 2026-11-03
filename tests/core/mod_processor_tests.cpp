@@ -447,7 +447,7 @@ TEST_CASE("random and step are repeatable and keyed by layer", "[core][mod]")
 TEST_CASE("midi sources arrive on the grid", "[core][mod]")
 {
     // Mod Wheel on Pitch and Pitch Bend on Size (layer A): a Mod Wheel event at sample 5 applies
-    // at the boundary 32, in 1-sample calls as in any others; Pitch Bend at its centre adds
+    // at the boundary 32, in 1-sample calls as in any others; Pitch Bend at its center adds
     // nothing through a Bipolar curve; a note-on's velocity and key are sources from its boundary.
     Processor p({kRate, 512, 3, Mode::Instrument});
     ModRoutes routes{};
@@ -483,9 +483,9 @@ TEST_CASE("midi sources arrive on the grid", "[core][mod]")
 
     std::vector<float> l(64), r(64);
     float *block[2] = {l.data(), r.data()};
-    // Pitch bend at the centre: Size exactly at its base; at the top, +2.
-    const ControlEvent centre{0, ControlKind::PitchBend, -1, 0.5f};
-    p.process(nullptr, 0, block, 2, 64, {}, {}, std::span(&centre, 1));
+    // Pitch bend at the center: Size exactly at its base; at the top, +2.
+    const ControlEvent center{0, ControlKind::PitchBend, -1, 0.5f};
+    p.process(nullptr, 0, block, 2, 64, {}, {}, std::span(&center, 1));
     CHECK(bitsOf(p.effective(ParamSlot::Size)) == bitsOf(size));
     const std::array<ControlEvent, 2> bends{
         {{0, ControlKind::PitchBend, 15, 1.0f}, {10, ControlKind::Aftertouch, 0, 0.3f}}};

@@ -35,15 +35,15 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
         const auto lane = laneOf(*canvas, 0, false, 48000.0, 48000);
         const float off = static_cast<float>(canvas->laneBounds(0).getX());
         const auto rect = gg::ui::scanRect({0.5f, 0.4f, 0.0f, 0.0f}, lane);
-        const float centre = 0.5f * (rect.x0 + rect.x1);
+        const float center = 0.5f * (rect.x0 + rect.x1);
         const float y = rect.y0;
-        REQUIRE(gg::ui::hitTestRect(centre, y, rect, kTol, lane) == gg::ui::DragTarget::Body);
+        REQUIRE(gg::ui::hitTestRect(center, y, rect, kTol, lane) == gg::ui::DragTarget::Body);
 
-        const juce::Point<float> down{off + centre, y};
-        canvas->mouseDown(mouseAt(*canvas, off + centre, y, down, false));
+        const juce::Point<float> down{off + center, y};
+        canvas->mouseDown(mouseAt(*canvas, off + center, y, down, false));
         for (float dx : {10.0f, 20.0f, 30.0f})
         {
-            canvas->mouseDrag(mouseAt(*canvas, off + centre - dx, y, down, true));
+            canvas->mouseDrag(mouseAt(*canvas, off + center - dx, y, down, true));
         }
         // Released well outside the canvas, to the left of the editor.
         canvas->mouseUp(mouseAt(*canvas, -200.0f, y, down, true));
@@ -59,7 +59,7 @@ TEST_CASE("a canvas drag emits begin, values, end once", "[plugin]")
             previous = c.value;
         }
         CHECK(recording.calls[3].value ==
-              gg::ui::positionValueAtX(centre - 30.0f, lane)); // the last drag position
+              gg::ui::positionValueAtX(center - 30.0f, lane)); // the last drag position
 
         // Nothing more: another release or the editor closing ends nothing again.
         canvas->mouseUp(mouseAt(*canvas, -200.0f, y, down, true));
@@ -213,7 +213,7 @@ TEST_CASE("the canvas draws the grains the queue holds", "[plugin]")
     const float height = static_cast<float>(canvas->laneBounds(0).getHeight()); // lane A's top is 0
 
     // The lane's vertical axis is pitch (M2 Views' D1): rate 4, two octaves up, lies half the
-    // reach above the centre, and rate 1/2, an octave down, a quarter of the reach below it.
+    // reach above the center, and rate 1/2, an octave down, a quarter of the reach below it.
     const auto grain = [](int64_t onset, double behindSeconds, float rate) {
         return gg::core::GrainVis{onset, static_cast<double>(kNow) - behindSeconds * kRate,
                                   rate,  static_cast<float>(0.1 * kRate),
@@ -375,7 +375,7 @@ TEST_CASE("the canvas draws each layer's grains in its lane", "[plugin]")
     snapshots.push(snapshot);
     canvas->renderFrame(); // clears the queue: what follows is the first to be read
 
-    // One grain per layer, at rate 1 (the lane's centre), each 4 s back, the same x.
+    // One grain per layer, at rate 1 (the lane's center), each 4 s back, the same x.
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         REQUIRE(
@@ -386,13 +386,13 @@ TEST_CASE("the canvas draws each layer's grains in its lane", "[plugin]")
     CHECK(canvas->liveGrainCount() == 4);
     const auto x = static_cast<uint32_t>(
         std::lround(static_cast<float>(canvas->laneBounds(0).getWidth()) * (1.0f - 3.95f / 16.0f)));
-    const auto centreOf = [canvas](uint8_t layer) {
+    const auto centerOf = [canvas](uint8_t layer) {
         return static_cast<uint32_t>(canvas->laneBounds(layer).getCentreY());
     };
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         INFO("lane " << int(layer));
-        CHECK(canvas->accumAt(x, centreOf(layer)) > 0.0f);
+        CHECK(canvas->accumAt(x, centerOf(layer)) > 0.0f);
     }
     // One layer's grain lights its own lane alone: the clock moves on past all four, then layer
     // C plays one (4 s behind the head, which has moved on with the clock).
@@ -401,7 +401,7 @@ TEST_CASE("the canvas draws each layer's grains in its lane", "[plugin]")
     canvas->renderFrame();
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
-        CHECK(canvas->accumAt(x, centreOf(layer)) == 0.0f);
+        CHECK(canvas->accumAt(x, centerOf(layer)) == 0.0f);
     }
     REQUIRE(queue.push(gg::core::GrainVis{kLater - 100, static_cast<double>(kLater) - 4.0 * kRate,
                                           1.0f, static_cast<float>(0.1 * kRate), 1.0f, 0.0f, 2}));
@@ -409,7 +409,7 @@ TEST_CASE("the canvas draws each layer's grains in its lane", "[plugin]")
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         INFO("lane " << int(layer));
-        CHECK((canvas->accumAt(x, centreOf(layer)) > 0.0f) == (layer == 2));
+        CHECK((canvas->accumAt(x, centerOf(layer)) > 0.0f) == (layer == 2));
     }
 }
 
@@ -883,7 +883,7 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     CHECK(litInside > 0);
 }
 
-TEST_CASE("the lanes' overlay colours are the same in both themes", "[plugin]")
+TEST_CASE("the lanes' overlay colors are the same in both themes", "[plugin]")
 {
     // D9: the lanes stay dark in the light theme, so everything drawn on them is theme-invariant.
     const gg::ui::Palette &dark = gg::ui::Palette::dark();
@@ -934,13 +934,13 @@ TEST_CASE("Escape mid canvas drag re-enables undo", "[plugin]")
     const auto lane = laneOf(*f.canvas, 0, false, 48000.0, 48000);
     const float off = static_cast<float>(f.canvas->laneBounds(0).getX());
     const auto rect = gg::ui::scanRect({0.5f, 0.4f, 0.0f, 0.0f}, lane);
-    const float centre = 0.5f * (rect.x0 + rect.x1);
+    const float center = 0.5f * (rect.x0 + rect.x1);
     const float y = rect.y0;
-    REQUIRE(gg::ui::hitTestRect(centre, y, rect, kTol, lane) == gg::ui::DragTarget::Body);
+    REQUIRE(gg::ui::hitTestRect(center, y, rect, kTol, lane) == gg::ui::DragTarget::Body);
 
-    const juce::Point<float> down{off + centre, y};
-    f.canvas->mouseDown(mouseAt(*f.canvas, off + centre, y, down, false));
-    f.canvas->mouseDrag(mouseAt(*f.canvas, off + centre - 20.0f, y, down, true));
+    const juce::Point<float> down{off + center, y};
+    f.canvas->mouseDown(mouseAt(*f.canvas, off + center, y, down, false));
+    f.canvas->mouseDrag(mouseAt(*f.canvas, off + center - 20.0f, y, down, true));
     // Mid drag the stack waits for the gesture: undo does nothing.
     CHECK(f.undo.busy());
     f.undo.undo();

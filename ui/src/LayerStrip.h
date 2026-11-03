@@ -19,7 +19,7 @@
 namespace gg::ui
 {
 /// The layers' header controls (M2 sub-project 6's spec §6.3, §6.5), component ID "strip": per
-/// layer L (0 to 3, A to D) a letter button in the layer's colour ("strip.<L>.letter"), which
+/// layer L (0 to 3, A to D) a letter button in the layer's color ("strip.<L>.letter"), which
 /// selects the layer, and the ParamControls of its On switch, Level (a horizontal slider), Source
 /// and Freeze (IDs "param.<id>"). The letters take keyboard focus.
 ///

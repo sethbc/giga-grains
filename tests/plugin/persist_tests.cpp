@@ -1005,7 +1005,7 @@ TEST_CASE("a resize lands with kAdoptCopyFrames written since its copy and not a
 TEST_CASE("params.flush adopts no ring: the offer waits whole for the next process call",
           "[plugin]")
 {
-    // The programme manager's ruling (CLAUDE.md: params.flush stays trivial): a restore offered
+    // The program manager's ruling (CLAUDE.md: params.flush stays trivial): a restore offered
     // while active is a ring, a source and values on layer A's exchange; a flush takes none of it,
     // and the next process() call applies it all at its start, the ring held from that call's
     // first sample, so it renders as a restore made before the first call does.

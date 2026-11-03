@@ -722,9 +722,9 @@ TEST_CASE("decode stops once its cancel flag is set", "[media]")
     }
 
     cancel = true;
-    const auto cancelled = decodeAudioFile(file, kBound, &cancel);
-    CHECK_FALSE(cancelled.audio.has_value());
-    CHECK(cancelled.error.find("cancelled") != std::string::npos);
+    const auto canceled = decodeAudioFile(file, kBound, &cancel);
+    CHECK_FALSE(canceled.audio.has_value());
+    CHECK(canceled.error.find("canceled") != std::string::npos);
 }
 
 TEST_CASE("decodeAudioBytes decodes what decodeAudioFile decodes", "[media]")

@@ -135,7 +135,7 @@ constexpr int kChainCorners = 16;
 /// Resample and Spectral corner `c` (the integration review's Minor 2): every parameter at the
 /// end corner c draws for it, as setAll's corners, then every layer on, its Source Resample (2)
 /// or Spectral (3) by turns, the delay engaged at Amount 100% and the limiter Soft or Peak by
-/// turns, with the pad at its centre and, in the FX, Mix 100%, so every layer is heard through the
+/// turns, with the pad at its center and, in the FX, Mix 100%, so every layer is heard through the
 /// chain. The ring parameters (Ring Length, Loop, Loop Length, Overdub, Splice) keep their drawn
 /// ends, so Resample's loop runs back through the delay and the limiter (D4: the tap is after
 /// the limiter) and Spectral reads rings of every length, looping and overdubbing or not.

@@ -159,7 +159,7 @@ class SampleLoader
     /// outlive the loader, is the instance's memory budget (the class comment); nullptr for none.
     SampleLoader(std::filesystem::path settingsFile, Callbacks callbacks, uint8_t layer = 0,
                  media::MemoryBudget *budget = nullptr);
-    /// Stops the worker, cancelling a job in progress (see Threads).
+    /// Stops the worker, canceling a job in progress (see Threads).
     ~SampleLoader();
     SampleLoader(const SampleLoader &) = delete;
     SampleLoader &operator=(const SampleLoader &) = delete;
@@ -255,7 +255,7 @@ class SampleLoader
     /// with (Processor::setSourceNow); nullptr for none. Then restarts the worker if a job waits.
     /// Never throws: a failed conversion of a pending buffer leaves no source and the status Error.
     std::shared_ptr<const PreparedSource> activate(double sampleRate) noexcept;
-    /// The plugin's deactivate(): stops the worker, cancelling a job in progress and queuing it
+    /// The plugin's deactivate(): stops the worker, canceling a job in progress and queuing it
     /// again (see Threads), and applies what it finished, as onMainThread() would but with
     /// nothing offered.
     void deactivate() noexcept;
@@ -312,7 +312,7 @@ class SampleLoader
         bool differentAudio{false}; ///< Relink: not the entry's fingerprint
         bool relink{false};         ///< the job was a Relink
         std::string error;          ///< non-empty on failure
-        bool cancelled{false};      ///< stopped part way by cancel_: nothing else is set
+        bool canceled{false};       ///< stopped part way by cancel_: nothing else is set
     };
 
     /// Queues `job` as the only waiting one, starting the worker if needed.

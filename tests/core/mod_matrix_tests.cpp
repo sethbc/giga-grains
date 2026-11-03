@@ -546,7 +546,7 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
 
 TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[core][mod]")
 {
-    // The programme manager's ruling PM-1 (M2 sub-project 3's spec §6.1): the layer rule refuses
+    // The program manager's ruling PM-1 (M2 sub-project 3's spec §6.1): the layer rule refuses
     // the modulators' own controls by name (LFO, Env, Random and Step, rows 0x0F to 0x30) and
     // admits every other layer parameter, wave 2's included; Budget is a global target.
     using gg::core::isModulatorControl;

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
-#ifndef GG_UI_PRESETCOLOURS_H
-#define GG_UI_PRESETCOLOURS_H
+#ifndef GG_UI_PRESETCOLORS_H
+#define GG_UI_PRESETCOLORS_H
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -17,7 +17,7 @@ namespace gg::ui
 /// theme switch), as LoaderStrip does; what they paint themselves they read as they paint.
 
 /// A button: the ground, the accent over it when on, the dim text off and the text on.
-inline void colourButton(juce::TextButton &button, const Palette &palette)
+inline void colorButton(juce::TextButton &button, const Palette &palette)
 {
     button.setColour(juce::TextButton::buttonColourId, palette.background);
     button.setColour(juce::TextButton::buttonOnColourId, palette.accent.withAlpha(0.35f));
@@ -27,15 +27,15 @@ inline void colourButton(juce::TextButton &button, const Palette &palette)
 }
 
 /// A single-line text box on the palette's ground.
-inline void colourEditor(juce::TextEditor &editor, const Palette &palette)
+inline void colorEditor(juce::TextEditor &editor, const Palette &palette)
 {
     editor.setColour(juce::TextEditor::backgroundColourId, palette.background);
     editor.setColour(juce::TextEditor::textColourId, palette.text);
     editor.setColour(juce::TextEditor::outlineColourId, palette.outline);
     editor.setColour(juce::TextEditor::focusedOutlineColourId, palette.accent);
-    // The text shown while the box is empty is not a colour id: set it again, with its text.
+    // The text shown while the box is empty is not a color id: set it again, with its text.
     editor.setTextToShowWhenEmpty(editor.getTextToShowWhenEmpty(), palette.dimText);
 }
 } // namespace gg::ui
 
-#endif // GG_UI_PRESETCOLOURS_H
+#endif // GG_UI_PRESETCOLORS_H

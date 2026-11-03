@@ -77,10 +77,10 @@ float capsuleRadius(const LaneGeometry &g)
     return scaled > 1.5f ? scaled : 1.5f; // NaN gives 1.5
 }
 
-/// The y of the lane's centre, where a pitch of 0 semitones lies.
-double laneCentre(const LaneGeometry &g) { return g.top + 0.5 * g.height; }
+/// The y of the lane's center, where a pitch of 0 semitones lies.
+double laneCenter(const LaneGeometry &g) { return g.top + 0.5 * g.height; }
 
-/// How far a pitch may move from the lane's centre, kLaneSemitones' worth (the half-height less
+/// How far a pitch may move from the lane's center, kLaneSemitones' worth (the half-height less
 /// the capsules' radius); not positive when the lane can't place a pitch.
 double pitchReach(const LaneGeometry &g) { return 0.5 * g.height - capsuleRadius(g); }
 
@@ -101,14 +101,14 @@ float pitchY(float rate, const LaneGeometry &g, float radius) noexcept
     {
         return 0.0f;
     }
-    const double centre = laneCentre(g);
-    const double reach = 0.5 * g.height - radius; // NaN for a NaN radius: centred below
+    const double center = laneCenter(g);
+    const double reach = 0.5 * g.height - radius; // NaN for a NaN radius: centered below
     if (!(rate > 0.0f) || !std::isfinite(rate) || !(reach > 0.0))
     {
-        return static_cast<float>(centre);
+        return static_cast<float>(center);
     }
     const double semitones = 12.0 * std::log2(static_cast<double>(rate));
-    const double y = centre - semitones * reach / kLaneSemitones;
+    const double y = center - semitones * reach / kLaneSemitones;
     // reach > 0, so the bounds are in order.
     return static_cast<float>(std::clamp(y, g.top + static_cast<double>(radius),
                                          g.top + static_cast<double>(g.height) - radius));
@@ -166,8 +166,8 @@ Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geo
                                                           geometry.ringSeconds);
         return {toPixel(newest - spray), toPixel(newest)};
     }
-    const double centre = geometry.width * position;
-    return {toPixel(centre - spray), toPixel(centre + spray)};
+    const double center = geometry.width * position;
+    return {toPixel(center - spray), toPixel(center + spray)};
 }
 
 std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effective,
@@ -260,12 +260,12 @@ WindowRect scanRect(const ScanRectValues &v, const LaneGeometry &g) noexcept
     const Window w = scanWindow(v.position, v.spray, g);
     const double pitch = clampOrZero(v.pitch, -kPitchMax, kPitchMax);
     const double spread = clampOrZero(v.pitchSpread, 0.0, kPitchSpreadMax);
-    const double centre = laneCentre(g);
+    const double center = laneCenter(g);
     // pitchY's mapping, without its clamp: |pitch| + spread <= kLaneSemitones keeps it on the
-    // lane. A lane too short to place a pitch gives a band at its centre.
+    // lane. A lane too short to place a pitch gives a band at its center.
     const double reach = std::max(pitchReach(g), 0.0);
-    return {w.x0, w.x1, static_cast<float>(centre - (pitch + spread) * reach / kLaneSemitones),
-            static_cast<float>(centre - (pitch - spread) * reach / kLaneSemitones)};
+    return {w.x0, w.x1, static_cast<float>(center - (pitch + spread) * reach / kLaneSemitones),
+            static_cast<float>(center - (pitch - spread) * reach / kLaneSemitones)};
 }
 
 std::optional<WindowRect> ghostRect(const ScanRectValues &base, const ScanRectValues &effective,
@@ -308,16 +308,16 @@ DragTarget hitTestRect(float x, float y, const WindowRect &w, float edgeToleranc
         return DragTarget::None;
     }
     // Down (ruling VW-T2b): the body is the rectangle less the tolerance at each edge, but at
-    // least 2 × the tolerance high, centred, so a thin band (the default Pitch Spread 0) keeps a
+    // least 2 × the tolerance high, centered, so a thin band (the default Pitch Spread 0) keeps a
     // body to grab. Each edge grabs from the tolerance beyond the rectangle's edge or the body's,
     // whichever is further out, to the body: M1's rule for a rectangle 4 tolerances high or more.
     const float lo = std::min(w.y0, w.y1);
     const float hi = std::max(w.y0, w.y1);
     const float tolerance = edgeTolerancePx > 0.0f ? edgeTolerancePx : 0.0f; // NaN gives 0
-    const float centre = 0.5f * (lo + hi);
+    const float center = 0.5f * (lo + hi);
     const float half = std::max(tolerance, 0.5f * (hi - lo) - tolerance);
-    const float bodyLo = centre - half;
-    const float bodyHi = centre + half;
+    const float bodyLo = center - half;
+    const float bodyHi = center + half;
     DragTarget down = DragTarget::None;
     if (y >= bodyLo && y <= bodyHi)
     {
@@ -346,7 +346,7 @@ float pitchValueAtY(float y, const LaneGeometry &g) noexcept
     {
         return 0.0f;
     }
-    const double semitones = (laneCentre(g) - y) * kLaneSemitones / reach; // ±inf for ∓inf y
+    const double semitones = (laneCenter(g) - y) * kLaneSemitones / reach; // ±inf for ∓inf y
     return static_cast<float>(std::clamp(semitones, -kPitchMax, kPitchMax));
 }
 

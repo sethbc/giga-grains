@@ -9,7 +9,7 @@
 
 namespace gg::plugin
 {
-// Log host misbehaviour instead of terminating: a plugin must not take the host down with it.
+// Log host misbehavior instead of terminating: a plugin must not take the host down with it.
 inline constexpr clap::helpers::MisbehaviourHandler misLevel =
     clap::helpers::MisbehaviourHandler::Ignore;
 
@@ -23,7 +23,7 @@ inline constexpr clap::helpers::MisbehaviourHandler misLevel =
 // everywhere. The template is instantiated once, in HelpersConfig.cpp.
 //
 // Minimal, not None, in release-type builds (decided in M1, carry-over [236]). At Minimal,
-// clap-helpers still reports real host misbehaviour on the audio thread (process() while
+// clap-helpers still reports real host misbehavior on the audio thread (process() while
 // inactive or not processing, a call on the wrong thread) through the host's log, or stderr
 // when the host has none; the wrong-thread report also builds a std::ostringstream. So it can
 // allocate and do I/O there, but only once the host has already broken the CLAP contract, and

@@ -4,7 +4,7 @@
 #
 # gg-ui-core: the framework-free editor code (the splat renderer, the lane geometry, the morph
 # pad's geometry and weights, the lane's UI clock and grain list, the canvas stress workload, the
-# undo stack, the layers' colours and the views' placement table). It builds without plugins or
+# undo stack, the layers' colors and the views' placement table). It builds without plugins or
 # JUCE, so its tests and `gg-bench --canvas` also run in the sanitizer builds.
 #
 # gg-ui: the JUCE editor (the header over the Perform, Edit, Mod and FX views, the About box;

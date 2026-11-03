@@ -14,13 +14,13 @@
 
 namespace gg::ui
 {
-/// The colours the editor draws itself (M2 sub-project 6's spec §6.9), in two instances: dark()
-/// (M1's colours, the default, D8) and light(). sst-jucegui's controls take their colours from
+/// The colors the editor draws itself (M2 sub-project 6's spec §6.9), in two instances: dark()
+/// (M1's colors, the default, D8) and light(). sst-jucegui's controls take their colors from
 /// its own dark and light style sheets; these are for the editor's surfaces, text and canvas.
 ///
 /// **The lanes stay dark in both** (D9): `lane`, `laneRule`, `laneText`, `peaks`, `window`,
 /// `ghost`, `freeze` and `feedback` are the same in light() as in dark(), since the canvas is
-/// additive light on a dark ground. The layers' colours (kLayerTints, Okabe–Ito's four) are the
+/// additive light on a dark ground. The layers' colors (kLayerTints, Okabe–Ito's four) are the
 /// same in both too.
 struct Palette
 {
@@ -43,7 +43,7 @@ struct Palette
     /// The Mod view's source families (spec §6.6, §6.9), in order: macros, modulators, MIDI,
     /// follower, transport. From Okabe–Ito's eight, apart from the layers' four: yellow (in
     /// light() darkened to an ochre, 0x8f7a00, since the yellow is about 1.2:1 on its ground),
-    /// vermillion, blue, its black shown as grey for the follower, and, for the transport, its
+    /// vermillion, blue, its black shown as gray for the follower, and, for the transport, its
     /// black in light() and the text's near-white in dark(), where black wouldn't show.
     std::array<juce::Colour, 5> sourceFamilies;
 

@@ -408,7 +408,7 @@ TEST_CASE("a mutate never changes any layer's Ring Length", "[core][mutate]")
     }
 }
 
-TEST_CASE("mutate's jitter is centred and bounded by the amount", "[core][mutate]")
+TEST_CASE("mutate's jitter is centered and bounded by the amount", "[core][mutate]")
 {
     const Mode mode = Mode::Fx;
     const ParamValues in = defaults(mode);

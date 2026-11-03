@@ -64,8 +64,8 @@ TEST_CASE("a ParamControl edits its parameter as a gesture", "[plugin]")
     REQUIRE(recording.kinds() == "bve");
     CHECK_THAT(recording.calls[1].value, WithinAbs(0.3 + 0.01 * (meta.maxVal - meta.minVal), 1e-5));
     recording.calls.clear();
-    const juce::Point<float> centre = knob->getLocalBounds().getCentre().toFloat();
-    knob->mouseDoubleClick(mouseAt(*knob, centre.x, centre.y, centre, false));
+    const juce::Point<float> center = knob->getLocalBounds().getCentre().toFloat();
+    knob->mouseDoubleClick(mouseAt(*knob, center.x, center.y, center, false));
     REQUIRE(recording.kinds() == "bve");
     CHECK(recording.calls[1].value == static_cast<double>(sizeDefault));
 
@@ -231,14 +231,14 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
     CHECK_FALSE(knobClicks);
     CHECK_FALSE(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
 
-    // A press on the knob's centre grabs no ring; one on the ring drags its depth.
-    const juce::Point<float> centre =
+    // A press on the knob's center grabs no ring; one on the ring drags its depth.
+    const juce::Point<float> center =
         knob->getBounds().toFloat().withHeight(static_cast<float>(knob->getWidth())).getCentre();
-    size.mouseDown(mouseAt(size, centre.x, centre.y, centre, false));
-    size.mouseDrag(mouseAt(size, centre.x, centre.y - 30.0f, centre, true));
-    size.mouseUp(mouseAt(size, centre.x, centre.y - 30.0f, centre, true));
+    size.mouseDown(mouseAt(size, center.x, center.y, center, false));
+    size.mouseDrag(mouseAt(size, center.x, center.y - 30.0f, center, true));
+    size.mouseUp(mouseAt(size, center.x, center.y - 30.0f, center, true));
     CHECK(drags.empty());
-    const juce::Point<float> onRing{centre.x, knob->getBounds().toFloat().getY() - 2.0f};
+    const juce::Point<float> onRing{center.x, knob->getBounds().toFloat().getY() - 2.0f};
     size.mouseDown(mouseAt(size, onRing.x, onRing.y, onRing, false));
     size.mouseDrag(mouseAt(size, onRing.x, onRing.y - 15.0f, onRing, true));
     size.mouseUp(mouseAt(size, onRing.x, onRing.y - 15.0f, onRing, true));
@@ -247,7 +247,7 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
     CHECK(drags.back().second > 0.25f);
     CHECK(recording.calls.empty()); // the parameter itself never moved
 
-    // The ring paints around the knob, in its colour.
+    // The ring paints around the knob, in its color.
     sst::jucegui::style::StyleSheet::initializeStyleSheets([] {});
     knob->setStyle(sst::jucegui::style::StyleSheet::getBuiltInStyleSheet(
         sst::jucegui::style::StyleSheet::DARK));
@@ -262,7 +262,7 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
     CHECK(atRing.getRed() > atRing.getBlue());
 }
 
-TEST_CASE("the light palette's macro colour shows on its ground", "[plugin]")
+TEST_CASE("the light palette's macro color shows on its ground", "[plugin]")
 {
     // Okabe-Ito's yellow is about 1.2:1 on the light background, so light() darkens it.
     const gg::ui::Palette &light = gg::ui::Palette::light();
@@ -519,14 +519,14 @@ TEST_CASE("the Edit view draws rings from the routes and follows the base values
     REQUIRE(size.size() == 1);
     CHECK(size[0].slot == 1);
     CHECK(size[0].bipolar);
-    CHECK(size[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
+    CHECK(size[0].color == gg::ui::Palette::dark().sourceFamilies[0]);
     CHECK(ringsOf(ParamSlot::B_Density).size() == 2);
     CHECK(ringsOf(ParamSlot::B_PitchSpread).empty());
     // The spread knobs have rings too: the factory route Macro 4 to Spray is slot 6.
     const auto &spray = ringsOf(ParamSlot::B_Spray);
     REQUIRE(spray.size() == 1);
     CHECK(spray[0].slot == 6);
-    CHECK(spray[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
+    CHECK(spray[0].color == gg::ui::Palette::dark().sourceFamilies[0]);
 
     // A route's change reaches the ring at the next refresh; a route to layer C alone leaves B's.
     routes[0].targetLayer = 2;

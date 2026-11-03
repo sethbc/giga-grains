@@ -32,7 +32,7 @@ namespace gg::ui
 /// not sent: one setValue, the gesture's last value, goes just before its endGesture, and a
 /// gesture that set nothing sends none.
 ///
-/// **Undo** (spec §6.8): with the context's undo stack, each gesture is recorded in it, labelled
+/// **Undo** (spec §6.8): with the context's undo stack, each gesture is recorded in it, labeled
 /// with the parameter's name ("A Size"): begin opens it at the value shown then, end closes it at
 /// the value shown, so a gesture that ends where it began makes no entry.
 ///

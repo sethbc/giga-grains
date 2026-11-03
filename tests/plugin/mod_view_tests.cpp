@@ -104,14 +104,14 @@ TEST_CASE("the Mod view marks a toggle's and a menu's routes with dots", "[plugi
     // The factory route Macro Freeze to Freeze reaches the toggle.
     gg::ui::ParamControl *freeze = controlOf(ParamSlot::Freeze);
     REQUIRE(freeze->rings().size() == 1);
-    CHECK(freeze->rings()[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
-    // A chip dropped on the Source menu adds a dot in the modulators' colour.
+    CHECK(freeze->rings()[0].color == gg::ui::Palette::dark().sourceFamilies[0]);
+    // A chip dropped on the Source menu adds a dot in the modulators' color.
     gg::ui::ParamControl *menu = controlOf(ParamSlot::Source);
     CHECK(menu->rings().empty());
     dropChip(menu, 9);
     view.refresh();
     REQUIRE(menu->rings().size() == 1);
-    CHECK(menu->rings()[0].colour == gg::ui::Palette::dark().sourceFamilies[1]);
+    CHECK(menu->rings()[0].color == gg::ui::Palette::dark().sourceFamilies[1]);
     CHECK(h.routes[12].curve == gg::core::ModCurve::Unipolar);
 }
 
@@ -198,10 +198,10 @@ TEST_CASE("a fresh Mod view shows the layer letter and a ring click selects its 
     // Ring 0's radius: the knob's, 2 px of gap and half the 3 px spacing.
     const auto circle = knob->getBounds().toFloat();
     const float r = circle.getWidth() * 0.5f;
-    const auto centre = circle.withHeight(circle.getWidth()).getCentre();
-    const float y = centre.y - (r + 3.5f);
-    size->mouseDown(mouseAt(*size, centre.x, y, {centre.x, y}, false));
-    size->mouseUp(mouseAt(*size, centre.x, y, {centre.x, y}, false));
+    const auto center = circle.withHeight(circle.getWidth()).getCentre();
+    const float y = center.y - (r + 3.5f);
+    size->mouseDown(mouseAt(*size, center.x, y, {center.x, y}, false));
+    size->mouseUp(mouseAt(*size, center.x, y, {center.x, y}, false));
     CHECK(routes->selected() == size->rings()[0].slot);
     CHECK(h.undo.size() == 0);
 }

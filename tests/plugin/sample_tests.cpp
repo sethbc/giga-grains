@@ -709,7 +709,7 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         UNSCOPED_INFO("the whole job: " << whole << " ms");
 
         // A fifth of the way into another, deactivate(). A try after the first activates again
-        // (the job cancelled runs again) and asks for a new file, which supersedes it.
+        // (the job canceled runs again) and asks for a new file, which supersedes it.
         double deactivating = whole;
         for (int t = 0; t < kTries && !(deactivating < whole / 4.0); ++t)
         {

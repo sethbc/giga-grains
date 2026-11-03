@@ -112,9 +112,9 @@ struct Stream
 };
 
 /// What readAll throws when the cancel flag is set; guarded() makes it the decode's error.
-struct Cancelled : std::exception
+struct Canceled : std::exception
 {
-    const char *what() const noexcept override { return "cancelled"; }
+    const char *what() const noexcept override { return "canceled"; }
 };
 
 /// The format checks every format shares, before anything is allocated: channels and rate.
@@ -166,7 +166,7 @@ uint64_t readAll(const Stream &stream, uint64_t limit, Read read, Take take)
     {
         if (stream.cancel != nullptr && stream.cancel->load(std::memory_order_relaxed))
         {
-            throw Cancelled{};
+            throw Canceled{};
         }
         const uint64_t want = std::min(chunkFrames, limit - done);
         const uint64_t got = std::min<uint64_t>(read(want, interleaved.data()), want);

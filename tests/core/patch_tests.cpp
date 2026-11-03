@@ -594,7 +594,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
 TEST_CASE("a layer index no row has is no parameter, and a gap in the index column is kept",
           "[core]")
 {
-    // M2 programme design §7.1: wave 2 appends layer rows inside its reserved blocks, so the index
+    // M2 program design §7.1: wave 2 appends layer rows inside its reserved blocks, so the index
     // column has gaps (0x31 to 0x3F, and each block's unused indices). The index is read from the
     // column, never from a row's position. The mechanism, on a column with gaps:
     using gg::core::detail::rowsByIndex;
@@ -705,7 +705,7 @@ TEST_CASE("the ring parameters are pinned by name and ID", "[core]")
 
 TEST_CASE("the next free indices are unchanged", "[core]")
 {
-    // M2 sub-project 2's rows sit in its reserved block (programme design §7.1), so the next free
+    // M2 sub-project 2's rows sit in its reserved block (program design §7.1), so the next free
     // indices below the blocks don't move, 0x45 to 0x4F stay unused, and scope 0's block takes
     // none of them. Of the other sub-projects' blocks (0x50 to 0x7F) sub-project 3's 0x50 is in
     // use, in every scope (Quality and Budget), and sub-project 4's 0x60 to 0x67, in every scope

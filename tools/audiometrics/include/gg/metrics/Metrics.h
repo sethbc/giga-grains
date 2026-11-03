@@ -39,7 +39,7 @@ struct Metrics
     ///   start at multiples of the hop; the last is the first that reaches the end of the audio,
     ///   zero padded. There are no frames if there's no audio.
     /// - Band b covers [20·r^b, 20·r^(b+1)) Hz, with r = (Nyquist / 20)^(1/32); the last band also
-    ///   includes Nyquist. A band's power in one frame is the sum over the FFT bins whose centre
+    ///   includes Nyquist. A band's power in one frame is the sum over the FFT bins whose center
     ///   frequency falls in it of c·|X[k]|² / (2048 · Σw²), where c is 2 below Nyquist and 1 at
     ///   it. That makes a sine of amplitude A in one band read its mean square, A²/2.
     /// - The profile is the mean of that over frames. Bands with no bins (the lowest few at

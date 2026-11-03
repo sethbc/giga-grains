@@ -88,7 +88,7 @@ env:
   GG_PUBLISH_NIGHTLY: "false"
 
 # A newer push to a pull request cancels that pull request's run in progress. Every other run
-# (a push to main, the nightly, a dispatch) has a group of its own, so none is cancelled and a
+# (a push to main, the nightly, a dispatch) has a group of its own, so none is canceled and a
 # queued full benchmark is never replaced by a later run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -1205,7 +1205,7 @@ jobs:
   # shard needs it), and RTSan in one. As one job, ASan's 1,369 tests took 43 minutes of a
   # 50-to-66-minute job, about 5.5 hours of test time on one 4-core runner; the build is a
   # ccache hit in seconds, so each shard pays only the setup (about 3.5 minutes) again. The
-  # repository is public, so the extra jobs cost no minutes. ASan leaves out the tests labelled
+  # repository is public, so the extra jobs cost no minutes. ASan leaves out the tests labeled
   # slow (-LE slow) on a pull request and a push to main, and runs them on the nightly, a
   # dispatch and a tag; RTSan runs everything everywhere. The job "sanitizers (asan, rtsan)"
   # below is the one the ruleset requires and the release job needs.

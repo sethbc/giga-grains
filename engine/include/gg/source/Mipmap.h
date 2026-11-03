@@ -20,7 +20,7 @@ namespace gg
 inline constexpr uint32_t kMaxMipLevels = 5;
 /// A level is built only while it would hold at least this many frames.
 inline constexpr int64_t kMinLevelFrames = 64;
-/// The half-band's length; the sum is centred on tap (kHalfbandTaps − 1) / 2 = 27.
+/// The half-band's length; the sum is centered on tap (kHalfbandTaps − 1) / 2 = 27.
 inline constexpr int64_t kHalfbandTaps = 55;
 
 /// The half-band lowpass, linear phase: a Kaiser-windowed half-band, 55 taps, β = 8.0
@@ -30,7 +30,7 @@ inline constexpr int64_t kHalfbandTaps = 55;
 ///     sinc_half(0) = 0.5, sinc_half(n) = sin(π n / 2) / (π n), so 0 for even n ≠ 0,
 ///
 /// I0 the zeroth-order modified Bessel function of the first kind; not renormalized, so the
-/// centre tap is exactly 0.5 (the DC gain is 1.0000035). Measured on these float taps (4,001
+/// center tap is exactly 0.5 (the DC gain is 1.0000035). Measured on these float taps (4,001
 /// points per band): within 0.00085 dB of unity to 0.4 of the new rate (0.2 of the input rate)
 /// and at least 80.2 dB down from 0.6 of it (0.3 of the input rate) to the input's Nyquist, the
 /// pins of spec §6.3 (the ruling's 80.4 dB came from a coarser grid). A 31-tap Kaiser half-band
@@ -90,7 +90,7 @@ inline uint8_t mipLevelFor(double rate, uint32_t levelCount) noexcept
 ///     out[outStride × m] = Σ_{k=0}^{54} kHalfband[k] × in[inStride × (2m + k − 27)],
 ///
 /// accumulated in float from 0 in k order, taps outside [0, inFrames) zero. The code skips the
-/// zero taps (the odd offsets from the centre) and the taps outside the input instead of
+/// zero taps (the odd offsets from the center) and the taps outside the input instead of
 /// multiplying them, so the sum is this one only for finite input: a NaN or an infinity in the
 /// input would have spread to every output the zero taps reach, and here reaches fewer. Nothing
 /// sanitizes a decoded float file today. Allocates nothing; PreparedSource::make calls it off the

@@ -102,7 +102,7 @@ struct ControlEvent
     uint32_t offset;  ///< Frames from the start of the call. A call's controls are sorted by it.
     ControlKind kind; ///< Out of range: the event is ignored.
     int16_t channel;  ///< 0..15 or −1 (any); other values make it ignored. Not otherwise read yet.
-    float value;      ///< 0..1, clamped to it (pitch bend's centre is 0.5); NaN or ±∞ ignored.
+    float value;      ///< 0..1, clamped to it (pitch bend's center is 0.5); NaN or ±∞ ignored.
 };
 
 /// What a CommandEvent does to its layer's ring (M2 sub-project 2's spec §6.4).

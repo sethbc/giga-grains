@@ -1363,7 +1363,7 @@ void requireExactRuns(const Pool &pool, int64_t frames, uint32_t d, int64_t from
 // yet CI's mac-universal leg found them one sample apart three times, each only on the x86_64
 // slice under Rosetta ("loop, frozen", blocks of 1: 35,269 against 35,270 at f6e6b0d, 35,298
 // against 35,297 at 0871920), never on Windows' real x86 nor in 89 local Rosetta runs (carry-over
-// row 356). Bit identity needs the output alone, so on a bound difference (the programme's ruling
+// row 356). Bit identity needs the output alone, so on a bound difference (the program's ruling
 // at the final merge) the grain is rendered over [from, to) through both paths' SIMD kernel and
 // each is required to match the reference by memcmp; the difference itself is a WARN carrying the
 // diagnostic (each path recomputed twice, whether it repeats, and the grain's rows and the ring's

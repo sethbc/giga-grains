@@ -15,7 +15,7 @@
 #   2. build: gg-all for asan and rtsan, as CI's sanitizer job builds, and the default target
 #      (everything) for the others.
 #   3. test: ctest --preset <preset>, with every -L passed through. ctest ANDs repeated -L
-#      options: -L core -L rt runs only the tests labelled both. For either, use -L 'core|rt'.
+#      options: -L core -L rt runs only the tests labeled both. For either, use -L 'core|rt'.
 # A failed step skips the rest of that preset, and the next preset still runs, so one run reports
 # everything. Last comes scripts/format.sh --check, unless --no-format.
 #

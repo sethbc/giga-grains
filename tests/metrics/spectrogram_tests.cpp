@@ -98,7 +98,7 @@ Image readPng(const fs::path &path)
     REQUIRE(in.good());
     const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(in), {}};
     REQUIRE(bytes.size() > 26);
-    // IHDR's bit depth and colour type: 8-bit grayscale (type 0), so no palette or RGB to undo.
+    // IHDR's bit depth and color type: 8-bit grayscale (type 0), so no palette or RGB to undo.
     CHECK(bytes[24] == 8);
     CHECK(bytes[25] == 0);
 

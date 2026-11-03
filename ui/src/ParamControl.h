@@ -50,11 +50,11 @@ bool stepByArrowKey(sst::jucegui::components::ContinuousParamEditor &editor,
 ///
 /// **Mod mode** (spec §6.6) leaves the control's own value inert: it takes no mouse or key
 /// edit. The rings, one arc per route targeting the parameter, drawn around a knob in slot order
-/// (a bipolar one centred on the base value), are draggable then: a vertical drag on a ring calls
+/// (a bipolar one centered on the base value), are draggable then: a vertical drag on a ring calls
 /// onRingDrag with its new depth. Nothing changes the value then, the accessibility interface's
 /// setValue and setValueAsString included. A knob also draws a spread pair's band (setSpreadBand).
 /// Only a Knob draws rings and the band; a toggle or a menu, which have no arc to draw, shows one
-/// small dot in the source family's colour for each route targeting it, at its top right.
+/// small dot in the source family's color for each route targeting it, at its top right.
 ///
 /// **A drop target for a Mod view source chip** (setSourceDropEnabled): a dragged
 /// "modsource:<ModSource index>" description is accepted and onSourceDrop gets the source, whatever
@@ -125,13 +125,13 @@ class ParamControl final : public juce::Component, public juce::DragAndDropTarge
     juce::String menuText(int step) const;
 
     /// A route's ring: its matrix slot (1 to 48), its depth as a fraction of the parameter's
-    /// range (negative lowers), whether it swings both ways, and its source family's colour.
+    /// range (negative lowers), whether it swings both ways, and its source family's color.
     struct Ring
     {
         uint8_t slot;
         float depth01;
         bool bipolar;
-        juce::Colour colour;
+        juce::Colour color;
     };
     /// The rings drawn around the knob, inside out in the order given (slot order).
     void setRings(std::vector<Ring> rings);

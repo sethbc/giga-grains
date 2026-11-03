@@ -500,7 +500,7 @@ std::vector<std::pair<int64_t, int64_t>> SweepDriver::unexempt(int64_t frames) c
     }
     // A stretch much shorter than the score's ±5 ms window lies mostly within that reach of
     // the exempt audio on either side, which its samples' windows hold: leave it out with its
-    // neighbours (the floors on the scored share are pinned with this rule).
+    // neighbors (the floors on the scored share are pinned with this rule).
     std::erase_if(out, [](const auto &s) { return s.second - s.first < kMinStretch; });
     return out;
 }

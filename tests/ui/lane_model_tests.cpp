@@ -64,7 +64,7 @@ LaneGeometry instrumentLane(int64_t frames, float width = 800.0f, float height =
             .sourceFrames = frames};
 }
 
-/// A grain at onset `onset` reading from `startPos`, 100 ms at rate 1, centred, gain 0.5.
+/// A grain at onset `onset` reading from `startPos`, 100 ms at rate 1, centered, gain 0.5.
 LaneGrain grainAt(int64_t onset, double startPos)
 {
     return {.onsetSample = onset,
@@ -206,7 +206,7 @@ TEST_CASE("rate maps to y", "[ui]")
     REQUIRE(tiny.has_value());
     REQUIRE(tiny->radius == 1.5f);
 
-    // A lane too short for the capsule keeps it centred.
+    // A lane too short for the capsule keeps it centered.
     const auto flat = gg::ui::grainCapsule(grain, head, head, fxLane(1600.0f, 4.0f, 1.0f));
     REQUIRE(flat.has_value());
     REQUIRE(flat->y == 2.0f);
@@ -248,7 +248,7 @@ TEST_CASE("a grain the lane cannot place is not drawn", "[ui]")
     REQUIRE_FALSE(gg::ui::grainCapsule(bad, head, head, fxLane()).has_value());
 
     // A NaN gain draws dark rather than not at all; a NaN pan, no longer drawn (D1), changes
-    // nothing: the grain at rate 1 is centred.
+    // nothing: the grain at rate 1 is centered.
     bad = ok;
     bad.gain = kNaN;
     bad.pan = kNaN;
@@ -303,7 +303,7 @@ TEST_CASE("the scan window follows the position and spray tapers", "[ui]")
     REQUIRE(nan.x1 == 1600.0f);
 
     // Instrument: Position is the fraction of the file and Spray is seconds either side, so on a
-    // 2 s file across 800 px, Position 0.25 with 50 ms of Spray is centred at 200 px, ±20 px.
+    // 2 s file across 800 px, Position 0.25 with 50 ms of Spray is centered at 200 px, ±20 px.
     const LaneGeometry inst = instrumentLane(96000);
     const auto iw = gg::ui::scanWindow(0.25f, 0.36033038f, inst);
     REQUIRE_THAT(0.5 * (iw.x0 + iw.x1), WithinAbs(200.0, 1e-3));
@@ -493,27 +493,27 @@ TEST_CASE("pitch maps to the lane's vertical axis", "[ui]")
     for (const LaneGeometry &g : {fxLane(), atTop(instrumentLane(48000), 200.0f)})
     {
         INFO("lane at top " << g.top);
-        const float centre = g.top + 50.0f;
+        const float center = g.top + 50.0f;
         const float reach = 50.0f - r; // the half-height less the radius
-        // Rate 1 is the centre; an octave is 12/48 of the reach either way.
-        CHECK(gg::ui::pitchY(1.0f, g, r) == centre);
-        CHECK_THAT(gg::ui::pitchY(2.0f, g, r), WithinAbs(centre - 12.0f / 48.0f * reach, 1e-3));
-        CHECK_THAT(gg::ui::pitchY(0.5f, g, r), WithinAbs(centre + 12.0f / 48.0f * reach, 1e-3));
+        // Rate 1 is the center; an octave is 12/48 of the reach either way.
+        CHECK(gg::ui::pitchY(1.0f, g, r) == center);
+        CHECK_THAT(gg::ui::pitchY(2.0f, g, r), WithinAbs(center - 12.0f / 48.0f * reach, 1e-3));
+        CHECK_THAT(gg::ui::pitchY(0.5f, g, r), WithinAbs(center + 12.0f / 48.0f * reach, 1e-3));
         // Four octaves (48 semitones) reach the lane's edge less the radius; past them it clamps.
         CHECK_THAT(gg::ui::pitchY(16.0f, g, r), WithinAbs(g.top + r, 1e-3));
         CHECK_THAT(gg::ui::pitchY(1.0f / 16.0f, g, r), WithinAbs(g.top + 100.0f - r, 1e-3));
         CHECK(gg::ui::pitchY(1.0e6f, g, r) == g.top + r);
         CHECK(gg::ui::pitchY(1.0e-6f, g, r) == g.top + 100.0f - r);
-        // A rate that isn't positive and finite draws centred.
+        // A rate that isn't positive and finite draws centered.
         for (const float rate : {0.0f, -0.0f, -1.0f, -2.0f, kNaN, kInf, -kInf})
         {
             INFO("rate " << rate);
-            CHECK(gg::ui::pitchY(rate, g, r) == centre);
+            CHECK(gg::ui::pitchY(rate, g, r) == center);
         }
         // A larger radius keeps a larger capsule on the lane.
         CHECK_THAT(gg::ui::pitchY(16.0f, g, 6.0f), WithinAbs(g.top + 6.0f, 1e-3));
     }
-    // A lane shorter than the capsule keeps it centred.
+    // A lane shorter than the capsule keeps it centered.
     const LaneGeometry flat = atTop(fxLane(1600.0f, 4.0f), 40.0f);
     CHECK(gg::ui::pitchY(16.0f, flat, r) == 42.0f);
     CHECK(gg::ui::pitchY(0.25f, flat, r) == 42.0f);
@@ -563,7 +563,7 @@ TEST_CASE("the scan rectangle's four edges", "[ui]")
 {
     // x as M1's scan window, y from Pitch ± Pitch Spread on the pitch axis (D2): Pitch +12 with
     // a spread of 6 runs from +18 (y0, the higher pitch) to +6 semitones (y1), on lanes of
-    // 100 px at top 100: the centre at 150, 47 px (the half-height less the radius) for 48
+    // 100 px at top 100: the center at 150, 47 px (the half-height less the radius) for 48
     // semitones.
     constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
     for (const LaneGeometry &g : {atTop(fxLane(), 100.0f), atTop(instrumentLane(96000), 100.0f)})
@@ -579,7 +579,7 @@ TEST_CASE("the scan rectangle's four edges", "[ui]")
         // Its middle is where a grain at Pitch's rate (an octave up) lies.
         CHECK_THAT(0.5f * (rect.y0 + rect.y1), WithinAbs(gg::ui::pitchY(2.0f, g, 3.0f), 1e-3));
 
-        // Pitch 0, spread 0: a band of no height at the lane's centre.
+        // Pitch 0, spread 0: a band of no height at the lane's center.
         const WindowRect band = gg::ui::scanRect({0.5f, 0.5f, 0.0f, 0.0f}, g);
         CHECK(band.y0 == 150.0f);
         CHECK(band.y1 == 150.0f);
@@ -755,7 +755,7 @@ TEST_CASE("hitTestRect names every region", "[ui]")
               {kNaN, 200.0f, None, "a NaN x"},
               {150.0f, kNaN, None, "a NaN y"},
           });
-    // Ruling VW-T2b: the body is at least 2 × the tolerance high, centred on the band, and the
+    // Ruling VW-T2b: the body is at least 2 × the tolerance high, centered on the band, and the
     // top and bottom edges grab only in the tolerance beyond that grown body. A band of no
     // height (Pitch Spread 0) is the body within 5 px of it, its edges the 5 px beyond.
     check(inst, {100.0f, 200.0f, 200.0f, 200.0f},
@@ -790,7 +790,7 @@ TEST_CASE("hitTestRect names every region", "[ui]")
               {205.0f, 206.0f, BottomEdge, "the bottom-right corner of the grown body"},
               {100.0f, 194.0f, LeftEdge, "the top-left corner of the grown body"},
           });
-    // A short rectangle (6 px) is grown to the same 10 px body, centred on it.
+    // A short rectangle (6 px) is grown to the same 10 px body, centered on it.
     check(inst, {100.0f, 200.0f, 200.0f, 206.0f},
           {
               {150.0f, 201.0f, Body, "inside, near the top"},
@@ -812,7 +812,7 @@ TEST_CASE("hitTestRect names every region", "[ui]")
               {150.0f, 219.0f, BottomEdge, "the tolerance outside, below"},
           });
     // The ruling's cases: Pitch 0 with a spread of 0 and of 2 on a 50 px lane, where 2
-    // semitones are under 1 px either side. A press at the band's centre row and up to the
+    // semitones are under 1 px either side. A press at the band's center row and up to the
     // tolerance less 1 px from it grabs the body; the tolerance plus 1 px grabs an edge; past
     // the edges' tolerance, nothing (or, at the window's left edge, the left edge).
     const LaneGeometry small = instrumentLane(96000, 800.0f, 50.0f);
@@ -826,15 +826,15 @@ TEST_CASE("hitTestRect names every region", "[ui]")
         INFO("Pitch Spread " << spread);
         check(small, band,
               {
-                  {mid, c, Body, "the band's centre row"},
-                  {mid, c - 4.0f, Body, "centre - (tolerance - 1)"},
-                  {mid, c + 4.0f, Body, "centre + (tolerance - 1)"},
-                  {mid, c - 6.0f, TopEdge, "centre - (tolerance + 1)"},
-                  {mid, c + 6.0f, BottomEdge, "centre + (tolerance + 1)"},
-                  {mid, c - 11.0f, None, "centre - (2 tolerances + 1)"},
-                  {mid, c + 11.0f, None, "centre + (2 tolerances + 1)"},
+                  {mid, c, Body, "the band's center row"},
+                  {mid, c - 4.0f, Body, "center - (tolerance - 1)"},
+                  {mid, c + 4.0f, Body, "center + (tolerance - 1)"},
+                  {mid, c - 6.0f, TopEdge, "center - (tolerance + 1)"},
+                  {mid, c + 6.0f, BottomEdge, "center + (tolerance + 1)"},
+                  {mid, c - 11.0f, None, "center - (2 tolerances + 1)"},
+                  {mid, c + 11.0f, None, "center + (2 tolerances + 1)"},
                   {band.x0, c - 6.0f, LeftEdge, "the left edge's corner"},
-                  {band.x0, c, LeftEdge, "the left edge at the centre row"},
+                  {band.x0, c, LeftEdge, "the left edge at the center row"},
               });
     }
     // Outside the lane grabs nothing, even within an edge's tolerance: a rectangle at the lane's
@@ -869,8 +869,8 @@ TEST_CASE("the inverses round-trip", "[ui]")
                                        0.5f * static_cast<float>(s)};
                 INFO("pitch " << v.pitch << ", spread " << v.pitchSpread);
                 const WindowRect rect = gg::ui::scanRect(v, g);
-                const float centre = 0.5f * (rect.y0 + rect.y1);
-                CHECK_THAT(gg::ui::pitchValueAtY(centre, g), WithinAbs(v.pitch, 1e-3));
+                const float center = 0.5f * (rect.y0 + rect.y1);
+                CHECK_THAT(gg::ui::pitchValueAtY(center, g), WithinAbs(v.pitch, 1e-3));
                 CHECK_THAT(gg::ui::pitchSpreadForExtent(0.5f * (rect.y1 - rect.y0), g),
                            WithinAbs(v.pitchSpread, 1e-3));
             }

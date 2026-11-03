@@ -862,7 +862,7 @@ TEST_CASE("grain events reach the queue", "[core][publish]")
 TEST_CASE("live peaks follow the input", "[core][publish]")
 {
     // A 0.8 burst of 64 frames at 1.0 s over silence in the left channel, and a −0.6 one at
-    // 52032 in the right: each bucket reads its burst's magnitude and the neighbours 0 (the
+    // 52032 in the right: each bucket reads its burst's magnitude and the neighbors 0 (the
     // ring's time is the sample clock until a freeze).
     constexpr size_t kFrames = 72000;
     Channels input{std::vector<float>(kFrames, 0.0f), std::vector<float>(kFrames, 0.0f)};

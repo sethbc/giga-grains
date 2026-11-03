@@ -1380,7 +1380,7 @@ TEST_CASE("live input wiring and source mode", "[live]")
                             .position = 0.1,
                             .spray = 0.05,
                             .pitchSemitones = 3.0,
-                            .gain = 0.5f}; // stereo 0: every grain centred, both gains exactly 1
+                            .gain = 0.5f}; // stereo 0: every grain centered, both gains exactly 1
 
     const auto render = [&](const float *const *in, uint32_t inChannels) {
         gg::Engine engine(liveConfig());

@@ -111,7 +111,7 @@ TEST_CASE("bench statistics", "[bench]")
     CHECK(gg::bench::quantile({7.0}, 0.25) == 7.0);
 }
 
-TEST_CASE("bench rounds vary each configuration's neighbours", "[bench]")
+TEST_CASE("bench rounds vary each configuration's neighbors", "[bench]")
 {
     // A full run's shape: 5 kernels x 3 block sizes, over 5 rounds.
     constexpr uint32_t n = 15;

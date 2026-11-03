@@ -41,7 +41,7 @@ struct CloudParams
     /// behind the spectral ring's head only, [0, SpectralSource::kRingSeconds].
     double spray{0.0};
     double pitchSemitones{0.0}; ///< [-48, 48].
-    double stereo{0.0};         ///< Random pan spread: 0 = every grain centred; [0, 1].
+    double stereo{0.0};         ///< Random pan spread: 0 = every grain centered; [0, 1].
     float gain{0.5f};           ///< [0, 4].
     /// The Texture envelope of each grain that starts from now on (spec §4; Envelope.h): 0 is
     /// the plain Hann; [0, 1].

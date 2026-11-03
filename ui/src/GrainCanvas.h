@@ -23,7 +23,7 @@
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
 #include "gg/ui/LaneState.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/SplatRenderer.h"
 #include "gg/ui/StressGrains.h"
 
@@ -65,7 +65,7 @@ namespace gg::ui
 /// (grainCapsule) into its lane's rows of one accumulator image, at physical-pixel resolution; a
 /// Live lane's only once a snapshot gives it its write head. The image covers the lanes alone:
 /// its x runs from 0 at the lanes' left edge, its y is the canvas's. The resolve tints each
-/// lane's rows with its layer's colour. paint then draws the image and, over it, per lane, the
+/// lane's rows with its layer's color. paint then draws the image and, over it, per lane, the
 /// peaks, the rectangles, the tint and the marker. With the plugin inactive (the context's
 /// publish pointers null) it draws only those static parts.
 ///
@@ -83,7 +83,7 @@ namespace gg::ui
 /// it (onSelectLayer). A file dropped on any lane goes to the context's loadSampleFor for its
 /// layer (ruling VW-P2c); a file that isn't a sample is refused with a notice (postNotice), and
 /// one dropped on a Live layer is loaded with a notice that its Source must be Sample to play it.
-/// With the context's undo stack, each gesture is an entry, labelled with its parameter's name.
+/// With the context's undo stack, each gesture is an entry, labeled with its parameter's name.
 ///
 /// **The keyboard** (spec §6.9): the canvas takes focus, and its focused lane is the selected
 /// one, its rectangle outlined: Left and Right move its Position, Up and Down its Pitch, by 1/100
@@ -123,7 +123,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// before the first painted frame.
     double averageFrameMs() const noexcept;
 
-    /// The layer whose lane is outlined in its colour; 0 at first. Out of range is ignored.
+    /// The layer whose lane is outlined in its color; 0 at first. Out of range is ignored.
     void setSelectedLayer(uint8_t layer);
     uint8_t selectedLayer() const noexcept { return selected_; }
     /// Called with the layer when a press lands in its lane (the canvas has selected it).
@@ -256,7 +256,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     void drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal);
     void drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane, const Palette &pal);
     void drawRect(juce::Graphics &g, const WindowRect &r, bool ghost, bool oneSided,
-                  juce::Colour colour) const;
+                  juce::Colour color) const;
     void beginDragGesture(Held which);
     void endDrag();
     /// One whole gesture on layer `layer`'s `which`, from `before` (what the lane showed) to
@@ -332,9 +332,9 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     bool began_{false}; // the gesture has begun (a Body drag's waits for its axis)
     float downX_{0.0f}, downY_{0.0f};
     float anchorX_{0.0f}; // the grabbed part's x at the press: Position's x, or the edge's
-    float anchorY_{0.0f}; // and its y: the rectangle's centre, or the edge's
-    float fixedX_{0.0f};  // what a Spray drag measures from: Position's x, or the centre
-    float fixedY_{0.0f};  // what a Pitch Spread drag measures from: the rectangle's centre
+    float anchorY_{0.0f}; // and its y: the rectangle's center, or the edge's
+    float fixedX_{0.0f};  // what a Spray drag measures from: Position's x, or the center
+    float fixedY_{0.0f};  // what a Pitch Spread drag measures from: the rectangle's center
     bool sentAny_{false};
     float lastSent_{0.0f};
     float dragBefore_{0.0f}; // the dragged value as the lane showed it when the gesture began

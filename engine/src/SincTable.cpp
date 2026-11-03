@@ -39,11 +39,11 @@ SincTable::SincTable()
 {
     const auto halfWidth = static_cast<double>(kTaps / 2);
     const double i0Beta = besselI0(kBeta);
-    const auto centre = static_cast<int64_t>(kPoints / 2); // x = 0
+    const auto center = static_cast<int64_t>(kPoints / 2); // x = 0
     for (int64_t j = 0; j < static_cast<int64_t>(kPoints); ++j)
     {
         // x = |−8 + j / 512|, exact in double; the points at ±x get the same value.
-        const double x = static_cast<double>(j < centre ? centre - j : j - centre) /
+        const double x = static_cast<double>(j < center ? center - j : j - center) /
                          static_cast<double>(kPointsPerUnit);
         const double sinc =
             x == 0.0 ? 1.0 : std::sin(std::numbers::pi * x) / (std::numbers::pi * x);

@@ -471,7 +471,7 @@ TEST_CASE("clap-wrapper's au save ignores the plugin's save result", "[plugin][a
     // holds. No AU call reaches it for Giga Grains (see the top of this file). The lines below
     // are clap-wrapper's own, at the pinned commit; when an update changes them, this fails.
     // When it does: re-check SaveState and RestoreState by hand (does SaveState now honour
-    // save()'s result, and RestoreState load()'s?), update these lines or the behavioural pins
+    // save()'s result, and RestoreState load()'s?), update these lines or the behavioral pins
     // above to match, and update its row, 87 (T7 223), in docs/m2-carry-over.md.
     const auto source =
         std::filesystem::path(GG_CLAP_WRAPPER_SOURCE_DIR) / "src" / "wrapasauv2.cpp";

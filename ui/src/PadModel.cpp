@@ -18,7 +18,7 @@ namespace gg::ui
 {
 namespace
 {
-/// v clamped to 0..1, with NaN mapped to the centre.
+/// v clamped to 0..1, with NaN mapped to the center.
 float clampValue(float v) { return std::isnan(v) ? 0.5f : std::clamp(v, 0.0f, 1.0f); }
 
 bool usableSide(float side) { return std::isfinite(side) && side > 0.0f; }

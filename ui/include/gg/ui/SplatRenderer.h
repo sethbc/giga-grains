@@ -22,9 +22,9 @@ struct TintBand
 /// grains are splatted into a float accumulator, then resolved to 32-bit ARGB pixels that any
 /// toolkit can draw.
 ///
-/// Coordinates are in pixels, and pixel (x, y) has its centre at (x, y). A splat adds
-/// intensity * max(0, 1 - d^2/r^2) to every pixel whose centre lies within the radius r of the
-/// splat's centre, so splats sum: brightness accumulates where grains overlap. Resolving maps
+/// Coordinates are in pixels, and pixel (x, y) has its center at (x, y). A splat adds
+/// intensity * max(0, 1 - d^2/r^2) to every pixel whose center lies within the radius r of the
+/// splat's center, so splats sum: brightness accumulates where grains overlap. Resolving maps
 /// each accumulated value a to v = 1 - exp(-a), which saturates smoothly instead of clipping.
 ///
 /// Not thread-safe; the UI thread owns it.
@@ -40,7 +40,7 @@ class SplatRenderer
     /// Sets every pixel back to 0.
     void clear() noexcept;
 
-    /// Adds one splat centred at (x, y). The parts outside the canvas are clipped. A splat with
+    /// Adds one splat centered at (x, y). The parts outside the canvas are clipped. A splat with
     /// a non-finite argument or a radius that isn't positive adds nothing.
     void add(float x, float y, float radius, float intensity) noexcept;
 

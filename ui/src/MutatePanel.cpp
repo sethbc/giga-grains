@@ -18,7 +18,7 @@
 #include <sst/jucegui/components/Knob.h>
 #include <sst/jucegui/data/Continuous.h>
 
-#include "PresetColours.h"
+#include "PresetColors.h"
 #include "gg/core/Mutate.h"
 
 namespace gg::ui
@@ -47,7 +47,7 @@ void styleButton(juce::TextButton &button, const juce::String &id, const juce::S
 {
     button.setComponentID(id);
     button.setButtonText(text);
-    colourButton(button, Palette::dark()); // the panel's palette replaces it (applyPalette)
+    colorButton(button, Palette::dark()); // the panel's palette replaces it (applyPalette)
 }
 
 /// The amount knob's source: a value of the panel's own, 0 to 1.
@@ -431,7 +431,7 @@ void MutatePanel::applyPalette()
     m.amountText.setColour(juce::Label::textColourId, palette.text);
     for (juce::TextButton *button : {&m.go, &m.reset, &m.close})
     {
-        colourButton(*button, palette);
+        colorButton(*button, palette);
     }
     m.go.setColour(juce::TextButton::textColourOffId, palette.text);
     for (const auto &section : m.sections)
@@ -439,12 +439,12 @@ void MutatePanel::applyPalette()
         section->heading.setColour(juce::Label::textColourId, palette.text);
         if (section->isLayer)
         {
-            colourButton(section->lockAll, palette);
-            colourButton(section->unlockAll, palette);
+            colorButton(section->lockAll, palette);
+            colorButton(section->unlockAll, palette);
         }
         for (const auto &row : section->rows)
         {
-            colourButton(row->button, palette);
+            colorButton(row->button, palette);
         }
     }
     repaint();

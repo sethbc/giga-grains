@@ -1297,30 +1297,30 @@ TEST_CASE("spray in seconds spreads start frames around the position", "[cloud]"
         constexpr int64_t kFrames = 480'000;
         const auto grains = sampleStarts(p, kFrames, 48000.0, 30.0);
         REQUIRE(grains.size() == 12'000);
-        const double centre = 0.5 * static_cast<double>(kFrames - 1); // 239_999.5
-        REQUIRE(centre == 239'999.5);
-        double lowest = centre;
-        double highest = centre;
+        const double center = 0.5 * static_cast<double>(kFrames - 1); // 239_999.5
+        REQUIRE(center == 239'999.5);
+        double lowest = center;
+        double highest = center;
         double sum = 0.0;
         bool exact = true;
         for (const gg::GrainSpec &g : grains)
         {
-            exact = exact && g.startPos == std::clamp(centre + 0.1 * bipolar(g.index) * 48000.0,
+            exact = exact && g.startPos == std::clamp(center + 0.1 * bipolar(g.index) * 48000.0,
                                                       0.0, static_cast<double>(kFrames - 1));
             lowest = std::min(lowest, g.startPos);
             highest = std::max(highest, g.startPos);
             sum += g.startPos;
         }
         REQUIRE(exact);
-        // Every start lies within ±0.1 s = ±4800 frames of the centre, and the draws reach
+        // Every start lies within ±0.1 s = ±4800 frames of the center, and the draws reach
         // both ends of that span (as a fraction of the file, spray 0.1 would be ±48_000).
-        REQUIRE(lowest >= centre - 4800.0);
-        REQUIRE(highest <= centre + 4800.0);
-        REQUIRE(lowest < centre - 4700.0);
-        REQUIRE(highest > centre + 4700.0);
-        // Centred: the mean is within 1% of the span's 9600 frames.
+        REQUIRE(lowest >= center - 4800.0);
+        REQUIRE(highest <= center + 4800.0);
+        REQUIRE(lowest < center - 4700.0);
+        REQUIRE(highest > center + 4700.0);
+        // Centered: the mean is within 1% of the span's 9600 frames.
         const double mean = sum / static_cast<double>(grains.size());
-        REQUIRE(std::abs(mean - centre) <= 0.01 * 9600.0);
+        REQUIRE(std::abs(mean - center) <= 0.01 * 9600.0);
     }
 
     SECTION("the spread is in the source's own frames")
@@ -1329,11 +1329,11 @@ TEST_CASE("spray in seconds spreads start frames around the position", "[cloud]"
         constexpr int64_t kFrames = 441'000;
         const auto grains = sampleStarts(p, kFrames, 44100.0, 5.0);
         REQUIRE(grains.size() == 2000);
-        const double centre = 0.5 * static_cast<double>(kFrames - 1);
+        const double center = 0.5 * static_cast<double>(kFrames - 1);
         for (const gg::GrainSpec &g : grains)
         {
-            REQUIRE(g.startPos == centre + 0.1 * bipolar(g.index) * 44100.0);
-            REQUIRE(std::abs(g.startPos - centre) <= 4410.0);
+            REQUIRE(g.startPos == center + 0.1 * bipolar(g.index) * 44100.0);
+            REQUIRE(std::abs(g.startPos - center) <= 4410.0);
         }
     }
 
@@ -1468,7 +1468,7 @@ TEST_CASE("pitch spread 24 stays within the clamp", "[cloud]")
         }
         const auto grains = collectGrains(cloud, 10000, 256);
 
-        const double centre =
+        const double center =
             gg::exp2Det(std::clamp(c.pitch + (c.key >= 0 ? c.key - 60 : 0), -48.0, 48.0) / 12.0);
         bool inRange = true;
         bool keyed = true;
@@ -1479,8 +1479,8 @@ TEST_CASE("pitch spread 24 stays within the clamp", "[cloud]")
         {
             inRange = inRange && g.rate >= gg::exp2Det(-4.0) && g.rate <= gg::exp2Det(4.0);
             keyed = keyed && g.rate == spreadRate(c.pitch, 24.0, c.key, g.index);
-            below += g.rate < centre ? 1 : 0;
-            above += g.rate > centre ? 1 : 0;
+            below += g.rate < center ? 1 : 0;
+            above += g.rate > center ? 1 : 0;
             clamped += (g.rate == 16.0 || g.rate == 1.0 / 16.0) ? 1 : 0;
         }
         REQUIRE(inRange);
@@ -1550,7 +1550,7 @@ TEST_CASE("size spread 2 stays within Size's range", "[cloud]")
         cloud.setParams(p);
         const auto grains = collectGrains(cloud, 10000, 256);
 
-        const double centre = c.size * c.sampleRate;
+        const double center = c.size * c.sampleRate;
         // exp2Det(log2 0.005) is 0.005 to within a few ulp.
         const double lowest = std::max(16.0, 0.005 * c.sampleRate * (1.0 - 1e-12));
         // The duration the lower clamp gives, exactly.
@@ -1568,8 +1568,8 @@ TEST_CASE("size spread 2 stays within Size's range", "[cloud]")
             keyed = keyed &&
                     g.durationSamples == spreadDuration(c.size, c.spread, c.sampleRate, g.index);
             gainKept = gainKept && g.gain == p.gain; // the layer's Size normalizes, not the grain's
-            below += g.durationSamples < centre ? 1 : 0;
-            above += g.durationSamples > centre ? 1 : 0;
+            below += g.durationSamples < center ? 1 : 0;
+            above += g.durationSamples > center ? 1 : 0;
             atBound += (g.durationSamples == 2.0 * c.sampleRate || g.durationSamples == clampedLow)
                            ? 1
                            : 0;

@@ -13,7 +13,7 @@
 //   1. builds every configuration once, and warms each up once;
 //   2. then, for round r in [0, rounds), times every configuration once for runSeconds, in
 //      roundOrder(configurations, r): a fixed order rotated by r, and reversed in odd rounds, so
-//      drift over a round (thermal state, a noisy neighbour on a VM) doesn't land on the same
+//      drift over a round (thermal state, a noisy neighbor on a VM) doesn't land on the same
 //      configurations every round, and each configuration follows different ones.
 // Each configuration keeps its own state from one round to the next.
 //
@@ -288,7 +288,7 @@ EngineCaseSettings engineCaseSettings(const std::string &engineCase, uint32_t gr
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
 /// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's
 /// reverse, rotated: order[i] = (r + n - 1 - i) mod n. Each configuration's predecessor thus
-/// alternates between its two neighbours, and for n >= 2 the last of one round is never the first
+/// alternates between its two neighbors, and for n >= 2 the last of one round is never the first
 /// of the next, so no configuration runs twice back to back across a round seam.
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round);
 

@@ -756,11 +756,11 @@ TEST_CASE("a macro knob writes the base value with a gesture", "[plugin]")
     auto *freeze =
         dynamic_cast<sst::jucegui::components::ToggleButton *>(findDeep(*editor, "macro.6"));
     REQUIRE(freeze != nullptr);
-    const juce::Point<float> centre = freeze->getLocalBounds().getCentre().toFloat();
+    const juce::Point<float> center = freeze->getLocalBounds().getCentre().toFloat();
     for (int click = 0; click < 2; ++click)
     {
-        freeze->mouseDown(mouseAt(*freeze, centre.x, centre.y, centre, false));
-        freeze->mouseUp(mouseAt(*freeze, centre.x, centre.y, centre, false));
+        freeze->mouseDown(mouseAt(*freeze, center.x, center.y, center, false));
+        freeze->mouseUp(mouseAt(*freeze, center.x, center.y, center, false));
     }
     REQUIRE(recording.kinds() == "bvebve");
     CHECK(recording.calls[1].slot == ParamSlot::Macro6);
@@ -1024,7 +1024,7 @@ TEST_CASE("the loader strip refuses other files and opens at the last folder", "
     auto *load = dynamic_cast<juce::Button *>(findDeep(*editor, "sampleLoad"));
     REQUIRE(load != nullptr);
 
-    // At first, the settings' last load folder; cancelled (no file), nothing loads.
+    // At first, the settings' last load folder; canceled (no file), nothing loads.
     load->onClick();
     REQUIRE(opened.size() == 1);
     CHECK(opened[0] == start);
@@ -1265,7 +1265,7 @@ TEST_CASE("Collect asks for a folder and posts the summary", "[plugin]")
     CHECK(collected == folder.getFullPathName().toStdString());
     CHECK(labelText(*editor, "header.notice") == "Collected 2 files; 1 missing");
 
-    // Cancelled: nothing collected.
+    // Canceled: nothing collected.
     collected.clear();
     strip->browse = [](const gg::ui::LoaderStrip::Browse &, auto done) { done(juce::File()); };
     button->onClick();
@@ -1765,11 +1765,11 @@ TEST_CASE("the pad's drag is one gesture on both morphs", "[plugin]")
     REQUIRE(f.value(ParamSlot::MorphX) == 0.5f);
     REQUIRE(f.value(ParamSlot::MorphY) == 0.5f);
 
-    const juce::Point<float> centre{100.0f, 100.0f};
-    pad.mouseDown(mouseAt(pad, 100.0f, 100.0f, centre, false));
-    pad.mouseDrag(mouseAt(pad, 150.0f, 50.0f, centre, true));
-    pad.mouseDrag(mouseAt(pad, 260.0f, -40.0f, centre, true)); // past the corner: pinned
-    pad.mouseUp(mouseAt(pad, 260.0f, -40.0f, centre, true));
+    const juce::Point<float> center{100.0f, 100.0f};
+    pad.mouseDown(mouseAt(pad, 100.0f, 100.0f, center, false));
+    pad.mouseDrag(mouseAt(pad, 150.0f, 50.0f, center, true));
+    pad.mouseDrag(mouseAt(pad, 260.0f, -40.0f, center, true)); // past the corner: pinned
+    pad.mouseUp(mouseAt(pad, 260.0f, -40.0f, center, true));
 
     const auto &calls = f.recording.calls;
     REQUIRE(calls.size() >= 6);
@@ -1791,7 +1791,7 @@ TEST_CASE("the pad's drag is one gesture on both morphs", "[plugin]")
     CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(1.0, 1e-3));
     CHECK_THAT(f.value(ParamSlot::MorphY), Catch::Matchers::WithinAbs(1.0, 1e-3));
 
-    // One undo group: a single entry, labelled "Morph", whose undo restores both.
+    // One undo group: a single entry, labeled "Morph", whose undo restores both.
     CHECK(f.undo.size() == 1);
     CHECK(f.undo.undoLabel() == "Morph");
     f.undo.undo();
@@ -1809,10 +1809,10 @@ TEST_CASE("the pad works without an undo stack", "[plugin]")
     RecordingContext recording(gg::core::Mode::Fx);
     gg::ui::MorphPad pad(recording.context);
     pad.setSize(200, 100); // the square is the 100 x 100 in the middle
-    const juce::Point<float> centre{100.0f, 50.0f};
-    pad.mouseDown(mouseAt(pad, 100.0f, 50.0f, centre, false));
-    pad.mouseDrag(mouseAt(pad, 50.0f, 100.0f, centre, true)); // the square's bottom-left corner
-    pad.mouseUp(mouseAt(pad, 50.0f, 100.0f, centre, true));
+    const juce::Point<float> center{100.0f, 50.0f};
+    pad.mouseDown(mouseAt(pad, 100.0f, 50.0f, center, false));
+    pad.mouseDrag(mouseAt(pad, 50.0f, 100.0f, center, true)); // the square's bottom-left corner
+    pad.mouseUp(mouseAt(pad, 50.0f, 100.0f, center, true));
     CHECK(recording.kinds() == "bbvvvvee");
     CHECK_THAT(recording.values[static_cast<std::size_t>(ParamSlot::MorphX)],
                Catch::Matchers::WithinAbs(0.0, 1e-3));
@@ -1820,7 +1820,7 @@ TEST_CASE("the pad works without an undo stack", "[plugin]")
                Catch::Matchers::WithinAbs(0.0, 1e-3));
 }
 
-TEST_CASE("double-click centres the pad", "[plugin]")
+TEST_CASE("double-click centers the pad", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     PadFixture f;
@@ -1834,7 +1834,7 @@ TEST_CASE("double-click centres the pad", "[plugin]")
     CHECK(f.undo.size() == 1);
 }
 
-TEST_CASE("a real double-click sequence centres the pad in one undo entry", "[plugin]")
+TEST_CASE("a real double-click sequence centers the pad in one undo entry", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     PadFixture f;

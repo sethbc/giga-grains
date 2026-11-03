@@ -94,7 +94,7 @@ TEST_CASE("B-D off adds nothing: the sum assigns", "[core][layers]")
 
 TEST_CASE("layers sum in order A to D", "[core][layers]")
 {
-    // Four Sample layers over four sines, at the pad's centre: each weighs exactly 0.25. With
+    // Four Sample layers over four sines, at the pad's center: each weighs exactly 0.25. With
     // Mix 1, no input and the reverb idle, the FX's output is 0 · (1 − 1) + wet · 1 = +0 + wet.
     // A layer rendered alone weighs exactly 1, so its output is +0 + limited_L. The four-layer
     // output must then be, bit for bit,
@@ -150,13 +150,13 @@ TEST_CASE("the weight is exactly 1 with one layer on anywhere on the pad", "[cor
     // ramps; so layer A alone renders the same bits at any Morph.
     constexpr int64_t kFrames = 36000;
     const Stereo input = noise(kFrames, 0.5f, 5);
-    Stereo centre = silence(kFrames);
+    Stereo center = silence(kFrames);
     {
         Processor p({kRate, 4096, 7, Mode::Fx});
         wetOnly(p);
-        render(p, &input, 0, kFrames, {4096}, {}, centre);
+        render(p, &input, 0, kFrames, {4096}, {}, center);
     }
-    REQUIRE(peak(centre.left) > 0.05f);
+    REQUIRE(peak(center.left) > 0.05f);
     for (const auto &[x, y] :
          std::array<std::array<float, 2>, 3>{{{0.0f, 0.0f}, {1.0f, 1.0f}, {0.37f, 0.9f}}})
     {
@@ -180,12 +180,12 @@ TEST_CASE("the weight is exactly 1 with one layer on anywhere on the pad", "[cor
             REQUIRE(p.morphWeightAt(0, t) == 1.0f);
         }
         render(p, &input, 4096 + kRamp / 2, kFrames, {4096}, moves, out);
-        CHECK(sameBits(out.left, centre.left));
-        CHECK(sameBits(out.right, centre.right));
+        CHECK(sameBits(out.left, center.left));
+        CHECK(sameBits(out.right, center.right));
     }
 }
 
-TEST_CASE("four layers at the centre weigh a quarter each", "[core][layers]")
+TEST_CASE("four layers at the center weigh a quarter each", "[core][layers]")
 {
     Processor p({kRate, 512, 1, Mode::Fx});
     for (uint8_t L = 0; L < 4; ++L)

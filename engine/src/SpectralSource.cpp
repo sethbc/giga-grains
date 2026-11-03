@@ -199,8 +199,8 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
         }
         // A fraction of the sample, its window centered there; NaN reads as 0.
         const double p = position > 0.0 ? (position < 1.0 ? position : 1.0) : 0.0;
-        const double centre = std::floor(p * static_cast<double>(m.sampleFrames - 1));
-        const int64_t start = static_cast<int64_t>(centre) - n / 2;
+        const double center = std::floor(p * static_cast<double>(m.sampleFrames - 1));
+        const int64_t start = static_cast<int64_t>(center) - n / 2;
         const bool mono = m.sampleMono || m.sample[1] == nullptr;
         for (uint32_t c = 0; c < (mono ? 1u : 2u); ++c)
         {

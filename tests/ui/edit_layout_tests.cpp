@@ -17,7 +17,7 @@
 
 #include "gg/core/ParamIds.h"
 #include "gg/ui/EditLayout.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 
 using gg::core::LayerParam;
 using gg::core::ParamSlot;
@@ -239,7 +239,7 @@ TEST_CASE("Delay and Limiter are the FX view's", "[ui]")
     }
 }
 
-TEST_CASE("the layer colours are Okabe-Ito's", "[ui]")
+TEST_CASE("the layer colors are Okabe-Ito's", "[ui]")
 {
     CHECK(gg::ui::kLayerTints == std::array<uint32_t, 4>{0xE69F00, 0x56B4E9, 0x009E73, 0xCC79A7});
     CHECK(gg::ui::kLayerLetters == std::array<char, 4>{'A', 'B', 'C', 'D'});

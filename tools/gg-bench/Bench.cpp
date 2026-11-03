@@ -95,7 +95,7 @@
 #include "gg/source/SampleBuffer.h"
 #include "gg/source/SourceMode.h"
 #include "gg/spectral/SpectralSource.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/SplatRenderer.h"
 #include "gg/ui/StressGrains.h"
 

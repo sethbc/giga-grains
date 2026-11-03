@@ -149,7 +149,7 @@ struct SinkLog
     }
 };
 
-// Periodic (distribution 0) and centred (stereo 0), as M0's stream was.
+// Periodic (distribution 0) and centered (stereo 0), as M0's stream was.
 gg::CloudParams params(double densityHz, double durationSec, double position, double spray,
                        double pitch, float gain)
 {
@@ -543,7 +543,7 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
             gg::rng::uniform01(gg::rng::hash({7, 0, 0, gg::rng::Field::SignalNoise, counter++}));
         return lo + (hi - lo) * u;
     };
-    // Each field is drawn over twice the width of its legal range, centred on it, so about
+    // Each field is drawn over twice the width of its legal range, centered on it, so about
     // half the draws are out of range. Durations are "legal" over 0..1 s for this purpose.
     auto wide = [&draw](double lo, double hi) {
         const double w = hi - lo;
@@ -573,12 +573,12 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
 TEST_CASE("pan follows equal power with unity center", "[engine]")
 {
     // The law: gL = sqrt(1 - pan) and gR = sqrt(1 + pan), so gL^2 + gR^2 = 2. Both are exactly 1
-    // at the centre, so a centred grain's latched channel gains are its gain, and its output 0
+    // at the center, so a centered grain's latched channel gains are its gain, and its output 0
     // is the one-output render's bit for bit, as is its output 1 from a mono source (ruling
     // M1-d; spec §3).
-    const gg::PanGains centre = gg::panGains(0.0f);
-    REQUIRE(centre.left == 1.0f);
-    REQUIRE(centre.right == 1.0f);
+    const gg::PanGains center = gg::panGains(0.0f);
+    REQUIRE(center.left == 1.0f);
+    REQUIRE(center.right == 1.0f);
     bool onLaw = true;
     for (int i = -1000; i <= 1000; ++i)
     {
@@ -607,13 +607,13 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
             engine->setEventSink(&SinkLog::record, &log);
             return engine;
         };
-        SinkLog centreLog;
-        const auto centred = render(*makeEngine(0.0, centreLog), kFrames, 256);
+        SinkLog centerLog;
+        const auto centered = render(*makeEngine(0.0, centerLog), kFrames, 256);
         SinkLog wideLog;
         const auto wide = render(*makeEngine(1.0, wideLog), kFrames, 256);
-        REQUIRE(centreLog.grains.size() == 1);
+        REQUIRE(centerLog.grains.size() == 1);
         REQUIRE(wideLog.grains.size() == 1);
-        const gg::GrainSpec &g = centreLog.grains[0];
+        const gg::GrainSpec &g = centerLog.grains[0];
         REQUIRE(g.pan == 0.0f);
         REQUIRE_FALSE(std::signbit(g.pan)); // +0, never -0, so the event log reads "pan":0
 
@@ -646,8 +646,8 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         // Stereo 0: both channel gains are the grain's gain.
         const std::array<std::vector<float>, 2> unpannedOut = expected(g, {g.gain, g.gain});
         REQUIRE(peak(unpannedOut[0]) > 0.1f);
-        REQUIRE(sameBits(centred.left, unpannedOut[0]));
-        REQUIRE(sameBits(centred.right, unpannedOut[1]));
+        REQUIRE(sameBits(centered.left, unpannedOut[0]));
+        REQUIRE(sameBits(centered.right, unpannedOut[1]));
 
         // Stereo 1: the same grain, only its pan differs, and each channel's gain is the grain's
         // gain times its pan gain, latched once.
@@ -656,7 +656,7 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         unpanned.pan = 0.0f;
         REQUIRE(unpanned == g);
         INFO("pan = " << pan);
-        REQUIRE(std::abs(pan) > 0.1f); // seed 17 puts the grain clearly off centre
+        REQUIRE(std::abs(pan) > 0.1f); // seed 17 puts the grain clearly off center
         const gg::PanGains gains = gg::panGains(pan);
         REQUIRE(std::abs(gains.left - std::sqrt(1.0 - pan)) <= 1e-7);
         REQUIRE(std::abs(gains.right - std::sqrt(1.0 + pan)) <= 1e-7);
@@ -775,7 +775,7 @@ TEST_CASE("a new source applies from the next onset and old grains finish on the
           "[engine]")
 {
     // Source A is all +0.5 and B all -0.5, so a grain's sign says which it read. 100 Hz of
-    // 200 ms grains, periodic and centred: about 20 overlap, and the grains started before the
+    // 200 ms grains, periodic and centered: about 20 overlap, and the grains started before the
     // swap at 0.5 s sound on for up to 200 ms after it. One onset falls on the swap sample
     // itself (24,000 = 50 x 480), and it belongs to the new source.
     constexpr int64_t kSwap = 24000;
@@ -1783,7 +1783,7 @@ struct OrderLog
     }
 };
 
-// 200 Hz of one-second grains, periodic and centred: an onset every 240 samples, each grain
+// 200 Hz of one-second grains, periodic and centered: an onset every 240 samples, each grain
 // sounding 48,002 samples (durationSamples 48,000), so 200 are wanted at once.
 gg::CloudParams overload() { return params(200.0, 1.0, 0.5, 0.0, 0.0, 0.25f); }
 } // namespace
@@ -2311,7 +2311,7 @@ TEST_CASE("stealing a short grain keeps its end and does not fade", "[engine][bu
     REQUIRE(sameBits(r.left, expected.left));
     REQUIRE(sameBits(r.right, expected.right));
 
-    // The output: at most two grains sound at once, each of gain kGain at the centre, with a
+    // The output: at most two grains sound at once, each of gain kGain at the center, with a
     // window whose step per sample is at most π / D, reading a sine whose own step is at most
     // ω = 2π × 220 / 48,000. So no output sample moves by more than 2 × kGain × (π / D + ω): no
     // grain steps, at its steal or its end.
@@ -2402,7 +2402,7 @@ std::vector<EdgeCase> edgeCases()
     return cases;
 }
 
-// An engine over `source` playing 4 grains a second of the case, centred, periodic, at the case's
+// An engine over `source` playing 4 grains a second of the case, centered, periodic, at the case's
 // gain, each read starting `cross` samples (at the nominal rate) before the sample's last frame.
 std::unique_ptr<gg::Engine>
 edgeEngine(const EdgeCase &c, const std::shared_ptr<const gg::PreparedSource> &source, SinkLog *log)

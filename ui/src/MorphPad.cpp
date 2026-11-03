@@ -12,7 +12,7 @@
 #include "Palette.h"
 #include "ParamValue.h"
 #include "gg/core/ParamIds.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/UndoStack.h"
 
 namespace gg::ui
@@ -39,7 +39,7 @@ struct MorphPad::Impl
     bool grouped{false}; ///< begin opened an undo group that end hasn't closed
     std::array<bool, gg::core::kLayers> lastOn{};
 
-    /// The largest centred square in the component, in its coordinates.
+    /// The largest centered square in the component, in its coordinates.
     static juce::Rectangle<float> squareOf(const juce::Component &c)
     {
         const auto bounds = c.getLocalBounds().toFloat();
@@ -61,7 +61,7 @@ struct MorphPad::Impl
     }
 
     /// Opens the gesture on both parameters, and the undo group. The pad opens the two undo
-    /// gestures itself, before the values do, so the entry is labelled "Morph"; the values close
+    /// gestures itself, before the values do, so the entry is labeled "Morph"; the values close
     /// them (ParamValue).
     void begin(bool nudge = false)
     {

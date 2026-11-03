@@ -32,8 +32,8 @@ namespace gg::ui
 /// 217) send one value as a gesture ends, with a tooltip that says so.
 ///
 /// **Rings** (spec §6.5, §6.6): each knob draws one arc per route targeting it on this layer,
-/// from the context's routes, coloured by the source's family; a toggle or a menu shows a dot of
-/// that colour for each route instead (ParamControl). The Step sliders are not mod targets (the
+/// from the context's routes, colored by the source's family; a toggle or a menu shows a dot of
+/// that color for each route instead (ParamControl). The Step sliders are not mod targets (the
 /// modulators' own controls are refused as targets, isValidTarget), so they show none. In mod mode
 /// a ring drags its route's depth (the context's setRoutes), one undo entry for the drag, and the
 /// controls take a dropped source chip (onSourceDrop).

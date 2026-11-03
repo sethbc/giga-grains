@@ -14,7 +14,7 @@
 #include "Palette.h"
 #include "ParamControl.h"
 #include "gg/core/ParamIds.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 
 namespace gg::ui
 {
@@ -28,7 +28,7 @@ constexpr int kRowHeight = 22;  // the letter, the toggles, Source and Level
 constexpr int kOnMinWidth = 24; // "On" and its pads, which the Freeze toggle may take the rest of
 constexpr int kLevelMinWidth = 28; // the Level track the Source menu may take the rest of
 
-/// The layer's letter in its colour: a filled button, the letter dark on it.
+/// The layer's letter in its color: a filled button, the letter dark on it.
 struct LetterButton final : jcmp::TextPushButton
 {
     LetterButton(uint8_t layer) : layer_(layer) { setLabel(std::string(1, kLayerLetters[layer])); }

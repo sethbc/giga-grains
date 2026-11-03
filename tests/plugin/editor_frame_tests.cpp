@@ -41,7 +41,7 @@
 #include "gg/ui/EditLayout.h"
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/UndoStack.h"
 
 namespace
@@ -121,9 +121,9 @@ juce::MouseEvent mouseAt(juce::Component &c, float x, float y, bool dragged = fa
 /// A press and release at the middle of `c`.
 void click(juce::Component &c)
 {
-    const auto centre = c.getLocalBounds().getCentre().toFloat();
-    c.mouseDown(mouseAt(c, centre.x, centre.y));
-    c.mouseUp(mouseAt(c, centre.x, centre.y));
+    const auto center = c.getLocalBounds().getCentre().toFloat();
+    c.mouseDown(mouseAt(c, center.x, center.y));
+    c.mouseUp(mouseAt(c, center.x, center.y));
 }
 
 /// Runs the editor's 30 Hz timer `n` times.
@@ -1227,9 +1227,9 @@ TEST_CASE("the light theme reads: the strip column, the lanes' ground and the ro
         REQUIRE_FALSE(combos.empty());
         for (const juce::ComboBox *combo : {combos.front(), combos.back()})
         {
-            const auto colourOf = [combo](int id) { return combo->findColour(id).withAlpha(1.0f); };
-            const juce::Colour box = colourOf(juce::ComboBox::backgroundColourId);
-            CHECK(contrast(box, colourOf(juce::ComboBox::textColourId)) >= 4.5);
+            const auto colorOf = [combo](int id) { return combo->findColour(id).withAlpha(1.0f); };
+            const juce::Colour box = colorOf(juce::ComboBox::backgroundColourId);
+            CHECK(contrast(box, colorOf(juce::ComboBox::textColourId)) >= 4.5);
             CHECK(contrast(box, palette.background) >= 1.0);
             CHECK((box.getBrightness() > 0.5f) == (theme == ThemeChoice::Light));
         }

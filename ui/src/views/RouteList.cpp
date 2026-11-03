@@ -17,7 +17,7 @@
 
 #include "../Palette.h"
 #include "gg/ui/EditLayout.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/RouteEdits.h"
 #include "gg/ui/UndoStack.h"
 
@@ -163,7 +163,7 @@ struct RouteList::Impl
             build(static_cast<uint8_t>(i + 1), *rows[i]);
         }
         content.setSize(240, static_cast<int>(rows.size()) * kRowH);
-        applyColours();
+        applyColors();
     }
 
     /// Fills `row`'s target box: "—", then every valid target the product shows, by slot index
@@ -374,7 +374,7 @@ struct RouteList::Impl
 
     /// The boxes, the depth sliders and the clear buttons take the theme's colors (the editor's
     /// palette, found above the list), so a light theme has no dark box in it.
-    void applyColours()
+    void applyColors()
     {
         const Palette &pal = paletteOf(owner);
         const juce::Colour box = pal.header, text = pal.text;
@@ -622,9 +622,9 @@ RouteList::~RouteList() = default;
 
 void RouteList::refresh() { impl_->refresh(); }
 
-void RouteList::parentHierarchyChanged() { impl_->applyColours(); }
+void RouteList::parentHierarchyChanged() { impl_->applyColors(); }
 
-void RouteList::lookAndFeelChanged() { impl_->applyColours(); }
+void RouteList::lookAndFeelChanged() { impl_->applyColors(); }
 
 void RouteList::select(uint8_t slot)
 {

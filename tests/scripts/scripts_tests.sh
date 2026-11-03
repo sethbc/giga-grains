@@ -19,7 +19,7 @@
 #     configure preset getting a summary line, with the next preset still run;
 #   - the summary of real ctest output, CTest 3.31.6's and 4.4.5's (ctest-output/), recorded from
 #     a project of four tests (one passes, "fails one" and fails_two fail, skipped is skipped;
-#     passes and "fails one" are labelled core and rt) with a test preset like ours: all of it
+#     passes and "fails one" are labeled core and rt) with a test preset like ours: all of it
 #     (fail), -L core -E fails (pass) and -L nosuchlabel (none).
 # update-goldens.sh runs in the same fake tree with a stub gg-render: its per-case WAV SHA-256s,
 # and the cases changed, new or gone since the previous run; and the preset goldens' folder

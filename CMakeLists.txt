@@ -37,7 +37,7 @@ option(GG_BUILD_PLUGINS "Build the plugins: their core, and the formats with GG_
 # core and its [plugin] tests, without the editor, JUCE or clap-wrapper's CLAP/VST3/AUv2/standalone
 # targets. Nothing is downloaded then. The sanitizer presets build the plugin audio path this way.
 option(GG_BUILD_EDITOR "Build the JUCE editor and the clap-wrapper formats" ON)
-option(GG_SANITIZE "Build with clang/gcc address and undefined-behaviour sanitizers" OFF)
+option(GG_SANITIZE "Build with clang/gcc address and undefined-behavior sanitizers" OFF)
 option(GG_USE_RTSAN "Build with the LLVM RealtimeSanitizer" OFF)
 # RealtimeSanitizer is in upstream Clang 20 and newer; Apple clang and gcc have none.
 if (GG_USE_RTSAN AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"

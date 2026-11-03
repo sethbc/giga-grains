@@ -59,7 +59,7 @@ struct PixelBox
 /// the radius (a splat is x0 == x1). Returns false, so nothing lands, for a non-finite argument,
 /// a radius that isn't positive, an empty canvas or a box wholly off it.
 ///
-/// The bounding box is clipped to the canvas while still floating-point, so a centre far off
+/// The bounding box is clipped to the canvas while still floating-point, so a center far off
 /// the canvas never reaches an integer conversion. The last pixel's coordinates are doubles,
 /// which hold every uint32_t exactly: a float rounds width − 1 up to width for some widths past
 /// 2^24, which would let a splat write past the row's end.
@@ -109,7 +109,7 @@ void SplatRenderer::add(float x, float y, float radius, float intensity) noexcep
     const uint32_t px0 = box.px0, px1 = box.px1, py0 = box.py0, py1 = box.py1;
 
     // The weight is 1 - d^2/r^2 = (1 - dy^2/r^2) - dx^2/r^2: one base per row, then one
-    // subtraction per pixel. At the centre it is exactly 1, so a splat lands its intensity there.
+    // subtraction per pixel. At the center it is exactly 1, so a splat lands its intensity there.
     // Every row spans the whole box and the clamp to 0 drops its corners (adding 0 leaves a
     // pixel as it was). That is about twice as fast as fitting each row to the circle's chord:
     // the rows are short, so a per-row square root, rounding and changing trip count cost more

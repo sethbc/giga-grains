@@ -129,7 +129,7 @@ TEST_CASE("settings XML reads missing attributes as empty and ignores unknown on
     REQUIRE(out == MachineSettings{});
 
     // A newer build's file: a later version, more attributes and elements.
-    REQUIRE(fromSettingsXml(R"(<settings version="7" sampleFolder="/S" colour="red">)"
+    REQUIRE(fromSettingsXml(R"(<settings version="7" sampleFolder="/S" color="red">)"
                             R"(<recent path="/x" /></settings>)",
                             out));
     REQUIRE(out == MachineSettings{"/S", ""});
