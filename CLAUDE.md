@@ -270,7 +270,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 |---|---|
 | `dev` | Debug, with everything. The everyday build. |
 | `release` | Release. Time benchmarks and run the validators on this one. |
-| `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
+| `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. With Apple clang it misses warnings CI's LLVM 23 turns into errors: also configure the CI-equivalent tree once, `CC=/opt/homebrew/opt/llvm/bin/clang CXX=/opt/homebrew/opt/llvm/bin/clang++ cmake --preset asan -B build/asan-llvm`, and build `gg-tests` in it. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
 | `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). `linux-gcc13` is gcc-13 on Ubuntu 24.04, the Linux baseline (INTENT §15). |
@@ -576,6 +576,10 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 **Tests run in parallel.** Every test preset runs 8 tests at a time (`"jobs"` in the hidden
 `base` test preset); `-j N` on the command line overrides it, and `-j 1` runs them serially.
 - Each Catch2 test case runs in its own process.
+- **ThreadSanitizer** (no preset, no CI job): `tests/tsan-suppressions.txt` holds one suppression,
+  the ring reader's designed reader/writer slot race (`race:gg::media::ringToBuffer`; a seqlock
+  validates what it keeps; carry-over row 403). A local TSan tree runs with
+  `TSAN_OPTIONS="suppressions=$PWD/tests/tsan-suppressions.txt"`.
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
@@ -1191,7 +1195,8 @@ gg-snap <out-dir> [--sizes 960x600,640x360]
 - **It never touches your settings:** it sets `GG_STRESS_GRAINS=2048` (below) and points
   `GG_SETTINGS_FILE` at a scratch file in the system's temporary folder, removed afterwards.
 - **Exit status:** 0, 1 with a message on stderr, 2 for bad usage.
-- **`snap_cli`** (labels `plugin` and `slow`, a 300 s timeout; macOS, with the editor) runs it
+- **`snap_cli`** (labels `plugin` and `slow`, a 900 s timeout and `PROCESSORS 2`;
+  macOS, with the editor) runs it
   into `build/<preset>/tests/test-output/snap_cli` and requires exactly the 32 names, each a PNG
   of at least 1,000 bytes. It takes about 66 s in `dev`, so `-LE slow` leaves it out.
 - **CI's macOS leg** runs it after the tests and uploads the files as the `gg-snapshots`
