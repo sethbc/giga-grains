@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **Built (PR 2), 2026-11-01** (the plan: `docs/superpowers/plans/2026-11-01-m2-views-pr2.md`; PR 2's rulings VW-P2a to VW-P2n are in §16): the Ring, Delay and Limiter panels, the ring's lane menu, the sample strip for every layer in both products, the memory readout and cap, and the plan's undo and hygiene tasks; the text it changed is marked **Amended** in place. The header's split into its own component (row 331) and the preset strip's palette (row 313's rest) wait on sub-project 5's group 2. |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **Built (PR 2), 2026-11-01** (the plan: `docs/superpowers/plans/2026-11-01-m2-views-pr2.md`; PR 2's rulings VW-P2a to VW-P2n are in §16): the Ring, Delay and Limiter panels, the ring's lane menu, the sample strip for every layer in both products, the memory readout and cap, and the plan's undo and hygiene tasks; the text it changed is marked **Amended** in place. Row 313 was closed by sub-project 5's group 2, and the header's split into its own component (row 331) is the close's. |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 6 of 7; wave 3, merged second, after sub-project 5. Started with wave 2 (programme design §6, "Wave rules"): the work that needs only wave 1 is built now; the work that needs wave 2's parameters waits until wave 2 has merged and this branch is rebased. |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.6, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them. |
 | **Builds on** | M2 sub-project 1 as built (§23 #65): four layers, the morph law (D1), the Source kind, Pitch and Size Spread, the 48-slot mod matrix and its sources, the 218 parameters, the patch at version 2, the per-layer grain events and live peaks; M1's Perform view (§23 #58): the canvas, `LaneModel`, `LaneState`, `SplatRenderer`, `MacroRow`, `LoaderStrip`, the UI → host gesture path and the audio → UI publish path; sst-jucegui at `22a89ca`. |
@@ -537,7 +537,8 @@ sub-project wants a sweepable Size.
 **As built** (`0d8969c`): `ParamValue`'s commit-on-release mode, set on the Reverb Size control
 alone; a gesture that sets nothing sends no value. The tooltip reads "Sets on release: the
 room's size changes in one step". The view has no viewport: its two panels fit 640 × 360,
-which the frame's tests check. Row 217 is **Closed** by `0d8969c` (§12).
+which the frame's tests check. **Amended** (VW-T19b, VW-P2e): the FX view scrolls in the panel
+grid it shares with the Edit view (`layoutPanelGrid`), since the four new panels don't fit it. Row 217 is **Closed** by `0d8969c` (§12).
 
 ### 6.8 Undo and redo
 
@@ -557,6 +558,12 @@ destroyed mid-drag closes its open gestures and group as one entry. `gg-ui-core`
 - a **whole-state entry:** `{values before, after; routes before, after}`, pushed by a caller that
   changes everything at once: sub-project 5's Mutate and preset recall (the API is
   `pushSnapshot(label, before, after)`; this sub-project pushes none, and the test pushes one).
+  **Amended** (the consistency review's R-20, 2026-11-02): as built, `EditorPlugin.cpp` pushes one
+  whole-state entry (`pushWholeState`) per preset load and per Mutate press, the values and routes
+  only (a recall's samples and name aren't restored; row 402, decided, INTENT §23 #86). **Amended**
+  (PR 2): an undo's batch replays through `UndoCallbacks::setValues`, which `EditorPlugin` sets to
+  `sendValues` (row 337, `8e077ad`), and arrow-key nudges on the same slots within a second merge
+  into one entry (row 323, `8e077ad`).
 
 Depth 200, the oldest dropped. Host automation, state loads and the audio thread's own changes
 push nothing; an undo applies its `before` through the gesture path (`uiBeginGesture`,
@@ -608,7 +615,9 @@ settings file's NUL guard (`saveSettings`) refuses a `theme` holding a NUL, as i
 folders. **Amended** (the merge with sub-project 5, PR #17): `ui/src/Theme.h` is back as a shim
 for sub-project 5's preset strip, browser and Mutate panel alone, which set M1's fixed colors when
 made: its constants are `Palette::dark()`'s, so those three keep their colors in both themes
-until PR 2's palette pass (carry-over row 313).
+until PR 2's palette pass (carry-over row 313). **Amended** (the consistency review's R-63,
+2026-11-02): `Theme.h` is gone; row 313 was closed in full, the sample strip by PR 2 and the
+preset strip, browser and Mutate panel by sub-project 5's group 2.
 
 **The layer palette** (D4): Okabe–Ito's four most separable hues, which deuteranopes,
 protanopes and tritanopes tell apart: **A orange `#E69F00`, B sky blue `#56B4E9`, C bluish green
@@ -861,7 +870,8 @@ below and applied in §6.
 
 **D8. The theme's default** (§6.9). **Decided: option 1.**
 1. **Dark by default** (M1's look, what every host screenshot so far shows), light by the
-   header's switch, saved per machine. *Cost:* a light-OS user picks it by hand once.
+   header's switch, saved per machine. *Cost:* a light-OS user picks it by hand once. M5 adds
+   System, high contrast and user themes (INTENT §23 #72).
 2. *Follow the OS's light or dark,* with the same switch to override. *Cost:* the FX and the
    instrument look different from the host around them on a light OS with a dark DAW, until
    overridden; the switch gains a third state, System.
@@ -1213,5 +1223,5 @@ here.
 commits are in `docs/m2-carry-over.md`). Closed in part: 313 (the sample strip is on the palette;
 the preset strip, the browser and the Mutate panel are sub-project 5's, by the program manager's
 ruling of 2026-11-01) and 330 (a half-built row is kept and a hidden target named). Open: 331 (the
-header's split waits for sub-project 5's group 2), 333 (the director's checklist), 338 (the final
-verification). New rows 383 to 387 hold the minors deferred.
+header's split waits for sub-project 5's group 2; the close's), 333 (decided in the close, §23 #86).
+Row 338 is closed at `293cbb5`, and rows 383 to 388 hold the minors deferred.

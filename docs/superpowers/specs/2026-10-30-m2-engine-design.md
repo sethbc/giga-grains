@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Built on branch `m2-engine` (PR #16): the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md`. Rulings made during the build are marked **Amended (2026-10-30)** where they change a section, and INTENT §23 #66 lists them by ID. The status is **Built** (2026-10-30), the final review's fix wave, the idle run's regression fix (ES-F2) and the cancel fix (ES-F3) done and marked below; the programme manager accepts the final report |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Built on branch `m2-engine` (PR #16): the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md`. Rulings made during the build are marked **Amended (2026-10-30)** where they change a section, and INTENT §23 #66 lists them by ID. The status is **Built** (2026-10-30), the final review's fix wave, the idle run's regression fix (ES-F2) and the cancel fix (ES-F3) done and marked below; the programme manager accepts the final report. The close (2026-11-02) amended §5 and §14's risk row (ES-T12a, ES-T12b), D3 (ES-T1a), §6.5 (the steal's overshoot, about 87 grains) and §6.11 (the output bound, D-bound) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 3 of 7; wave 2, merged first (sub-projects 2 and 4 rebase on this one) |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.3, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with its own `gg::Engine` and pool of 4,096, the Source kind, the mod matrix, render tasks, the patch at version 2, the mip-level accessor (`levelCount()`, `level(n)`) on `PreparedSource` and `LiveSource`, and the reserved index block `0x..50`–`0x..5F` in every scope |
@@ -147,7 +147,8 @@ miss.
 **AVX2.** A second translation unit of the sample and live kernels compiled with `-mavx2` (and no
 FMA), chosen once at load by CPU features through a function pointer (chosen), not GCC's function
 multiversioning attributes, which ClangCL doesn't offer and which hide the dispatch point the
-tests need to force.
+tests need to force. **Amended (ES-T12a, ES-T12b):** the table is chosen per engine, and each AVX2
+function carries `__attribute__((target("avx2")))` in place of a file-level flag; see §6.12.
 
 ## 6. Design
 
@@ -406,8 +407,10 @@ the grain. An unstolen grain renders M1's bits.
 
 **Accounting during a fade.** The stolen grain's weight stays in the ledger until its new end, so
 for up to F samples both it and the new grain sound: the instance's real cost may exceed the
-budget by one grain's weight per steal in flight, at most `kStealFade × onset rate` grains, 8% of
-the default budget at the exit's 16,384 onsets a second. The excess is bounded and deterministic;
+budget by one grain's weight per steal in flight, at most `kStealFade × onset rate` grains: about 87 at
+the exit's 16,384 onsets a second (256 / 48,000 s × 16,384), 2% of the default budget (8.5% of the
+exit case's 1,024-grain quota; **Amended**, the consistency review's R-9, 2026-11-02; first
+written "8% of the default budget"). The excess is bounded and deterministic;
 it is recorded in INTENT §14.
 
 **Why it never clicks or drops out.** A tier change is per grain; a drop plays nothing; a steal
@@ -555,7 +558,7 @@ call (0, 1 and up to 4,096 among them):
 - **Overload sweeps:** Budget swept 16,384 → 256 → 16,384 under four HQ layers at full Density
   and Size; Quality swept on each layer under a small Budget.
 - **The checks,** on every render: no NaN or Inf (and every ring, every peak strip and every
-  snapshot finite), the peak at most 2 + the input's peak (the chain's bound, INTENT §14), no
+  snapshot finite), the peak at most 2 + the input's peak (the chain's bound, INTENT §14; 3 + the input's peak with the global delay engaged, D-bound, §23 #69), no
   runaway (the last second's RMS at most 6 dB above the loudest earlier second once the input
   has stopped changing), and the goldens' click score (`metricsVersion` 2, the limit 15) over the
   output, except across a Reverb Size move (row 217, accepted S8) and across the input's own
@@ -706,6 +709,8 @@ and was already applied in §6.
 1. **16 taps.** *Cost:* about a third more per HQ grain than 12 taps (the weights as first
    written, 12 against 9; **Amended (2026-10-30, ES-T10a)** the measured 16-tap weight is 27); at
    16 taps the first image sits at least 70 dB down and the passband holds to 0.4 of Nyquist.
+   **Amended** (ES-T1a, §6.2): at s = 1; near a residual rate of 2 the first image is about -37 dB,
+   which the sitting's question carries.
 2. *12 taps.* *Cost:* images about 10 dB higher and a softer top octave, for a quarter less CPU.
 
 **D4. When the ladder steals rather than drops** (§6.5): the oldest sounding grain is stolen, with
@@ -922,7 +927,7 @@ Part I is unchanged.
 | The ladder changes an M1 golden's bits | The quota is unlimited by default in the engine and far above every golden's load in the `Processor`; the hash list before and after every task |
 | `engine-sample` regresses from the weighted admission | One integer add per draw; measured on the M5 Max and the CI models before the PR is marked ready; fixed here, not carried (§7.6) |
 | The sweep harness takes too long under ASan | Many small cases run 8 at a time; each case's audio is seconds; the family's wall time is measured in the plan and trimmed before CI sees it |
-| The AVX2 path isn't bit-identical on some compiler (a contraction, a different `sqrt`) | `-mno-fma` and `-ffp-contract=off`; the two-path equality test on every x86 leg; dropped if it can't be made identical within the timebox |
+| The AVX2 path isn't bit-identical on some compiler (a contraction, a different `sqrt`) | (**Amended**, ES-T12a and ES-T12b, §6.12: per-function `target("avx2")`, one pointer per engine) `-mno-fma` and `-ffp-contract=off`; the two-path equality test on every x86 leg; dropped if it can't be made identical within the timebox |
 | Sub-project 2's `LiveSource` work conflicts with the guard and `readSinc` | Both are additions at named places; 2 rebases on this merge, first in the wave |
 | The fade's bounded overshoot surprises a reviewer | Recorded in §6.5, §14 and INTENT; measured in `engine-overload` |
 

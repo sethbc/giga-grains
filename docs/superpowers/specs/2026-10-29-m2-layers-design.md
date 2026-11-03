@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a; the ramps interpolated between the on-sets and a floor on the steep sets, carry-over row 301, 2026-10-31), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a), §12 (rows 118 and 119 accepted by the programme manager, and closed) |
+| **Status** | **Approved by the programme manager 2026-10-29** against the programme design and INTENT, with one amendment accepted (rows 118 and 119 move from sub-project 2 to this one, §12). **The director's decisions D1–D5, 2026-10-29,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 3, D4 option 1, D5 option 2. **Built** 2026-10-30 (PR #15; INTENT §23 #65), amended in place, each marked **Amended**: §6.1 (the smoke test's bound and the PPA step, ruling LS-T1a; no C++23 library feature used yet), §6.3 (the `min(1, Σ r_K)` factor, ruling LS-T10a; the ramps interpolated between the on-sets and a floor on the steep sets, carry-over row 301, 2026-10-31), §6.7 (the event order, ruling LS-T10b; the per-layer dropped-event counts and the stub pool's RTSan exemption, rulings LS-T11a and LS-T11b), §6.8 (Level and Layer A On as layer targets), §6.9 (the 07b listening spec, ruling LS-T5a), §6.10 (the `<route>` target as a CLAP ID, ruling LS-P1), §6.11 (`tempoBpm`, ruling LS-T13a; the instrument's `sample` later optional), §10 (the `[build]` item, LS-T1a), §12 (rows 118 and 119 accepted by the programme manager, and closed; ratified by the director 2026-11-02, §23 #85) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 1 of 7; wave 1, alone |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.1, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M1 as closed (§23 #60): the `Processor` and its wet chain, the Cloud engine, Sources, Space, the Perform UI's macros, Texture and Feedback; the release pipeline (§23 #61) |
@@ -112,7 +112,7 @@ and `gg-render` until sub-project 6.
   changes beyond what compiles.
 - The process: spec → plan → subagent-driven build → fresh review → fix wave; `scripts/check.sh`
   over `dev,asan,rtsan`; CI green through a draft PR; `scripts/update-goldens.sh` before and after
-  each DSP change with the hash list in the commit; the carry-over counted at start and end.
+  each DSP change with the hash list in the commit; the carry-over counted at start and end (the policy then in force; the count rules were retired by §23 #67).
 
 ## 5. Approaches
 
@@ -691,7 +691,7 @@ stay errors):
   > **Amended by ruling LS-T13a (2026-10-30):** the key is `"tempoBpm"`, not `"tempo"`
   > (`{"tempoBpm", "playing", "startBeat"}`: tempo required, playing true and startBeat 0 by
   > default). The instrument's `"sample"` stays required and is layer A's, so `"samples"."A"`
-  > beside it is the duplicate error; built-in layer samples share the spec's seed.
+  > beside it is the duplicate error (later optional beside `state`, SP-T8c, §23 #68, and beside a `preset` that names layer A's, §23 #70); built-in layer samples share the spec's seed.
 
 Sample mode is untouched, so the M0 and Eco goldens don't move. The event line gains `"layer"`
 (§6.7).
@@ -882,8 +882,9 @@ Engineering choices, each with its reason.
   line's `"layer"`.
 - `[bench]`: `engine-layers` and `engine-layers-full` build, admit their grains across four layers
   and run `--quick`.
-- `[build]`: a `static_assert(__cplusplus >= 202302L)` in the tests; the configure's floor message
-  checked by a scratch-project test (`asio_guard_*`'s pattern).
+- `[build]`: a `static_assert(__cplusplus > 202002L)` in `tests/smoke_tests.cpp` (ruling LS-T1a,
+  §6.1; the spec first wrote `>= 202302L`); the configure's floor message has no scratch-project
+  test (**Amended**, LS-T1a).
 
 **Goldens** (14 new; every WAV of the 22 M1 cases keeps its SHA-256, stated per commit; each new
 case catches all sixteen injected clicks or is added to the table with its reason):
@@ -964,14 +965,16 @@ version-1 session opened in M2 sounding as it did; the migrated instrument's Mac
 switch's hard cut; the grains now finish on their source), both by §6.4, since the Source-kind
 parameter makes the switch reachable in both products in this wave. The programme design's §8
 placed them in sub-project 2; the programme manager accepted the move on 2026-10-29 and tells
-sub-project 2's brief.
+sub-project 2's brief. **The director ratified the move on 2026-11-02** (the consistency review's K-8;
+INTENT §23 #85); the rule stands that such a move is a design amendment needing the director's word
+as well as the program manager's (the program plan's A3).
 
 **Touched files with open rows:** `engine/src/Engine.cpp` (118, 119: closed above),
 `engine/include/gg/grain/GrainPool.h` (51: "with the overload ladder", sub-project 3's feature,
 not a when-touched row), `core/include/gg/core/Processor.h` (184: M3's Voice scheduler). No other
 open row names a file this sub-project edits.
 
-**Expected at the end: 11 open rows,** no new rows. Every minor the final review raises is fixed in
+**Expected at the end: 11 open rows,** no new rows (the policy then in force; its count rules were retired by §23 #67). Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy).
 
 > **Amended (2026-10-30), as built:** rows 118 and 119, moved here with the programme manager's

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen. **Built 2026-10-30** (Tasks 1 to 16 on `m2-extremes`; INTENT §23 #69 records it). Sections changed by the build are marked **Amended**; the director's later decision D7a (2026-10-30) is in §8 and §6.4 |
+| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen. **Built 2026-10-30** (Tasks 1 to 16 on `m2-extremes`; INTENT §23 #69 records it). Sections changed by the build are marked **Amended**; the director's later decision D7a (2026-10-30) is in §8 and §6.4. The close (2026-11-02) amended §3, §6.4, §6.5 and D6 (D-glide; K-2, §23 #79) and §6.2 (D-specwindow), and corrected §10 and §11's counts |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 4 of 7; wave 2, with sub-projects 3 and 2, **merged third** |
 | **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.4, §7 and §12 are this sub-project's charter). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): the four layers, the per-layer chain of §7.2, the Source-kind parameter with its enumeration (Spectral = 3 exists and falls back), the mod matrix, the reserved index block `0x..60`–`0x..7F`, the render tasks; M1's Space (`core/src/space/`, the diffuser, the soft limiter, the 32-sample grid) |
@@ -82,7 +82,11 @@ draw them are sub-project 6's (programme design §6.6).
   off, the delay at Amount 0 and the limiter Off.
 - A click or a zipper when a filter's type, cutoff or resonance moves, when Bus Split moves, when
   Delay Time moves, when the limiter's mode changes, or when a layer's kind switches to or from
-  Spectral.
+  Spectral. **Amended** (D-glide, the director, 2026-10-31, row 379): Delay Time never clicks
+  except inside a Feedback loop at 95% or more over a near-silent tail, where the re-read passes
+  crackle: an accepted law. **Amended** (the director, 2026-11-02, K-2, INTENT §23 #79): a mode
+  change into Peak mid-sound over hot material may click, as part of Peak's zero-attack law (D5b);
+  every other mode change crossfades without a click.
 - Output that depends on the block size, the thread pool, the host's rate conversion of nothing, or
   measured CPU; a `std::` distribution or a clock-seeded RNG anywhere, pffft's phases included.
 - An allocation, lock or syscall on the audio thread, the STFT included: every buffer and pffft
@@ -308,6 +312,9 @@ the material with no transients and no comb; grains read it as they read the liv
   > a Live layer's is, so a reopened frozen Spectral pad is the saved one. A Spectral layer with a
   > sample saves no ring, as a Sample layer doesn't (`gg::core::ringSaved`, given the layer's
   > material: the plugin's loader on the main thread, `gg-render`'s Processor after the render).
+  > **Amended (D-specwindow, the director, 2026-11-01, option 1: defer; row 381):** until row 381
+  > is built, a Spectral layer's analysis reads Position over the whole ring whatever Loop, Loop
+  > Length and Splice say, and the ring commands skip it.
 - **Feedback** on a Spectral layer is 0, as on a Sample layer: Feedback writes a Live layer's ring
   (wave 1's rule, kept); a Spectral layer's ring is its material. `toWetParams` keeps the rule.
 - **Memory** per layer at 48 kHz: the ring 5 s × 2 channels × (240,000 + maxBlockSize) floats,
@@ -422,7 +429,9 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   other read at p = 1, so a toggle never clicks (a hard switch stepped the echoes); like the other
   ramps it jumps where they jump (a loaded state, a macro or route, a clear). **Time** is D6's:
   under option 1 the read position glides toward its target at no more than 0.5 samples per sample
-  (Space's Pre-delay rule, P1), so a move bends the pitch like tape and never clicks; while nothing
+  (Space's Pre-delay rule, P1), so a move bends the pitch like tape and never clicks (except inside a Feedback loop at 95% or
+  more over a near-silent tail, where the re-read passes crackle: an accepted law, **Amended**,
+  D-glide, row 379); while nothing
   has run since a clear the new value applies at once (R-T2a). The ramps and the glide are
   functions of the absolute sample, so the output is block-size invariant.
 - **Memory:** 2 s of stereo at the running rate plus a block, about 0.8 MB at 48 kHz, allocated
@@ -457,7 +466,11 @@ default 100 ms).
   anticipated.
 - **Amended (D5b, the director, 2026-10-31, option 1): the laws stand.** Peak's instant attack and Soft's drive at the bottom ceilings score as clicks over hot material (carry-over row 378, an accepted law, not a defect). The sweep harness's `kLimiterDrive` looks away over the calls in which Peak's gain falls below −6 dB or Soft's input passes twice the ceiling, plus 10 ms after, and nothing wider.
 - **A mode change crossfades** over the 10 ms ramp between the outgoing and the incoming law's
-  outputs (both computed through the fade), so switching never clicks; Ceiling and Release ramp
+  outputs (both computed through the fade), so switching never clicks, but into Peak mid-sound over hot material, whose gain leaves 1 with
+  no attack (**Amended**, the director, 2026-11-02, K-2, INTENT §23 #79: part of Peak's
+  zero-attack law, D5b; row 378 measured 24.4 at 461 samples into the fade at -18 dB, and Peak's
+  clicks over hot material run 16.24 to 42.05, Soft's up to 19.77, at the bottom ceilings; the
+  sweep harness exempts the fade by samples); Ceiling and Release ramp
   like Mix. **Amended (the final review's fix wave):** where the ramps jump (a new instance, a
   loaded state, a macro or route that moves the mode, a reset) the mode snaps instead, so a loaded
   Peak state is limited from its first sample.
@@ -685,7 +698,9 @@ recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moo
 
 **D6. How Delay Time changes** (§6.4). **Decided: option 1 (2026-10-30).**
 1. **It glides,** the read position moving toward the new time at no more than half a sample per
-   sample (Space's Pre-delay rule), so a move bends pitch like tape and never clicks. *Cost:* a
+   sample (Space's Pre-delay rule), so a move bends pitch like tape and never clicks (**Amended**, D-glide, row 379: except inside a
+   Feedback loop at 95% or more over a near-silent tail, where the re-read passes crackle, an
+   accepted law). *Cost:* a
    large jump takes up to twice its size to arrive, bending pitch meanwhile.
 2. *It crossfades* from the old time to the new over 50 ms. *Cost:* a brief double echo on every
    change; two reads per sample during the fade.
@@ -845,7 +860,7 @@ Engineering choices, each with its reason.
 - `[golden][metrics]`: every new case catches all sixteen injected steps or is in the table with
   its count and reason.
 
-**Goldens** (9 new, 45 in all; every WAV of the 36 existing cases keeps its SHA-256, stated per
+**Goldens** (9 new; 60 cases on `main` after the merges, the 51 earlier ones included, §23 #69; every WAV of the 36 existing cases keeps its SHA-256, stated per
 commit; each new case's spectrogram looked at before it is committed):
 
 | Case | Mode | What |
@@ -920,7 +935,7 @@ and RMS, and what to listen for; a host checklist for the close) and `specs/`:
 | `12-limiter-modes.wav` | four hot layers of noise, Mode Off, Soft, Peak at −6 dB | Off clips nothing and sums hot; Soft rounds it; Peak holds the ceiling with its release |
 | `13-all-together.wav` | a Spectral layer and a Smear 0.7 layer, split buses filtered, the delay and Peak | the chain as a whole; does it still sound like one instrument? |
 
-Fourteen renders from thirteen specs (`02` has two or three). **Amended:** `02c` is Smear 0.5, as
+Fifteen renders from fifteen specs. **Amended:** `02c` is Smear 0.5, as
 its README says, because D8's option 2 was a build constant that was never built. The README's
 host checklist covers: the "FX" and "Filter A" pages in Bitwig; the Spectral kind in Live with
 the sidechain feeding an instrument layer; automating Delay Time and Bus 1 Cutoff in Live; the
@@ -941,7 +956,7 @@ when-touched row). `core/src/space/Reverb2Patched.h` (217, "when Space's FX view
 **not edited**: the new units are new files beside it. No other open row names a file this
 sub-project edits.
 
-**Expected at the end: 11 open rows,** none added. Every minor the final review raises is fixed in
+**Expected at the end: 11 open rows,** none added (the policy then in force, retired by §23 #67; the build added rows 357 to 382). Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy). The global DC
 blocker and Feedback on a Spectral layer go to INTENT §22, not to the carry-over: they are design
 questions, not open defects.
