@@ -371,3 +371,41 @@ TEST_CASE("jump snaps the mode with no fade", "[core][fx]")
     lim.process(l, r, LimiterMode::Off, kCeiling, releaseCoeff(0.1));
     CHECK(l == 3.0f);
 }
+
+TEST_CASE("a stray mode's slot is the identity's", "[core][fx]")
+{
+    // Row 363: the weights' slot of a value outside Off, Soft and Peak is Off's, as a settled
+    // call treats it (process() asserts on one, so the mapping is tested alone).
+    using L = Limiter;
+    static_assert(L::lawSlot(LimiterMode::Off) == 0);
+    static_assert(L::lawSlot(LimiterMode::Soft) == 1);
+    static_assert(L::lawSlot(LimiterMode::Peak) == 2);
+    static_assert(L::lawSlot(static_cast<LimiterMode>(3)) == L::lawSlot(LimiterMode::Off));
+    static_assert(L::lawSlot(static_cast<LimiterMode>(255)) == L::lawSlot(LimiterMode::Off));
+    CHECK(L::lawSlot(static_cast<LimiterMode>(7)) == 0);
+}
+
+TEST_CASE("a fade of one call is the new law at once", "[core][fx]")
+{
+    // Row 363: with a ramp of 1 the change's own call is the new mode's law alone, bit for bit
+    // what a ramp of 0 gives from the change.
+    const size_t frames = 4000, at = 1500;
+    const auto in = sine(frames, 1.5f, 440.0);
+    const LimiterMode modes[] = {LimiterMode::Soft, LimiterMode::Peak};
+    for (const LimiterMode to : modes)
+    {
+        Limiter one, none;
+        one.prepare(kSr, 1);
+        none.prepare(kSr, 0);
+        const float k = releaseCoeff(0.05);
+        for (size_t i = 0; i < frames; ++i)
+        {
+            const LimiterMode m = i < at ? LimiterMode::Off : to;
+            float l1 = in[2 * i], r1 = in[2 * i + 1], l0 = l1, r0 = r1;
+            one.process(l1, r1, m, 0.5f, k);
+            none.process(l0, r0, m, 0.5f, k);
+            CHECK(std::memcmp(&l1, &l0, sizeof l1) == 0);
+            CHECK(std::memcmp(&r1, &r0, sizeof r1) == 0);
+        }
+    }
+}
