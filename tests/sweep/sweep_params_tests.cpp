@@ -634,6 +634,85 @@ TEST_CASE("sweep: kLimiterDrive covers Peak driven under -6 dB, and the call's 1
     }
 }
 
+TEST_CASE("sweep: kLimiterDrive covers a mode fade into Peak at any call boundary", "[sweep]")
+{
+    // The director's K-2 (2026-11-02; INTENT #79): entering Peak mid-sound at -18 dB over a hot
+    // sine clicks 461 samples into the 480-sample mode fade, in the call before the first one
+    // whose gain passes -6 dB. The exemption is by samples: the fade's every sample is covered
+    // whatever the calls, the dip's included, so the check passes at every phase of the calls.
+    for (const uint32_t block : {64u, 480u, 1000u})
+    {
+        for (const int64_t phase : {int64_t{0}, int64_t{1}, int64_t{29}, int64_t{63}, int64_t{200}})
+        {
+            INFO("block " << block << ", phase " << phase);
+            SweepDriver d(Mode::Fx, 1301, block);
+            limiterBed(d);
+            d.processor().setBase(ParamSlot::LimiterRelease, 0.0f);
+            d.play(1.0 + static_cast<double>(phase) / SweepDriver::kRate, Material::SineLive);
+            const int64_t fadeAt = d.clock();
+            d.set(ParamSlot::LimiterCeiling, -18.0);
+            d.set(ParamSlot::LimiterMode, 2.0);
+            d.play(2.0, Material::SineLive);
+            // The mode applies on the Processor's 32-sample control grid. Every sample of the
+            // fade from there, the dip at 461 among them, and 10 ms past it.
+            const int64_t fadeStart = (fadeAt + 31) / 32 * 32;
+            for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+            {
+                INFO("sample " << i << " into the fade");
+                CHECK(d.exemptAt(fadeStart + i));
+            }
+            const auto v = d.check(gg::test::chainBound(d, 0.2));
+            INFO(v.where);
+            CHECK(v.where.empty());
+        }
+    }
+}
+
+TEST_CASE("sweep: kLimiterDrive does not cover a mode fade into Soft or Off", "[sweep]")
+{
+    // At -9 dB the sine stays under twice the ceiling, so Soft isn't driven, and a step planted
+    // inside the fade still scores. Nothing of the fade is exempt, and the Peak tap stays idle.
+    SECTION("into Soft")
+    {
+        SweepDriver d(Mode::Fx, 1302, 64);
+        limiterBed(d);
+        d.play(1.0, Material::SineLive);
+        const int64_t fadeAt = d.clock();
+        d.set(ParamSlot::LimiterCeiling, -9.0);
+        d.set(ParamSlot::LimiterMode, 1.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(!d.processor().limiterDrive().softDriven);
+        CHECK(d.processor().peakFadeSpan().first < 0);
+        for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+        {
+            CHECK(!d.exemptAt(fadeAt + i));
+        }
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        plantStepFrom(d, fadeAt + 240);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, static_cast<std::size_t>(fadeAt + 240)));
+    }
+    SECTION("into Off, from Soft")
+    {
+        SweepDriver d(Mode::Fx, 1303, 64);
+        limiterBed(d);
+        d.set(ParamSlot::LimiterCeiling, -9.0);
+        d.set(ParamSlot::LimiterMode, 1.0);
+        d.play(1.0, Material::SineLive);
+        const int64_t fadeAt = d.clock();
+        d.set(ParamSlot::LimiterMode, 0.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(d.processor().peakFadeSpan().first < 0);
+        for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+        {
+            CHECK(!d.exemptAt(fadeAt + i));
+        }
+    }
+}
+
 TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[sweep]")
 {
     // Soft at -24 dB has the cloud at about eight times its ceiling: exempt. At -9 dB the input
@@ -677,7 +756,11 @@ TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[
         const auto d = render(2.0, -9.0);
         CHECK(d->processor().limiterDrive().leastGain > SweepDriver::kPeakDriveGain);
         const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
-        CHECK(d->check(c).scoredFraction == unlimited);
+        // Only the mode fade into Peak (480 samples and the 480 after, from the render's
+        // start, K-2) is exempt: it is no more than that off the unlimited render's share.
+        const double scored = d->check(c).scoredFraction;
+        CHECK(scored <= unlimited);
+        CHECK(unlimited - scored <= 960.0 / static_cast<double>(d->clock()));
         plantStepFrom(*d, d->clock() - 20000);
         const auto v = d->check(c);
         INFO(v.where);

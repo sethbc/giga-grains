@@ -425,6 +425,14 @@ void SweepDriver::call(uint32_t n, std::span<const gg::core::ParamEvent> events,
     {
         exempt_.push_back({callStart, clock_ + kLimiterDriveTail, Exemption::LimiterDrive});
     }
+    // kLimiterDrive, the mode fade into Peak (the director's K-2): every sample of it, by
+    // samples and not by the calls that happen to hold it, and 10 ms after.
+    const auto fade = processor_.peakFadeSpan();
+    if (fade.first >= 0)
+    {
+        exempt_.push_back({callStart + fade.first, callStart + fade.last + 1 + kLimiterDriveTail,
+                           Exemption::LimiterDrive});
+    }
     // kDelayGlideHold: the samples of the call between the first and the last that met it.
     const auto glide = processor_.delayGlideSpan();
     if (glide.first >= 0)

@@ -218,21 +218,23 @@ Shares chainCorners(Mode mode, uint64_t seed, double minScored)
 // The floors, a little under what each case measures (the integration review's Minor 2,
 // 2026-11-01): the FX scores 0.4253 of its render (it scored 0.3323 while the reverb's onset was
 // exempt, row 302), the instrument 0.3698 (0.2795). Each exemption's own share in the FX: the
-// fade-in 0.08%, Reverb Size moves 45.3%, kLimiterDrive 0 and kDelayGlideHold 31.5%; in the
-// instrument 0.08%, 44.8%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling is held at 0 dB,
-// so a share there means the limiter is driven where the case says it isn't.
+// fade-in 0.08%, Reverb Size moves 45.3%, kLimiterDrive 0.84% and kDelayGlideHold 31.5%; in the
+// instrument 0.08%, 44.8%, 0.84% and 24.9%. kLimiterDrive is pinned to the one stretch it must
+// cover, 0.9% (K-2): the limiter's mode fade into Peak at the render's start, 480 samples and
+// the 480 after. The ceiling is held at 0 dB, so more means the limiter is driven where the case
+// says it isn't.
 TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, fx", "[sweep]")
 {
     const Shares shares = chainCorners(Mode::Fx, 2104, 0.42);
     INFO(describe(shares));
-    CHECK(shares.limiterDrive == 0.0);
+    CHECK(shares.limiterDrive < 0.009);
 }
 
 TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, instrument", "[sweep]")
 {
     const Shares shares = chainCorners(Mode::Instrument, 2105, 0.365);
     INFO(describe(shares));
-    CHECK(shares.limiterDrive == 0.0);
+    CHECK(shares.limiterDrive < 0.009);
 }
 
 namespace
