@@ -272,3 +272,28 @@ TEST_CASE("collectMedia verifies each copy's hash and drops one that fails", "[m
     REQUIRE(result.state.samples == before.samples);
     REQUIRE(state.samples == before.samples);
 }
+
+TEST_CASE("collectMedia lists every entry missing when the folder can't be written", "[media]")
+{
+    const auto dir = freshDir("collect-unwritable");
+    put(dir / "a" / "kick.wav", "kick bytes");
+    put(dir / "a" / "ring-file.wav", "ring wav bytes");
+    // A folder under a regular file can't be created, on any platform.
+    put(dir / "blocker", "a file, not a folder");
+    const auto out = dir / "blocker" / "media";
+
+    SessionState state;
+    state.samples[0] = sampleEntry(dir / "a" / "kick.wav", "kick bytes", 0);
+    state.rings[1] = ringEntry(dir / "a" / "ring-file.wav", "ring wav bytes", 1);
+    const MachineSettings settings{"", ""};
+
+    const auto result = gg::media::collectMedia(state, out, settings, {});
+    REQUIRE(result.copied.empty());
+    REQUIRE(result.missing.size() == 2);
+    CHECK(std::ranges::find(result.missing, state.samples[0]->absolutePath) !=
+          result.missing.end());
+    CHECK(std::ranges::find(result.missing, state.rings[1]->absolutePath) != result.missing.end());
+    CHECK(result.state.samples == state.samples);
+    CHECK(result.state.rings == state.rings);
+    CHECK_FALSE(fs::exists(out));
+}
