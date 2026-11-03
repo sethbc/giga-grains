@@ -37,7 +37,8 @@ sanitizers passed. The release files, with `<v>` the full version:
 - `giga-grains-<v>-windows-x64.exe` (Inno Setup; its Content component installs to
   `C:\ProgramData\sethbc\Giga Grains`) and `giga-grains-<v>-windows-x64.zip` (with `content/`),
   unsigned (INTENT §19);
-- `giga-grains-<v>-linux-x86_64.tar.gz` (with `content/`);
+- `giga-grains-<v>-linux-x86_64.tar.gz` (with `content/`), built on Ubuntu 24.04 and needing
+  its glibc 2.39 or newer (INTENT §15);
 - `giga-grains-<v>-source.tar.gz`, the tagged tree with every submodule at its pin (the
   complete corresponding source), made by the `release` job with
   `scripts/release/source-tarball.sh`;

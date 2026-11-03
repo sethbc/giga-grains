@@ -12,8 +12,9 @@
 # For each script: a bare machine gets exactly the spec's package list, a second run installs
 # nothing, an unknown option or a missing --clone directory exits 2, and --clone runs the clone
 # and the three preset commands in order, in the clone. macOS: --ci leaves llvm out, and missing
-# Xcode command-line tools exit 1 with the xcode-select instruction. Linux: the PPA is added on
-# 22.04 and not on 24.04, and a non-Debian system exits 1. Last, the README's one-liners name a
+# Xcode command-line tools exit 1 with the xcode-select instruction. Linux: 24.04 takes gcc-13
+# from the archive (no PPA, no add-apt-repository), 22.04 exits 1 naming the 24.04 baseline and
+# installs nothing, and a non-Debian system exits 1. Last, the README's one-liners name a
 # script that exists and an option that script takes, and the Windows script and its developer
 # shell are present (they run only on Windows).
 #
@@ -181,25 +182,24 @@ common="g++-13 gcc-13 cmake ninja-build git curl unzip file binutils pkg-config 
 # shellcheck disable=SC2086
 sorted() { printf '%s\n' $1 | sort | tr '\n' ' '; }
 
-new_machine linux-2204
-for c in cmake ctest git; do cp "$tpl/$c" "$stubs/$c"; done
-export GG_OS_RELEASE="$work/os-22.04"
-run bootstrap-linux.sh
-expect_eq "linux 22.04: a bare machine gets exactly the package list" "$(installed_set)" "$(sorted "$common software-properties-common")"
-expect_eq "linux 22.04: the PPA is added" "$(grep -c '^add-apt-repository -y ppa:ubuntu-toolchain-r/test' "$log")" "1"
-check "linux 22.04: apt runs through sudo" "$(grep -q '^sudo env DEBIAN_FRONTEND=noninteractive apt-get' "$log" && echo 0 || echo 1)"
-check "linux 22.04: gcc-13 comes after the PPA" "$(awk '/add-apt-repository/{p=1} p&&/install.*gcc-13/{f=1} END{exit !f}' "$log" && echo 0 || echo 1)"
-expect_eq "linux 22.04: bare run exits 0" "$rc" "0"
-: >"$log"
-run bootstrap-linux.sh
-expect_eq "linux 22.04: a second run calls apt-get and the PPA not at all" "$(grep -c 'apt' "$log")" "0"
-
 new_machine linux-2404
 for c in cmake ctest git; do cp "$tpl/$c" "$stubs/$c"; done
 export GG_OS_RELEASE="$work/os-24.04"
 run bootstrap-linux.sh
+expect_eq "linux 24.04: a bare machine gets exactly the package list" "$(installed_set)" "$(sorted "$common")"
 expect_eq "linux 24.04: the archive's gcc-13, no PPA" "$(grep -c 'add-apt-repository' "$log")" "0"
-expect_eq "linux 24.04: the same package list" "$(installed_set)" "$(sorted "$common")"
+check "linux 24.04: apt runs through sudo" "$(grep -q '^sudo env DEBIAN_FRONTEND=noninteractive apt-get' "$log" && echo 0 || echo 1)"
+expect_eq "linux 24.04: bare run exits 0" "$rc" "0"
+: >"$log"
+run bootstrap-linux.sh
+expect_eq "linux 24.04: a second run calls apt-get not at all" "$(grep -c 'apt' "$log")" "0"
+
+new_machine linux-2204
+export GG_OS_RELEASE="$work/os-22.04"
+run bootstrap-linux.sh
+expect_eq "linux 22.04: exits 1" "$rc" "1"
+check "linux 22.04: it names the 24.04 baseline" "$(grep -q 'Linux baseline is Ubuntu 24.04' <<<"$out" && echo 0 || echo 1)"
+expect_eq "linux 22.04: and installs nothing" "$(grep -c 'apt' "$log")" "0"
 
 new_machine linux-usage
 export GG_OS_RELEASE="$work/os-24.04"

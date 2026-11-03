@@ -7,10 +7,11 @@
 #
 #   scripts/bootstrap-linux.sh [--with-format] [--clone DIR]
 #
-# For Ubuntu 22.04 and 24.04, and Debian-family systems with the same packages. Run it as root
-# or with sudo available. It installs with apt whatever is missing of:
-#   - gcc-13 and g++-13 (from the ubuntu-toolchain-r/test PPA on Ubuntu 22.04, whose archive has
-#     none; from the archive on 24.04);
+# For Ubuntu 24.04 (the Linux baseline, INTENT §15) and Debian-family systems with the same
+# packages. Ubuntu 22.04 exits 1: its archive has no gcc-13, and products built there would not
+# be the baseline's. Run it as root or with sudo available. It installs with apt whatever is
+# missing of:
+#   - gcc-13 and g++-13, from the archive;
 #   - cmake, ninja-build, git, curl, unzip, file, binutils, pkg-config, ca-certificates;
 #   - the twelve JUCE development packages that CI's pinned prepare-for-juce action installs
 #     (libfontconfig1-dev libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev
@@ -115,27 +116,16 @@ main() {
         $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
     }
 
+    # INTENT §15 (§23 #91): the products are built on Ubuntu 24.04 and need its glibc. 22.04's
+    # archive has no gcc-13, and a build there would be no baseline's, so it stops here.
+    if [[ "$id" == ubuntu && "$version_id" == 22.04 ]]; then
+        echo "bootstrap-linux: Ubuntu 22.04 is not supported: the Linux baseline is Ubuntu 24.04 (INTENT §15), whose archive has gcc-13" >&2
+        return 1
+    fi
+
     echo "== Compiler: gcc-13"
     missing_of gcc-13 g++-13
     if ((${#missing[@]} > 0)); then
-        if [[ "$id" == ubuntu && "$version_id" == 22.04 ]]; then
-            echo "Ubuntu 22.04's archive has no gcc-13: adding ppa:ubuntu-toolchain-r/test"
-            local prereq=()
-            installed software-properties-common || prereq+=(software-properties-common)
-            installed ca-certificates || prereq+=(ca-certificates)
-            if ((${#prereq[@]} > 0)); then
-                echo "installing: ${prereq[*]}"
-                apt_install "${prereq[@]}" || {
-                    echo "bootstrap-linux: apt-get install failed" >&2
-                    return 1
-                }
-            fi
-            $sudo_cmd env DEBIAN_FRONTEND=noninteractive add-apt-repository -y ppa:ubuntu-toolchain-r/test || {
-                echo "bootstrap-linux: adding the PPA failed" >&2
-                return 1
-            }
-            apt_updated=0
-        fi
         echo "installing: gcc-13 g++-13"
         apt_install gcc-13 g++-13 || {
             echo "bootstrap-linux: apt-get install failed" >&2

@@ -208,10 +208,13 @@ check. CI's Linux leg is the only GCC build: push early (as a draft pull request
 **The Linux products' libstdc++.** On Linux with GCC, outside the sanitizer builds, the four
 products link libstdc++ and libgcc statically with their symbols kept local, and the CLAP and
 VST3 export their entry points alone (`clients/clap-first/CMakeLists.txt`,
-`linux-exports.map`; INTENT §15). CI's Linux leg checks it after the build: "Linux products need
-no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CXXABI` above
-1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
-summary.
+`linux-exports.map`; INTENT §15). The Linux baseline is Ubuntu 24.04 (§23 #91): the products
+need its glibc, 2.39, and no longer run on 22.04. CI's Linux leg (`ubuntu-24.04`, gcc-13 from the
+archive) checks it after the build: "Linux products need no libstdc++ or glibc newer than Ubuntu
+24.04's" reads the ceilings from the runner's own `libstdc++.so.6` and `libc.so.6` (after
+checking both packages are 24.04's archive's), fails on a `GLIBCXX`, `CXXABI` or `GLIBC` version
+above them or an exported `std::` symbol, and lists the ceilings and each product's symbol
+versions in the step summary.
 
 **The required checks** (INTENT §23 #77). `main`'s ruleset requires two: `ci-ok` and
 `clang-format`. `ci-ok` passes only when `plan`, every build leg and every sanitizer job passed. A
@@ -239,9 +242,10 @@ tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -
 - **ccache**, every build leg and the sanitizer jobs, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows uses
   ccache's own pinned release (4.14.2, SHA-256 checked) since the leg moved to Ninja (INTENT §23
-  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
-  (the sanitizer jobs' by sanitizer, LLVM version and commit; one ASan shard and the RTSan job
-  save), restored by prefix.
+  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset,
+  runner image (`macos-26`, `windows-2022`, `ubuntu-24.04`; a new image misses once, as the Linux
+  leg's move from `ubuntu-22.04` did, §23 #91) and commit (the sanitizer jobs' by sanitizer, LLVM
+  version and commit; one ASan shard and the RTSan job save), restored by prefix.
 - **The pinned LLVM archive** (sanitizer jobs), keyed by version and SHA-256. The SHA-256 is
   checked on a hit too.
 - **The content** (every build leg and the sanitizer jobs): `scripts/fetch-content.sh` fetches
@@ -266,7 +270,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 | `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
-| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). |
+| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). `linux-gcc13` is gcc-13 on Ubuntu 24.04, the Linux baseline (INTENT §15). |
 
 Every preset uses the same three commands:
 

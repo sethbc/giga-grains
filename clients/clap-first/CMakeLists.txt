@@ -162,15 +162,16 @@ if (APPLE)
     endif ()
 endif ()
 
-# Linux with GCC (INTENT §15): the products run on an Ubuntu 22.04 baseline, whose libstdc++6
-# (GCC 12) provides up to GLIBCXX_3.4.30 and CXXABI_1.3.13. The GCC 13 floor's headers reference
-# newer symbols (<iostream>'s std::ios_base_library_init is GLIBCXX_3.4.32), so every product
-# links libstdc++ and libgcc statically (ruling FR-2). --exclude-libs keeps those static copies'
+# Linux with GCC (INTENT §15): the products run on an Ubuntu 24.04 baseline (§23 #91; Ubuntu
+# 22.04 until 2026-11-03, whose libstdc++6 lacked the GCC 13 floor's GLIBCXX_3.4.32, which is why
+# this began). Every product links libstdc++ and libgcc statically (ruling FR-2), so neither the
+# system's libstdc++6 nor a host's matters, and glibc is the products' only floor. --exclude-libs keeps those static copies'
 # symbols local, so a host's own libstdc++ can't interpose on them; one flag per archive, since
 # -Wl, splits at commas. The CLAP and the VST3 module also export their entry points alone
 # (linux-exports.map): namespace std's default visibility would otherwise export every std::
 # template our code instantiates, whatever -fvisibility says. CI's Linux leg checks the result
-# (".github/workflows/ci.yml": "Linux products need no libstdc++ newer than Ubuntu 22.04's").
+# (".github/workflows/ci.yml": "Linux products need no libstdc++ or glibc newer than Ubuntu
+# 24.04's", which reads the ceilings from the runner's own libraries).
 # The sanitizer builds, whose runtimes want the shared libstdc++, build no products, and are left
 # out in any case.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
