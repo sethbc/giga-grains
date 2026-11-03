@@ -456,14 +456,16 @@ a product inside, `codesign --verify --strict --deep -vv <bundle>` and `codesign
 Apple's.** Run auval from a normal login Terminal on the logged-in desktop, not from tmux, ssh or
 an agent session: a detached tmux server can sit in another launchd bootstrap session, whose
 `AudioComponentRegistrar` doesn't see your Components folders. A session that lists only Apple's
-components (about 64 lines, no `Sbcx`) is in one. From a login Terminal the same install lists
-all three `Sbcx` identities (M2 close, Task 20: `auval -a` 556 lines; `aumu GGin`, `aufx GGfx`
-and `aumf GGfx` each ended `AU VALIDATION SUCCEEDED`). Three more rules:
+components (no `Sbcx`) is in one. From a login Terminal the same install lists all three
+`Sbcx` identities and the three `auval -v` runs end `AU VALIDATION SUCCEEDED`. Run the whole
+install-and-auval block of CLAUDE.md's "Validators" section from that Terminal. Three more rules:
 
 - auval needs a tty. Piped or backgrounded, `auval -a` and `auval -v` hang with no output; under
-  `script -q /dev/null auval ...` they run.
+  `script -q /dev/null auval ...` they run. In a login Terminal the block's `auval -a > file`
+  redirect is fine; a pipe (`auval -a | grep ...`) is not.
 - Don't kill `AudioComponentRegistrar` and validate at once: it rescans on its next start, so
-  wait until `auval -a` lists `Sbcx` (the loop above) before the `-v` runs.
+  wait until `auval -a` lists `Sbcx` (the loop in CLAUDE.md's "Validators" block, which now stops
+  with an error if it never does) before the `-v` runs.
 - Never use `lsregister` for an AU. Its `-10811` on a `.component` is `kLSNotAnApplicationErr`,
   which it returns for every non-app bundle; AUs don't register through Launch Services, the
   registrar scans the Components folders.
