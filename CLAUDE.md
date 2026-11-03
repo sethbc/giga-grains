@@ -130,6 +130,11 @@ resource, so machines must catch everything they can catch.
   the C++ x64 tools and the C++ Clang (ClangCL) component; configure and build `windows-clangcl`
   from an "x64 Native Tools" developer shell with Visual Studio's `VC\Tools\Llvm\x64\bin` first
   on the PATH, so `clang-cl` is Visual Studio's own (INTENT §23 #76).
+- **A fresh machine:** `scripts/bootstrap-macos.sh [--ci] [--clone DIR]`,
+  `scripts/bootstrap-linux.sh [--with-format] [--clone DIR]` and
+  `scripts/bootstrap-windows.ps1 [-Verify] [-Clone DIR]` install what the build needs (the README's
+  "Building from source" has their one-liners); `scripts/dev-shell-windows.ps1` enters the x64
+  developer shell. CI's legs run them (the `scripts_bootstrap` test checks them against stubs).
 - Fetch the dependencies with `git submodule update --init --recursive` (what CI and
   `worktree-setup.sh` check out; today no nested submodule is built).
 - **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh
