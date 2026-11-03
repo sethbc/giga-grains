@@ -64,7 +64,7 @@ goldens' tolerances, or only render the same on every restore?
    saved session continuing, by the goldens' metrics. *Cost:* a sparse cloud may fail it; meeting
    it exactly needs the clock and grain index in the state, a format change.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #77).
 
 ### K-2. A click entering Peak mid-sound, outside D5b's scope (D-2)
 **Question:** is the click on a mode change into Peak over hot material part of Peak's accepted
@@ -85,7 +85,7 @@ law, or a defect?
 2. A defect: inside a mode crossfade Peak's gain falls no faster than the fade; a carry-over row.
    *Cost:* a limiter DSP change, `fx-limiter` may move, the presets that use Peak re-checked by ear.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #78).
 
 ### K-3. INIT keeps Ring Length against D8 (A-2, D-1)
 **Question:** does INIT keep each layer's Ring Length, as the controller ruled, or reset it, as D8
@@ -107,7 +107,7 @@ says?
    refused by the memory cap, and cuts a held ring's audio past 16 s; code, tests, §18 and #70
    change.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #79).
 
 ### K-4. The overload ladder's order (A-1)
 **Question:** does Part I's "lower the tier, then drop, then steal" mean an escalation with load,
@@ -129,7 +129,7 @@ as the engine spec reads D4, or the order of the per-grain tests, which the code
 2. Amend Part I §8.4 and CLAUDE.md to the test order ("lower the tier, then steal the oldest grain
    past half its window, else drop"). *Cost:* a Part I edit; the non-negotiable's wording changes.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #80).
 
 ### K-5. Which held rings a session saves: D1 narrowed (C-11)
 **Question:** is a held ring saved only on a layer whose base Source builds to Live (the
@@ -149,7 +149,7 @@ controller's ruling), or on every held layer, as D1 reads?
 2. Save every held ring, Sample layers included. *Cost:* 6.1 MB per layer at 16 s, up to 115 MB at
    300 s, of audio no grain reads unless the kind changes; the 32 MiB embed cap fills sooner.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #81).
 
 ### K-6. Part I §5 promises live buffers "saved with the session" (A-3)
 **Question:** amend Part I to the held case D1 decided, or keep Part I and read it there?
@@ -164,7 +164,7 @@ controller's ruling), or on every held layer, as D1 reads?
 2. Keep Part I; §18 says §5 means the held case (D1). *Cost:* Part I over-promises to a reader of
    Part I alone.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #82).
 
 ### K-7. "A merge, not a rebase" against "each rebased and re-verified" (C-3)
 **Question:** ratify the program manager's merge mechanism, which replaced the rebase the
@@ -182,7 +182,7 @@ director's decision names?
 2. Keep "rebase" as the rule; record M2's merges as departures. *Cost:* nothing can be redone; the
    rule keeps stating what wasn't done.
 
-**Resolution:** Director: pending.
+**Resolution:** Director, 2026-11-02: option 1 (§23 #83).
 
 ### K-8. Carry-over rows 118 and 119 moved on the program manager's word (C-10)
 **Question:** ratify moving rows 118 and 119 from sub-project 2 to sub-project 1?
@@ -196,7 +196,7 @@ director's decision names?
 2. Amend plan A3 so the program manager alone may move an item that shrinks a later sub-project.
    *Cost:* the director loses sight of scope moves.
 
-**Resolution:** Director: pending. (The text fix, R-53, holds either way.)
+**Resolution:** Director, 2026-11-02: option 1 (§23 #84). (The text fix, R-53, holds either way.)
 
 ---
 
