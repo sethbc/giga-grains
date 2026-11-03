@@ -478,9 +478,12 @@ struct RouteList::Impl
                 drafts[i].reset(); // the route came by another way: it wins
             }
         }
-        // A route that appeared since the last look (a drop, a redo, the host's patch) comes
-        // into view: the newest one, outlined.
+        // A route that appeared since the last look comes into view, outlined, when it is the
+        // only one that did (a drop, an undo or a redo, a host's single edit); a load, which
+        // brings several, leaves the selection and the scroll alone (row 333, the director's
+        // option 1, 2026-11-02).
         uint8_t added = 0;
+        std::size_t appeared = 0;
         if (shown)
         {
             for (std::size_t i = 0; i < now.size(); ++i)
@@ -489,8 +492,13 @@ struct RouteList::Impl
                     (*shown)[i].source == gg::core::ModSource::None)
                 {
                     added = static_cast<uint8_t>(i + 1);
+                    ++appeared;
                 }
             }
+        }
+        if (appeared != 1)
+        {
+            added = 0;
         }
         shown = now;
         const Palette &pal = paletteOf(owner);

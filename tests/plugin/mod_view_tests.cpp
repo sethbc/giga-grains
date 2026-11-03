@@ -206,6 +206,64 @@ TEST_CASE("a fresh Mod view shows the layer letter and a ring click selects its 
     CHECK(h.undo.size() == 0);
 }
 
+TEST_CASE("an undo that adds one route selects it; a load selects none", "[plugin]")
+{
+    // Row 333 (the director's option 1, 2026-11-02): a refresh selects a route that appeared
+    // only when it is the one route that did (an undo, a redo, a drop), never on a load.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *routes = dynamic_cast<gg::ui::RouteList *>(findDeep(view, "routes"));
+    REQUIRE(routes != nullptr);
+    REQUIRE(routes->selected() == 0);
+
+    // Clear slot 2 (a factory route), then undo it: the one route that came back is selected.
+    REQUIRE(h.routes[1].source != gg::core::ModSource::None);
+    auto *clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    REQUIRE(clear->onClick);
+    clear->onClick();
+    view.refresh();
+    REQUIRE(h.routes[1].source == gg::core::ModSource::None);
+    routes->select(0);
+    h.undo.undo();
+    view.refresh();
+    CHECK(h.routes[1].source != gg::core::ModSource::None);
+    CHECK(routes->selected() == 2);
+    // Redo takes it away, a second undo brings it back: selected again.
+    h.undo.redo();
+    view.refresh();
+    routes->select(0);
+    h.undo.undo();
+    view.refresh();
+    CHECK(routes->selected() == 2);
+
+    // A load that brings five routes leaves the selection alone.
+    routes->select(0);
+    gg::core::ModRoutes loaded = h.routes;
+    for (std::size_t i = 12; i < 17; ++i)
+    {
+        loaded[i] = {.source = gg::core::ModSource::Lfo1,
+                     .target = ParamSlot::Position,
+                     .depth = 0.25f,
+                     .curve = gg::core::ModCurve::Bipolar};
+    }
+    h.routes = loaded;
+    view.refresh();
+    CHECK(routes->selected() == 0);
+    // And so does one that brings them while a row is selected.
+    routes->select(3);
+    for (std::size_t i = 20; i < 23; ++i)
+    {
+        loaded[i] = loaded[12];
+    }
+    h.routes = loaded;
+    view.refresh();
+    CHECK(routes->selected() == 3);
+}
+
 TEST_CASE("choosing no source in the route list clears the row", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
