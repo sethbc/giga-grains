@@ -5,6 +5,7 @@
 #include "gg/media/Decode.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -747,12 +748,34 @@ std::optional<DecodeResult> tryMp3(Input &file, const Label &label, const std::a
 
 namespace
 {
+/// Replaces every NaN and infinity in `buffer` with 0 (row 306). Integer formats can't produce
+/// one; a float file can, and the engine's readers (the mip pyramid's filters among them) take
+/// finite input. Finite samples are untouched, bit for bit. The live ring does the same for its
+/// input.
+void scrubNonFinite(SampleBuffer &buffer) noexcept
+{
+    for (uint32_t c = 0; c < buffer.channels(); ++c)
+    {
+        float *x = buffer.channel(c);
+        for (int64_t n = 0; n < buffer.frames(); ++n)
+        {
+            if (!std::isfinite(x[n]))
+            {
+                x[n] = 0.0f;
+            }
+        }
+    }
+}
+
 /// Tries dr_wav, dr_flac and dr_mp3 on `input` in turn. By content, not extension: dr_wav and
 /// dr_flac check their headers; MP3 decoding is the most permissive, so it goes last. Each starts
 /// from the beginning.
 DecodeResult decodeInput(Input &input, const Label &label, const std::atomic<bool> *cancel,
                          uint64_t maxBytes)
 {
+    // The decoder's absolute bound (Decode.h): a caller's UINT64_MAX is the ceiling, so the size
+    // checks' saturating arithmetic can't pass an overflowing header (row 340).
+    maxBytes = std::min(maxBytes, kDefaultDecodeBound);
     using Try = std::optional<DecodeResult> (*)(Input &, const Label &, const std::atomic<bool> *,
                                                 uint64_t);
     for (const Try attempt : {Try(tryWav), Try(tryFlac), Try(tryMp3)})
@@ -763,6 +786,10 @@ DecodeResult decodeInput(Input &input, const Label &label, const std::atomic<boo
         }
         if (auto result = attempt(input, label, cancel, maxBytes))
         {
+            if (result->audio)
+            {
+                scrubNonFinite(*result->audio->buffer);
+            }
             return std::move(*result);
         }
     }

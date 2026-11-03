@@ -18,14 +18,16 @@ namespace gg::media
 {
 /// The bytes a sample source of `frames` frames and `channels` channels holds: its planar float
 /// buffer (frames × channels × 4), the interleaved copy of a stereo source's pairs when
-/// `interleavedCopy` (frames × 2 × 4), and for each pyramid level n in 1 .. levels − 1,
-/// ceil(frames / 2ⁿ) × channels × 4 (one copy per level: pairs for stereo, planar for mono).
+/// `interleavedCopy` ((frames + 6) × 2 × 4), and for each pyramid level n in 1 .. levels − 1,
+/// (ceil(frames / 2ⁿ) + 6) × channels × 4 (one copy per level: pairs for stereo, planar for
+/// mono). The 6 are the guard frames, InterleavedStereo::kGuardFrames (3) before and after, so
+/// the estimate equals PreparedSource::bytes() of the source it describes.
 /// 0 for frames <= 0; `levels` 0 counts as 1.
 uint64_t sampleBytes(int64_t frames, uint32_t channels, bool interleavedCopy,
                      uint32_t levels) noexcept;
 
-/// sampleBytes of `source`: its buffer's frames and channels, whether it has pairs, and its
-/// levelCount().
+/// `source`'s bytes: PreparedSource::bytes(), exact (it counts what was built, guards included,
+/// and so what `sampleBytes` estimates before building).
 uint64_t sourceBytes(const PreparedSource &source) noexcept;
 
 /// The bytes a ring's storage holds (RingStorage; LiveSource's shape): level 0's

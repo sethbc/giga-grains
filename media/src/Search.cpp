@@ -417,13 +417,18 @@ SearchResult findSample(const core::MediaEntry &entry, const core::MachineSettin
     }
 
     // 5. By name: in the saved path's folder, the last folder loaded from, then the scan.
-    const std::size_t separator = lastSeparator(entry.absolutePath);
-    const std::string name = separator == std::string::npos
-                                 ? entry.absolutePath
-                                 : entry.absolutePath.substr(separator + 1);
+    // An entry with no saved path (a factory preset's sample, named by its content reference
+    // alone) takes the reference's last component as its name, so it is found by name in the
+    // last load folder and under the sample folder (INTENT §18 D5; row 401); 5a has no folder.
+    const bool nameFromReference =
+        entry.absolutePath.empty() && isContentRelativePath(entry.contentPath);
+    const std::string &nameSource = nameFromReference ? entry.contentPath : entry.absolutePath;
+    const std::size_t separator = lastSeparator(nameSource);
+    const std::string name =
+        separator == std::string::npos ? nameSource : nameSource.substr(separator + 1);
     if (fromUtf8(name) && !name.empty() && name != "." && name != "..")
     {
-        if (separator != std::string::npos)
+        if (separator != std::string::npos && !nameFromReference)
         {
             if (const auto folder = fromUtf8(entry.absolutePath.substr(0, separator + 1)))
             {

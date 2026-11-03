@@ -50,10 +50,28 @@ bool hasContent(const fs::path &path, const Wanted &wanted)
     return hash && hash->size == wanted.size && hash->sha256Hex == wanted.sha256Hex;
 }
 
+/// A collected file: its normalized path and that path as UTF-8, made once.
+struct Collected
+{
+    fs::path path;
+    std::string text;
+};
+
+std::optional<Collected> collected(const fs::path &target)
+{
+    fs::path normal = target.lexically_normal();
+    auto text = toUtf8(normal);
+    if (!text)
+    {
+        return std::nullopt;
+    }
+    return Collected{std::move(normal), std::move(*text)};
+}
+
 /// Puts a copy of `from` in `folder` and returns its path, or nullopt when that can't be done.
 /// `copied` says whether a file was written: a file already there with the content is reused.
-std::optional<fs::path> collectOne(const fs::path &from, const fs::path &folder,
-                                   const Wanted &wanted, bool &copied)
+std::optional<Collected> collectOne(const fs::path &from, const fs::path &folder,
+                                    const Wanted &wanted, bool &copied)
 {
     copied = false;
     const fs::path name = from.filename();
@@ -65,7 +83,7 @@ std::optional<fs::path> collectOne(const fs::path &from, const fs::path &folder,
         // Already there: this very file, or another with the content.
         if (hasContent(target, wanted))
         {
-            return target;
+            return collected(target);
         }
         // Another file of this name, which is never overwritten: ours takes the hash's prefix.
         target = folder /
@@ -73,7 +91,7 @@ std::optional<fs::path> collectOne(const fs::path &from, const fs::path &folder,
                   name.extension().native());
         if (fs::exists(target, error))
         {
-            return hasContent(target, wanted) ? std::optional<fs::path>(target) : std::nullopt;
+            return hasContent(target, wanted) ? collected(target) : std::nullopt;
         }
     }
     fs::copy_file(from, target, fs::copy_options::none, error);
@@ -90,8 +108,10 @@ std::optional<fs::path> collectOne(const fs::path &from, const fs::path &folder,
         fs::remove(target, error);
         return std::nullopt;
     }
-    copied = true;
-    return target;
+    // A file written but unnameable in UTF-8 stays on disk, unlisted, as before.
+    const auto result = collected(target);
+    copied = result.has_value();
+    return result;
 }
 } // namespace
 
@@ -110,20 +130,17 @@ CollectResult collectMedia(const core::SessionState &state, const fs::path &fold
 
     // Collects one entry's file: the copy's path (UTF-8), or nullopt, with the entry listed.
     const auto collect = [&](const SearchResult &found,
-                             const Wanted &wanted) -> std::optional<std::string> {
+                             const Wanted &wanted) -> std::optional<Collected> {
         if (found.outcome == SearchOutcome::Found && folderReady)
         {
             bool copied = false;
-            if (const auto target = collectOne(found.path, folder, wanted, copied))
+            if (auto target = collectOne(found.path, folder, wanted, copied))
             {
-                if (const auto text = toUtf8(target->lexically_normal()))
+                if (copied)
                 {
-                    if (copied)
-                    {
-                        result.copied.push_back(*text);
-                    }
-                    return *text;
+                    result.copied.push_back(target->text);
                 }
+                return target;
             }
         }
         if (listed.insert(wanted.savedPath).second)
@@ -144,10 +161,8 @@ CollectResult collectMedia(const core::SessionState &state, const fs::path &fold
         const Wanted wanted{entry.sha256Hex, entry.fileSize, entry.absolutePath};
         if (const auto path = collect(found, wanted))
         {
-            const auto name = fromUtf8(*path);
-            entry.relativePath =
-                name ? toGenericUtf8(name->filename()).value_or(std::string()) : std::string();
-            entry.absolutePath = *path;
+            entry.relativePath = toGenericUtf8(path->path.filename()).value_or(std::string());
+            entry.absolutePath = path->text;
         }
     }
     for (auto &slot : result.state.rings)
@@ -162,7 +177,7 @@ CollectResult collectMedia(const core::SessionState &state, const fs::path &fold
         const Wanted wanted{entry.sha256Hex, entry.fileSize, entry.absolutePath};
         if (const auto path = collect(found, wanted))
         {
-            entry.absolutePath = *path;
+            entry.absolutePath = path->text;
         }
     }
     return result;
