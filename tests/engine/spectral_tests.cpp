@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "gg/core/Rng.h"
 #include "gg/source/LiveSource.h"
@@ -248,7 +249,12 @@ TEST_CASE("the smear is keyed by the seed and the layer", "[engine][spectral]")
 
 TEST_CASE("a steady material keeps its rms within 1 dB", "[engine][spectral]")
 {
-    const Stereo s = noiseSample(96000);
+    // At each rate its own N: 2 s of noise, the smear's RMS over its second second.
+    const double rate = GENERATE(44100.0, 48000.0, 96000.0, 192000.0);
+    INFO("rate " << rate);
+    const auto frames = static_cast<int64_t>(2.0 * rate);
+    const auto settled = static_cast<std::size_t>(rate);
+    const Stereo s = noiseSample(frames);
     double materialSum = 0.0;
     for (std::size_t i = 0; i < s.left.size(); ++i)
     {
@@ -257,19 +263,66 @@ TEST_CASE("a steady material keeps its rms within 1 dB", "[engine][spectral]")
     }
     const double materialRms = std::sqrt(materialSum / (2.0 * static_cast<double>(s.left.size())));
 
-    SpectralSource source(kSampleRate, kMaxBlock);
+    SpectralSource source(rate, kMaxBlock);
     source.setActive(true);
-    renderSplit(source, sampleMaterial(s), 0.5, 9, 0, 96000, {1024});
-    const std::vector<float> out = ringFrames(source, 96000);
+    renderSplit(source, sampleMaterial(s), 0.5, 9, 0, frames, {1024});
+    const std::vector<float> out = ringFrames(source, frames);
     double sum = 0.0;
-    for (std::size_t i = 2 * 48000; i < out.size(); ++i)
+    for (std::size_t i = 2 * settled; i < out.size(); ++i)
     {
         sum += static_cast<double>(out[i]) * out[i];
     }
-    const double rms = std::sqrt(sum / static_cast<double>(out.size() - 2 * 48000));
+    const double rms = std::sqrt(sum / static_cast<double>(out.size() - 2 * settled));
     const double db = 20.0 * std::log10(rms / materialRms);
     INFO("material RMS " << materialRms << ", smear RMS " << rms << ", " << db << " dB");
     REQUIRE(std::abs(db) <= 1.0);
+}
+
+TEST_CASE("a block over maxBlockSize goes in pieces, the same bytes", "[engine][spectral]")
+{
+    // process() writes a block longer than maxBlockSize in pieces of at most that: one call of
+    // 4096 frames into a source of maxBlockSize 64 is the same ring as calls of 64.
+    constexpr uint32_t kSmallMax = 64;
+    constexpr int64_t kTotal = 6 * 4096;
+    const Stereo s = noiseSample(48000);
+    SECTION("sample material")
+    {
+        const SpectralMaterial m = sampleMaterial(s);
+        SpectralSource reference(kSampleRate, kSmallMax);
+        reference.setActive(true);
+        renderSplit(reference, m, 0.5, 13, 0, kTotal, {kSmallMax});
+        SpectralSource source(kSampleRate, kSmallMax);
+        source.setActive(true);
+        renderSplit(source, m, 0.5, 13, 0, kTotal, {4096});
+        const std::vector<float> expected = ringFrames(reference, kTotal);
+        const std::vector<float> got = ringFrames(source, kTotal);
+        REQUIRE(peak(expected) > 0.01f);
+        REQUIRE(std::memcmp(got.data(), expected.data(), got.size() * sizeof(float)) == 0);
+    }
+    SECTION("ring material")
+    {
+        // The material ring takes the block whole, as the Engine writes it (its maxBlockSize is
+        // the block's), so the head the smear reads at each hop is the same in either source.
+        auto run = [&](uint32_t smearMax) {
+            gg::LiveSource live;
+            live.prepare(kSampleRate, 1.0, kMaxBlock);
+            SpectralSource source(kSampleRate, smearMax);
+            source.setActive(true);
+            SpectralMaterial ringMaterial;
+            ringMaterial.ring = &live;
+            for (int64_t t = 0; t < kTotal; t += kMaxBlock)
+            {
+                const float *in[2] = {s.left.data(), s.right.data()};
+                live.write(in, 2, static_cast<uint32_t>(t), t, kMaxBlock);
+                source.process(ringMaterial, 0.02, 13, 0, t, kMaxBlock);
+            }
+            return ringFrames(source, kTotal);
+        };
+        const std::vector<float> expected = run(kMaxBlock);
+        const std::vector<float> got = run(kSmallMax);
+        REQUIRE(peak(expected) > 0.01f);
+        REQUIRE(std::memcmp(got.data(), expected.data(), got.size() * sizeof(float)) == 0);
+    }
 }
 
 TEST_CASE("inactive writes silence, active starts under the margin", "[engine][spectral]")
