@@ -20,9 +20,9 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
-- **Where we are** (INTENT §20, §23 #61, #64, #71): M0 and M1 are done, and so are the installers and
+- **Where we are** (INTENT §20, §23 #61, #64, #71, #93): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
-  is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
+  is `docs/releasing.md`). **M2 is closed** (2026-11-03) as seven sub-projects in four waves, run by one
   agent session each (`docs/superpowers/specs/2026-10-29-m2-program-design.md`: read its §6
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
   builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
@@ -42,7 +42,10 @@ AGPL-3.0-or-later.
   the 48 factory presets and their 48 goldens (108 in all). Sub-project 6, Views, is built (INTENT
   §23 #71; PRs #18 and #24): the Perform, Edit, Mod and FX views, four lanes with a pitch axis,
   the layer strip and XY pad, the Mod view's route path, undo, two themes, the About box,
-  `gg-snap` and the GPU spike. Sub-project 7, the close, is under way. M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the consistency pass,
+  the carry-over burned down to 15 open rows, the from-scratch build setup, the gate, the idle
+  figures and the release commit for v0.2.0 (the program manager tags it). **M3 is next**, run as
+  M1 was: one session, serial sub-projects, parallel tasks inside each (§23 #87). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -1137,14 +1140,24 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     7763, 9V45 and 9V74 and Intel Xeon 8370C). For unchanged code, ratios differ by up to ~20% between models and ~6%
     on one model. So a leg's baseline has one entry per model, keyed by gg-bench's `machine`
     string, and a run is checked only against its own model's entry. The committed baselines
-    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45 and Xeon 8370C,
-    and Linux's EPYC 7763 and 9V45 (Windows' stale SSE-era EPYC 9V74 entry was deleted in the M2
-    close, carry-over row 304: that model gets no verdict until runs land on it). The x86 entries were remade at the AVX2 task from three
-    full-length runs (INTENT §23 #66), and the six report-only cases (`engine-layers`,
-    `engine-layers-full`, `engine-sample-hq`, `engine-sample-hq-up`, `engine-overload`,
-    `engine-sample-sse`) now have entries beside the four gated ones there (30 ratios an entry),
-    none on `mac-universal`; they stay report-only, as the whole gate does. A model with no
-    entry gets no verdict (the summary says so) until later runs on it are added to the baseline.
+    have entries for the mac leg's Apple M1 VM (three runs), and for the x86 legs, as the M2
+    close remade them (2026-11-03, from the three full-length dispatches at `ca60f54` and the
+    earlier ones at `630d740`, carry-over rows 304 and 305; the commit `cf37b83` has the
+    comparisons):
+    - `linux-gcc13`: EPYC 7763 from 2 runs at `ca60f54`, EPYC 9V74 from 1 run at `ca60f54`,
+      EPYC 9V45 from 1 run at `630d740`;
+    - `windows-clangcl`: EPYC 7763 from 1 run and EPYC 9V74 from 2 runs at `ca60f54`, EPYC 9V45
+      and Xeon 8370C from 1 run each at `630d740`;
+    - `mac-universal` is unchanged.
+
+    The entries made at `ca60f54` carry 42 ratios, the kept ones at `630d740` 30. The x86 entries
+    were first made at the AVX2 task from three full-length runs (INTENT §23 #66), and the
+    six report-only cases (`engine-layers`, `engine-layers-full`, `engine-sample-hq`,
+    `engine-sample-hq-up`, `engine-overload`, `engine-sample-sse`) have entries beside the four
+    gated ones there, none on `mac-universal`; they stay report-only, as the whole gate does. A
+    single-run entry carries the 0.10 floor tolerance (row 305 stays open for them, with row 144).
+    A model with no entry gets no verdict (the summary says so) until later runs on it are
+    added to the baseline.
   - **The gate is report-only until 1.0.0** (INTENT §19, §23 #44, #60, #61): exit 3 becomes a
     `::warning` and the step exits 0, when the output also holds gg-bench's `verdict: N of M`
     line (row 148); exit 3 without it fails the step. A crash, exit 1 or 2, or the timeout still

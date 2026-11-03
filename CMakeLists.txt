@@ -27,7 +27,7 @@ project(GigaGrains VERSION 0.2.0 LANGUAGES C CXX)
 # pre-release suffix. A build from main reports 0.2.0-dev; a release commit sets beta.N, or empty
 # for the milestone release, and the nightly configures with dev.<yyyymmdd>.g<sha7>. Bundle
 # metadata takes GG_VERSION_NUMERIC alone; everything else reports GG_VERSION_STRING.
-set(GG_VERSION_PRERELEASE "dev" CACHE STRING "Pre-release suffix: dev on main, beta.N for a beta, empty for a release")
+set(GG_VERSION_PRERELEASE "" CACHE STRING "Pre-release suffix: dev on main, beta.N for a beta, empty for a release")
 include(cmake/version.cmake)
 gg_compose_version("${PROJECT_VERSION}" "${GG_VERSION_PRERELEASE}" GG_VERSION_STRING)
 set(GG_VERSION_NUMERIC "${PROJECT_VERSION}")
