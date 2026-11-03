@@ -953,8 +953,10 @@ TEST_CASE("held arrow keys make one undo entry on the canvas lane", "[plugin]")
     const juce::ScopedJuceInitialiser_GUI juceGui;
     UndoCanvas f;
     REQUIRE(f.canvas != nullptr);
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed (row 388 (f))
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(f.canvas->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK(f.undo.size() == 1);

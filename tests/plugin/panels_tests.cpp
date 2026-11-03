@@ -762,8 +762,10 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     auto *knob = childOfType<sst::jucegui::components::Knob>(size);
     REQUIRE(knob != nullptr);
     const float before = size.shownValue();
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK(recording.kinds().size() == 20 * 3); // each press is still a host gesture
@@ -774,12 +776,22 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     CHECK(undone[0] == std::pair{ParamSlot::Size, before});
 
     // A press with a pause is its own entry, and a drag between presses splits them.
+    clock.advance(0.05);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 1); // redone history: a new entry, not merged into the undone one
+    clock.advance(gg::ui::UndoStack::kNudgeMergeSeconds + 0.5);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 2); // the pause
+    clock.advance(0.05);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 2); // within the merge time again
     knob->onBeginEdit();
     knob->continuous()->setValueFromGUI(0.5f);
     knob->onEndEdit();
-    CHECK(undo.size() == 1);
+    CHECK(undo.size() == 3);
+    clock.advance(0.05);
     CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
-    CHECK(undo.size() == 2);
+    CHECK(undo.size() == 4);
 }
 
 TEST_CASE("a control destroyed mid commit-on-release gesture sends its value before the end",

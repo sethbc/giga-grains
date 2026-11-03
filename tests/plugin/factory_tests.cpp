@@ -1744,8 +1744,10 @@ TEST_CASE("held arrow keys make one undo entry on the pad", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     PadFixture f;
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed (row 388 (f))
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(f.pad->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(0.7, 1e-5));
