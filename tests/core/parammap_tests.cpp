@@ -1218,8 +1218,8 @@ TEST_CASE("smear's amplitudes and gain follow the law", "[core]")
                         REQUIRE(bitsOf(p.gain) == bitsOf(static_cast<float>(
                                                       1.0 / std::sqrt(std::max(1.0, Deff * S)))));
                         // D_eff stays between D and the 400 Hz ceiling.
-                        REQUIRE(p.densityHz >= std::min(D, 400.0));
-                        REQUIRE(p.densityHz <= std::max(D, 400.0));
+                        REQUIRE(p.densityHz >= D);
+                        REQUIRE(p.densityHz <= 400.0);
                         // Smear moves no other field.
                         gg::CloudParams expected = preSmearReference(v, mode, layer);
                         expected.densityHz = Deff;

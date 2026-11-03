@@ -1088,6 +1088,20 @@ std::vector<float> noiseInput(int64_t frames, uint64_t seed)
     return in;
 }
 
+// Calls fn(done, n) for consecutive blocks covering [0, frames), the block sizes cycled from
+// `sizes` and the last block cut short.
+template <class Fn> void forEachBlock(int64_t frames, const std::vector<uint32_t> &sizes, Fn &&fn)
+{
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        const auto n =
+            static_cast<uint32_t>(std::min<int64_t>(sizes[next++ % sizes.size()], frames - done));
+        fn(done, n);
+        done += n;
+    }
+}
+
 // Renders input[from, from + frames) through the engine as a mono input, in blocks of
 // blockSize; the outputs start as NaN, as render()'s do.
 Render renderInput(gg::Engine &engine, const std::vector<float> &input, int64_t from,
@@ -1095,14 +1109,11 @@ Render renderInput(gg::Engine &engine, const std::vector<float> &input, int64_t 
 {
     Render r{std::vector<float>(static_cast<std::size_t>(frames), kUnwritten),
              std::vector<float>(static_cast<std::size_t>(frames), kUnwritten)};
-    for (int64_t done = 0; done < frames;)
-    {
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, frames - done));
+    forEachBlock(frames, {blockSize}, [&](int64_t done, uint32_t n) {
         const float *in[1] = {input.data() + from + done};
         float *out[2] = {r.left.data() + done, r.right.data() + done};
         engine.process(in, 1, out, 2, n);
-        done += n;
-    }
+    });
     return r;
 }
 
@@ -2663,17 +2674,12 @@ BusRender renderBuses(gg::Engine &engine, const std::vector<float> &input, int64
     const auto size = static_cast<std::size_t>(frames);
     BusRender r{{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)},
                 {std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)}};
-    std::size_t next = 0;
-    for (int64_t done = 0; done < frames;)
-    {
-        const uint32_t want = blockSizes[next++ % blockSizes.size()];
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+    forEachBlock(frames, blockSizes, [&](int64_t done, uint32_t n) {
         const float *in[1] = {input.data() + done};
         float *out[2] = {r.out.left.data() + done, r.out.right.data() + done};
         float *bus2[2] = {r.bus2.left.data() + done, r.bus2.right.data() + done};
         engine.process(in, 1, out, 2, bus2, n);
-        done += n;
-    }
+    });
     return r;
 }
 
@@ -2683,16 +2689,11 @@ Render renderOneBus(gg::Engine &engine, const std::vector<float> &input, int64_t
 {
     const auto size = static_cast<std::size_t>(frames);
     Render r{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)};
-    std::size_t next = 0;
-    for (int64_t done = 0; done < frames;)
-    {
-        const uint32_t want = blockSizes[next++ % blockSizes.size()];
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+    forEachBlock(frames, blockSizes, [&](int64_t done, uint32_t n) {
         const float *in[1] = {input.data() + done};
         float *out[2] = {r.left.data() + done, r.right.data() + done};
         engine.process(in, 1, out, 2, n);
-        done += n;
-    }
+    });
     return r;
 }
 

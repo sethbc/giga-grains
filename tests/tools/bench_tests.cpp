@@ -946,9 +946,9 @@ TEST_CASE("hermite-simd-grainfilter low-passes each grain at 1 kHz", "[bench]")
                                                     fl.data(), fr.data(), kBlock);
             if (b >= kBlocks / 2) // past the filters' onset
             {
+                CHECK(std::equal(fl.begin(), fl.end(), fr.begin())); // the same source on both
                 for (uint32_t i = 0; i < kBlock; ++i)
                 {
-                    CHECK(fl[i] == fr[i]); // the same source on both channels
                     plain += static_cast<double>(pl[i]) * pl[i];
                     filtered += static_cast<double>(fl[i]) * fl[i];
                 }

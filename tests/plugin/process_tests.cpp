@@ -1711,7 +1711,8 @@ TEST_CASE("a spectral layer renders through the factory in both products", "[plu
     }
     REQUIRE(plugin.activate(48000.0, 512));
     const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
-    float peak = 0.0f;
+    double settledSquares = 0.0; // blocks 64 to 191, after the STFT and the grains settle
+    float firstBlockPeak = 0.0f;
     bool finite = true;
     for (int b = 0; b < 192; ++b)
     {
@@ -1729,12 +1730,25 @@ TEST_CASE("a spectral layer renders through the factory in both products", "[plu
             for (const float v : *ch)
             {
                 finite = finite && std::isfinite(v);
-                peak = std::max(peak, std::abs(v));
+                if (b == 0)
+                {
+                    firstBlockPeak = std::max(firstBlockPeak, std::abs(v));
+                }
+                if (b >= 64)
+                {
+                    settledSquares += static_cast<double>(v) * v;
+                }
             }
         }
     }
+    const double rms = std::sqrt(settledSquares / (128.0 * 512.0 * 2.0));
+    INFO("settled RMS " << rms << " (" << 20.0 * std::log10(rms) << " dBFS)");
     CHECK(finite);
-    CHECK(peak > 1e-4f);
+    CHECK(rms > 0.05); // measured 0.222 (instrument) and 0.314 (FX), about 13 dB of margin
+    if (isFx)
+    {
+        CHECK(firstBlockPeak == 0.0f); // one block is shorter than the first STFT window
+    }
 }
 
 TEST_CASE("ui ring commands apply at the next process call", "[plugin]")
