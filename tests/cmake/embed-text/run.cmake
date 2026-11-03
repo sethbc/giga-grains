@@ -9,6 +9,10 @@
 #         -DGG_OUT=<dir>
 #         -P run.cmake
 
+# A -P script sets no policies of its own: the project's minimum, so CMake 3.x reads it as 4.x
+# does (CMP0012's TRUE in a condition among them).
+cmake_minimum_required(VERSION 3.22)
+
 file(REMOVE_RECURSE "${GG_OUT}")
 file(MAKE_DIRECTORY "${GG_OUT}")
 
