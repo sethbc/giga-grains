@@ -1973,6 +1973,26 @@ TEST_CASE("the About box lists the license set", "[plugin]")
         juce::String::fromUTF8(first.data(), static_cast<int>(first.size()))));
 }
 
+TEST_CASE("the About box shows each notice once", "[plugin]")
+{
+    // Row 388 (d), row 326's fix: the constructor shows the first notice once, and a selection
+    // shows its notice once, though selecting the list's row calls selectNotice again.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    REQUIRE(gg::ui::noticeTexts().size() > 1);
+    gg::ui::AboutBox box("Giga Grains FX", "VST3");
+    box.setBounds(0, 0, 800, 520);
+    CHECK(box.shows() == 1);
+    box.selectNotice(1);
+    CHECK(box.shows() == 2);
+    box.selectNotice(0);
+    CHECK(box.shows() == 3);
+    box.selectNotice(-1); // out of range: nothing
+    box.selectNotice(1000);
+    CHECK(box.shows() == 3);
+    box.setPlainText(true);
+    CHECK(box.shows() == 4);
+}
+
 TEST_CASE("Escape closes the About box", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;

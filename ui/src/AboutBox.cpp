@@ -159,7 +159,10 @@ void AboutBox::selectNotice(int row)
     selected_ = row;
     if (list_.getSelectedRow() != row)
     {
+        // The list's selection change calls this again with the row selected, which shows it:
+        // once (row 388 (d)).
         list_.selectRow(row, true, true);
+        return;
     }
     showSelected();
 }
@@ -184,6 +187,7 @@ void AboutBox::showSelected()
         return;
     }
     const NoticeText &notice = notices[static_cast<std::size_t>(selected_)];
+    ++shows_;
     const bool asMarkdown = isMarkdown(notice.name) && !plainText_;
     if (asMarkdown)
     {
