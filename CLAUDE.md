@@ -288,7 +288,9 @@ ctest --preset dev --output-on-failure
     editor, so they aren't built.
 - **RTSan:** set `GG_LLVM` when configuring:
   - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
-  - CI uses LLVM's 20.1.8 release for Linux, checked against its SHA-256, in `/opt/llvm-20.1.8`.
+  - CI uses LLVM's 23.1.4 release for Linux, checked against its SHA-256, in `/opt/llvm-23.1.4`
+    (Homebrew's `llvm` was at 23.1.4 too on 2026-11-03, so CI's sanitizer builds and a local
+    `rtsan` matched then).
   - Configuring fails, naming `GG_LLVM`, if the compiler isn't upstream Clang 20 or newer.
 - **Outputs:**
   - The plugins and standalone apps land in `build/<preset>/gg_assets/`.

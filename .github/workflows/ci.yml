@@ -17,8 +17,8 @@
 #               §23 #60, #61). On a pull request and a push to main it runs --quick, as a smoke
 #               check only (no verdict, no artifact; INTENT §23 #73). The gate turns blocking
 #               at 1.0.0, after M5, with the published §16 headline (INTENT §16, §19).
-#   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
-#               20.1.8 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
+#   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 23 (the pinned LLVM
+#               23.1.4 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
 #               by side, then this one check over all seven (INTENT §23 #74).
 #
 # Not a required check: on the nightly and on a dispatch, bootstrap-fresh-linux runs
@@ -1066,12 +1066,12 @@ jobs:
           - { sanitizer: asan, shard: 6 }
           - { sanitizer: rtsan, shard: 0 }
     env:
-      # LLVM's official 20.1.8 release for Linux x64, checked against its SHA-256 (the digest
+      # LLVM's official 23.1.4 release for Linux x64, checked against its SHA-256 (the digest
       # GitHub publishes for the release asset). RTSan needs upstream clang 20 or newer.
-      LLVM_VERSION: 20.1.8
-      LLVM_SHA256: 1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
+      LLVM_VERSION: 23.1.4
+      LLVM_SHA256: 25d814fda50d5fb0084b42be09605d8b1595d49d5e2e03a3345d7e112ff6f9f3
       # The rtsan preset takes its compilers from $GG_LLVM; the asan step uses the same clang.
-      GG_LLVM: /opt/llvm-20.1.8
+      GG_LLVM: /opt/llvm-23.1.4
       # The content, as in the build job: both configures point at it (-DGG_CONTENT_DIR).
       CONTENT_CACHE_DIR: ${{ github.workspace }}/.content-cache
       # ccache, as in the build job (CI only; the same notes apply).
@@ -1101,7 +1101,7 @@ jobs:
           path: ${{ runner.temp }}/llvm-archive
           key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
 
-      - name: Install LLVM 20.1.8 (pinned release) and Ninja
+      - name: Install LLVM 23.1.4 (pinned release) and Ninja
         id: toolchain
         timeout-minutes: 20
         run: |
@@ -1117,11 +1117,11 @@ jobs:
           echo "$LLVM_SHA256  $archive" | sha256sum --check --strict
           sudo mkdir -p "$GG_LLVM"
           sudo tar -xJf "$archive" -C "$GG_LLVM" --strip-components=1 \
-            "$name/bin/clang" "$name/bin/clang++" "$name/bin/clang-20" \
-            "$name/bin/llvm-symbolizer" "$name/lib/clang/20"
+            "$name/bin/clang" "$name/bin/clang++" "$name/bin/clang-23" \
+            "$name/bin/llvm-symbolizer" "$name/lib/clang/23"
           echo "$GG_LLVM/bin" >> "$GITHUB_PATH"
           "$GG_LLVM/bin/clang++" --version
-          ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
+          ls "$GG_LLVM/lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
 
       - name: Save the LLVM archive
         if: ${{ !cancelled() && matrix.sanitizer == 'rtsan' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
