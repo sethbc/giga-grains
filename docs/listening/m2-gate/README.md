@@ -207,8 +207,8 @@ double-click the pad, then undo. Answer: `accept` or `no`.
 ## Carry-over
 
 **18. Row 352: does a Ring Length drag click?** *Moved to the host matrix as item 40i, in plain
-steps: the director didn't follow it as first written (2026-11-03).* Answer: pending: answered
-during the host matrix.
+steps: the director didn't follow it as first written (2026-11-03).* Answer: **no click**
+(*Director, 2026-11-03*: "18 is fine", in a host; see 40i).
 
 Row 387, the new strings. Each is a text the views added; answer `ok` or give the replacement.
 
@@ -393,3 +393,4 @@ record; these are the ones worth a sitting, each in the host named. Answer each 
   A's lane still draws its peaks along the whole ring. *Listen for:* a click or pop at the moment
   the value changes. A slight change in the texture is expected. Answer `no click` or `click`
   (say whether the slow or the fast drag) in the matrix.
+  *Director, 2026-11-03:* **no click** ("18 is fine", in a host).
