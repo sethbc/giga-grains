@@ -1101,3 +1101,34 @@ TEST_CASE("quality modulated per cell under overload does not allocate", "[core]
     CHECK(p.stolenGrains() > 0);
     CHECK(p.stolenGrains() == log.steals.size());
 }
+
+TEST_CASE("a base change keeps a routed target's offset past Step 16", "[core][mod]")
+{
+    // Row 371, through the Processor: layer A's Bus 1 Cutoff (a routable slot past Step 16) takes
+    // Macro 1's route at +2 whatever its base does, and a modulator control (LFO 1 Rate: no route
+    // targets it) takes base + host modulation at once, both changed inside one block.
+    const ParamSlot cutoff = layerSlot(LayerParam::Bus1Cutoff, 0);
+    const ParamSlot rate = layerSlot(LayerParam::Lfo1Rate, 0);
+    REQUIRE_FALSE(gg::core::isModulatorControlSlot(cutoff));
+    REQUIRE(gg::core::isModulatorControlSlot(rate));
+
+    Processor p({kRate, 512, 31, Mode::Fx});
+    p.setRoutes(only(route(ModSource::Macro1, cutoff, 0, 2.0f, ModCurve::BipolarPositive)));
+    p.setBase(ParamSlot::Macro1, 1.0f);
+    p.setBase(cutoff, 8.0f);
+    p.setBase(rate, 1.0f);
+    Stereo out = silence(256);
+    render(p, nullptr, 0, 64, {64}, {}, out);
+    CHECK(p.effective(cutoff) == routed(cutoff, 8.0f, 2.0f, Mode::Fx));
+    CHECK(p.effective(rate) == 1.0f);
+
+    const std::vector<TimedEvent> events{
+        {70, cutoff, false, 9.0}, {70, rate, false, 1.5}, {70, rate, true, 0.25}};
+    render(p, nullptr, 64, 192, {128}, events, out);
+    CHECK(p.effective(cutoff) == routed(cutoff, 9.0f, 2.0f, Mode::Fx));
+    CHECK(p.effective(rate) == 1.75f);
+
+    // A mod change alone, with no base change, is also base + mod.
+    render(p, nullptr, 192, 256, {64}, {{200, rate, true, -0.5}}, out);
+    CHECK(p.effective(rate) == 1.0f);
+}
