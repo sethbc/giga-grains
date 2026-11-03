@@ -84,6 +84,18 @@ ThemeName nameOf(gg::ui::ThemeChoice theme)
 }
 } // namespace
 
+gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept
+{
+    switch (command)
+    {
+    case gg::ui::RingCommand::AddSplice:
+        return gg::core::CommandKind::AddSplice;
+    case gg::ui::RingCommand::ClearSplices:
+        return gg::core::CommandKind::ClearSplices;
+    }
+    return gg::core::CommandKind::ClearSplices; // unreachable: every command is named above
+}
+
 std::string formatOf(const clap_host *host)
 {
     if (host == nullptr)
@@ -180,9 +192,8 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         {
             return;
         }
-        const bool add = command == gg::ui::RingCommand::AddSplice;
-        uiCommand({0, add ? gg::core::CommandKind::AddSplice : gg::core::CommandKind::ClearSplices,
-                   layer, add ? seconds : 0.0f});
+        const gg::core::CommandKind kind = toCommandKind(command);
+        uiCommand({0, kind, layer, kind == gg::core::CommandKind::AddSplice ? seconds : 0.0f});
     };
     // The window or splice of a layer's ring, or the message for the user.
     const auto capture = [this](uint8_t layer, uint32_t splice,

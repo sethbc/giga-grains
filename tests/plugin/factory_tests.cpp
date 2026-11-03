@@ -2025,6 +2025,15 @@ struct FormatHost
 };
 } // namespace
 
+TEST_CASE("the editor's ring commands map to the Processor's", "[plugin]")
+{
+    // Row 388 (k): the mapping, out of the ring context's lambda.
+    CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::AddSplice) ==
+          gg::core::CommandKind::AddSplice);
+    CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::ClearSplices) ==
+          gg::core::CommandKind::ClearSplices);
+}
+
 TEST_CASE("formatOf names each wrapper flavor", "[plugin]")
 {
     // Row 383 (row 326's remainder): the About box's format, from clap-wrapper's host

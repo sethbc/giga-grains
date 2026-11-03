@@ -13,7 +13,9 @@
 #include <sst/clap_juce_shim/clap_juce_shim.h>
 
 #include "GigaGrainsPlugin.h"
-#include "gg/ui/EditLayout.h" // gg::ui::View, JUCE-free
+#include "gg/core/Processor.h" // gg::core::CommandKind
+#include "gg/ui/EditLayout.h"  // gg::ui::View, JUCE-free
+#include "gg/ui/MediaViews.h"  // gg::ui::RingCommand, JUCE-free
 
 namespace gg::ui
 {
@@ -29,6 +31,10 @@ namespace gg::plugin
 /// itself, so "CLAP"; a null host, or a flavor not named here (AAX isn't a format of ours),
 /// gives "".
 std::string formatOf(const clap_host *host);
+
+/// The Processor's command for the editor's ring command (EditorContext::ringCommand): AddSplice
+/// and ClearSplices, one for one.
+gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept;
 
 /// A GigaGrainsPlugin with its editor. The editor (gg::ui) is a JUCE component, attached
 /// through sst-clap-helpers' clap_juce_shim the way Shortcircuit XT attaches its own. Built only
