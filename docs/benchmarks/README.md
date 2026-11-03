@@ -151,9 +151,9 @@ under 0.013 ns, under 0.6% of its median.
 | `engine-spectral` | 3.399 / 2.715 / 2.183 | 32.6 / 26.1 / 21.0 | 1.6356 / 1.3492 / 1.1148 |
 
 - **X is 19.4%** at block 256 (23.3% at block 32 and 21.0% at block 64), against M1's 19.5%
-  (23.4 / 21.2 / 19.5): 0.4% to 0.9% lower in ns. The ratios, 1.1704 / 1.0897 / 1.0302 against
+  (23.4 / 21.2 / 19.5): 0.4% to 1.0% lower in ns. The ratios, 1.1704 / 1.0897 / 1.0302 against
   M1's 1.154 / 1.072 / 1.024, are +1.4% / +1.6% / +0.6%, inside ruling R3's 3%, and agree with
-  sub-project 4's idle A/B (1.172 / 1.101 / 1.032) to within 0.8%. (This machine's `reference`
+  sub-project 4's idle A/B head runs (1.1770 / 1.0934 / 1.0322) to within 0.6%. (This machine's `reference`
   is 2.077 / 2.010 / 1.963 ns here against M1's 2.12 / 2.07 / 2.01, so the machine ran a little
   faster in absolute terms and the ratio is the comparison.)
 - **HQ against Normal** (row 307): `engine-sample-hq` over `engine-sample` is **6.87 / 7.42 /
