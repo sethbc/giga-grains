@@ -92,6 +92,8 @@ gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept
         return gg::core::CommandKind::AddSplice;
     case gg::ui::RingCommand::ClearSplices:
         return gg::core::CommandKind::ClearSplices;
+    case gg::ui::RingCommand::AddSpliceAt:
+        return gg::core::CommandKind::AddSpliceAt;
     }
     return gg::core::CommandKind::ClearSplices; // unreachable: every command is named above
 }
@@ -187,13 +189,13 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         view.frozen = meta.frozen;
         return view;
     };
-    context.ringCommand = [this](uint8_t layer, gg::ui::RingCommand command, float seconds) {
+    context.ringCommand = [this](uint8_t layer, gg::ui::RingCommand command, double value) {
         if (layer >= gg::core::kLayers)
         {
             return;
         }
         const gg::core::CommandKind kind = toCommandKind(command);
-        uiCommand({0, kind, layer, kind == gg::core::CommandKind::AddSplice ? seconds : 0.0f});
+        uiCommand({0, kind, layer, kind == gg::core::CommandKind::ClearSplices ? 0.0 : value});
     };
     // The window or splice of a layer's ring, or the message for the user.
     const auto capture = [this](uint8_t layer, uint32_t splice,

@@ -153,6 +153,10 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// The splice the last paint outlined on layer `layer`'s lane, in ring frames; none when it
     /// outlined none, or for a lane out of range. For the tests.
     std::optional<RingSpan> spliceOutlined(uint8_t layer) const;
+    /// The ring frame the last right-click on layer `layer`'s lane landed on, which its menu's
+    /// "Add splice mark here" marks (AddSpliceAt); none from the keyboard or another lane. For
+    /// the tests.
+    std::optional<int64_t> menuFrame(uint8_t layer) const noexcept;
     /// The bounds of the peak bars the last paint built for layer `layer`'s lane, x in columns
     /// from the lane's left edge; empty when it drew none, or for a lane out of range. For the
     /// tests.
@@ -238,9 +242,6 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     int64_t loopFramesOf(const gg::core::RingParams &ring, double sampleRate) const noexcept;
     /// The head the lane draws at: the snapshot's, run on to now, or the ring view's without one.
     int64_t laneHead(uint8_t layer, const RingView &ring) const noexcept;
-    /// The value of an AddSplice that marks `frame` (the anchor, the head or the selected
-    /// splice's end, when nullopt).
-    float spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const;
     void drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane, const Palette &pal);
     /// Builds layer `layer`'s menu for `frame` (nullopt: the keyboard's) and shows it.
     void openLaneMenu(uint8_t layer, std::optional<int64_t> frame);

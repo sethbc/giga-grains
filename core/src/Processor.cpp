@@ -126,12 +126,24 @@ bool validControl(const ControlEvent &c) noexcept
            std::isfinite(c.value);
 }
 
-/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, and for
-/// AddSplice a finite value.
+/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, for AddSplice a
+/// finite value, and for AddSpliceAt a frame in [0, 2^53].
 bool validCommand(const CommandEvent &c) noexcept
 {
-    return c.kind <= CommandKind::ClearSplices && c.layer < Processor::kLayers &&
-           (c.kind != CommandKind::AddSplice || std::isfinite(c.value));
+    if (c.kind > CommandKind::AddSpliceAt || c.layer >= Processor::kLayers)
+    {
+        return false;
+    }
+    switch (c.kind)
+    {
+    case CommandKind::AddSplice:
+        return std::isfinite(c.value);
+    case CommandKind::AddSpliceAt:
+        return c.value >= 0.0 && c.value <= 0x1.0p53; // NaN fails both
+    case CommandKind::ClearSplices:
+        return true;
+    }
+    return false;
 }
 
 /// Whether two RingMetas are the same: the marks past spliceCount are 0 in both.
@@ -1283,12 +1295,18 @@ void Processor::applyCommands(int64_t b) noexcept
             live.clearSplices();
             continue;
         }
+        if (c.kind == CommandKind::AddSpliceAt)
+        {
+            // The frame itself (validCommand: in [0, 2^53]); outside the storage, a duplicate or
+            // a 33rd is ignored.
+            live.addSplice(std::llround(c.value));
+            continue;
+        }
         // The window as the last write left it, which b, the next sample, still reads.
         const int64_t anchor = live.anchorAt(b);
         const int64_t oldest = std::max<int64_t>(0, live.windowOldestAt(b));
         const double room = static_cast<double>(std::max<int64_t>(0, anchor - oldest));
-        const double behind =
-            std::clamp(static_cast<double>(c.value) * config_.sampleRate, 0.0, room);
+        const double behind = std::clamp(c.value * config_.sampleRate, 0.0, room);
         live.addSplice(anchor - std::llround(behind)); // a duplicate or a 33rd is ignored
     }
     pendingCommandCount_ = 0;

@@ -32,8 +32,8 @@ namespace gg::plugin
 /// gives "".
 std::string formatOf(const clap_host *host);
 
-/// The Processor's command for the editor's ring command (EditorContext::ringCommand): AddSplice
-/// and ClearSplices, one for one.
+/// The Processor's command for the editor's ring command (EditorContext::ringCommand): AddSplice,
+/// ClearSplices and AddSpliceAt, one for one.
 gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept;
 
 /// A GigaGrainsPlugin with its editor. The editor (gg::ui) is a JUCE component, attached

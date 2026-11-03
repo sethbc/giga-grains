@@ -1304,6 +1304,46 @@ TEST_CASE("a right-click adds a splice mark where clicked", "[plugin]")
     CHECK(ringB.splices[0] == headB);
 }
 
+TEST_CASE("a click on a running lane marks the frame under the pointer", "[plugin]")
+{
+    // Row 388 (m): the mark is the ring frame the right-click landed on (AddSpliceAt), however
+    // far the head runs, and however far the lane's clock extrapolates, before the item is chosen
+    // and the command applies. It was seconds behind the anchor as of the choice, which landed
+    // the mark off by the head's movement the lane hadn't seen.
+    gg::test::useMediaScratch("canvas-click-frame");
+    SteppedWallClock clock;
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(10 * 48000);
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    const juce::Rectangle<int> a = f.canvas->laneBounds(0);
+    const float x = 0.5f * lane.width;
+    const float off = static_cast<float>(a.getX());
+    const float y = static_cast<float>(a.getCentreY());
+    constexpr int kRight = juce::ModifierKeys::rightButtonModifier;
+    f.canvas->mouseDown(mouseAt(*f.canvas, off + x, y, {off + x, y}, false, kRight));
+    f.canvas->mouseUp(mouseAt(*f.canvas, off + x, y, {off + x, y}, false, kRight));
+    REQUIRE(f.shown.size() == 1);
+    const std::optional<int64_t> clicked = f.canvas->menuFrame(0);
+    REQUIRE(clicked.has_value());
+    // Under the pointer: the frame the lane shows at x, within a column, against the head drawn.
+    const double column = lane.ringSeconds * kPluginRate / lane.width;
+    CHECK(std::abs(static_cast<double>(*clicked - gg::ui::ringFrameAt(lane, f.canvas->headDrawn(0),
+                                                                      x, kPluginRate))) <= column);
+    // The audio runs on half a second, and the lane's clock 0.2 s past its last snapshot.
+    f.process(24000);
+    f.paint();
+    clock.advance(0.2);
+    f.paint(); // the lane runs its head on by the 0.2 s
+    REQUIRE(f.canvas->headDrawn(0) > f.context().ringView(0).head + 4800);
+    choose(f.shown.back(), "Add splice mark here");
+    f.process(kBlock);
+    const gg::ui::RingView ring = f.context().ringView(0);
+    REQUIRE(ring.spliceCount == 1);
+    CHECK(ring.splices[0] == *clicked);
+}
+
 TEST_CASE("the lane menu's ring items are disabled while inactive", "[plugin]")
 {
     // Review Focus 1: no ring item acts on a ring that isn't there.

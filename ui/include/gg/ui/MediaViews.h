@@ -36,11 +36,13 @@ struct MemoryView
     uint32_t capMiB{0};
 };
 
-/// A ring command of the editor's (the Processor's CommandKind AddSplice and ClearSplices).
+/// A ring command of the editor's (the Processor's CommandKind AddSplice, ClearSplices and
+/// AddSpliceAt).
 enum class RingCommand : uint8_t
 {
     AddSplice,
-    ClearSplices
+    ClearSplices,
+    AddSpliceAt ///< a mark at a ring frame itself (the lane's click; carry-over row 388 (m))
 };
 } // namespace gg::ui
 

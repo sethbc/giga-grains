@@ -287,19 +287,9 @@ int64_t GrainCanvas::laneHead(uint8_t layer, const RingView &ring) const noexcep
     return haveSnapshot_ && context_.clock != nullptr ? head_[layer] : ring.head;
 }
 
-float GrainCanvas::spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const
+std::optional<int64_t> GrainCanvas::menuFrame(uint8_t layer) const noexcept
 {
-    if (!frame)
-    {
-        return 0.0f; // the keyboard's: at the anchor
-    }
-    RingView ring = ringOf(layer);
-    ring.head = laneHead(layer, ring);
-    const LaneGeometry lane = geometry(layer, 1.0f);
-    // The anchor as the engine takes it (Processor.h's CommandEvent, LiveSource::anchorAt): the
-    // head, or the selected splice's end, numbered from the first mark in storage, Loop ignored.
-    const int64_t anchor = spliceAnchor(ring, ringParamsOf(layer).splice);
-    return spliceSeconds(anchor, *frame, lane.sampleRate);
+    return menuLayer_ == layer ? menuFrame_ : std::nullopt;
 }
 
 LaneGeometry GrainCanvas::geometry(uint8_t layer, float scale) const
