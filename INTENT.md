@@ -2321,8 +2321,10 @@ and capture on the lanes.
      folder's name), so a project moved with its captures folder reopens whole; a filed ring is
      found this way too;
   5. a file of the same name: in the saved path's folder, then in the last folder loaded from,
-     then anywhere under the sample folder. That scan visits at most 50,000 entries, never
-     follows a symlinked folder, and skips a folder it can't list.
+     then anywhere under the sample folder. An entry with no saved path (a factory preset's
+     sample) takes the last component of its content-relative reference as the name, and has no
+     saved folder to try first. That scan visits at most 50,000 entries, never follows a
+     symlinked folder, and skips a folder it can't list.
 
   `SearchCache` remembers misses keyed also by the content roots and the captures folder.
 
