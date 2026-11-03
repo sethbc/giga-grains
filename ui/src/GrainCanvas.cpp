@@ -732,12 +732,18 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
             strip.bars.clear(); // keeps its storage
             strip.outline.reset();
             // The strip spans the longest ring (Processor::livePeaks); the lane reads no older
-            // than its own ring holds (row 385).
+            // than its own ring holds (row 385): its length, and after a grow the oldest frame
+            // its storage got (RingView::oldestHeld), whose bucket is drawn only once whole.
             const RingView ring = ringOf(layer);
             const int64_t held = ring.valid && ring.ringFrames > 0
                                      ? std::min(peaks->frames(), ring.ringFrames)
                                      : peaks->frames();
-            const int64_t oldest = head - held + gg::core::LivePeaks::kBucket;
+            int64_t oldest = head - held + gg::core::LivePeaks::kBucket;
+            if (ring.valid)
+            {
+                constexpr int64_t kBucket = gg::core::LivePeaks::kBucket;
+                oldest = std::max(oldest, (ring.oldestHeld + kBucket - 1) / kBucket * kBucket);
+            }
             for (int x = 0; x < columns; ++x)
             {
                 const FrameSpan span =

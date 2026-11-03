@@ -44,12 +44,13 @@ namespace gg::ui
 ///
 /// **A Live lane spans its layer's ring** (ruling VW-P2d, amended): ringView's ringFrames /
 /// sampleRate seconds, 16 s while there is none (inactive). Its peaks draw over the frames the
-/// peak strip holds (the longest ring's, so the whole ring). Over the peaks it draws, in order,
-/// the loop window while the layer's Loop is on (spliceSpan's window, shaded), the splice the
-/// engine plays (playedSplice for Splice's base value, rounded, when it is 1 or more and a mark is
-/// in storage: its span outlined), and each mark: a 1 px rule, numbered as the engine numbers the
-/// splices, from the oldest still in storage, Loop ignored (ruling SP-T1a/b; carry-over row 386),
-/// at its top when the lane is at least 40 px high.
+/// peak strip holds (the longest ring's) back to the oldest frame the ring's storage holds
+/// (RingView::oldestHeld: after a Ring Length grow, no older than the old ring reached). Over the
+/// peaks it draws, in order, the loop window while the layer's Loop is on (spliceSpan's window,
+/// shaded), the splice the engine plays (playedSplice for Splice's base value, rounded, when it is
+/// 1 or more and a mark is in storage: its span outlined), and each mark: a 1 px rule, numbered as
+/// the engine numbers the splices, from the oldest still in storage, Loop ignored (ruling SP-T1a/b;
+/// carry-over row 386), at its top when the lane is at least 40 px high.
 ///
 /// **The lane menu** (ruling VW-P2a) opens on a right-click on any lane, which selects its layer
 /// and begins no drag, or on Shift+F10 on the keyboard's lane (laneMenu). A Live lane's: "Add

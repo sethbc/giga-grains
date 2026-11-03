@@ -133,7 +133,8 @@ bool validCommand(const CommandEvent &c) noexcept
 bool sameMeta(const RingMeta &a, const RingMeta &b) noexcept
 {
     return a.head == b.head && a.windowFrames == b.windowFrames && a.spliceCount == b.spliceCount &&
-           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse;
+           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse &&
+           a.oldestHeld == b.oldestHeld;
 }
 
 /// v clamped to [0, 1], NaN as 0.
@@ -1237,6 +1238,7 @@ void Processor::publishRing(Layer &l) noexcept
     std::copy(marks.begin(), marks.end(), m.splices.begin());
     m.frozen = l.engineFrozen;
     m.framesInUse = live.framesInUse();
+    m.oldestHeld = live.oldestHeld();
     if (!sameMeta(m, l.metaPushed))
     {
         l.meta.push(m);

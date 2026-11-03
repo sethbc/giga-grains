@@ -167,6 +167,7 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         view.valid = true;
         view.head = meta.head;
         view.windowFrames = meta.windowFrames;
+        view.oldestHeld = meta.oldestHeld;
         const gg::RingStorage *storage = p->ringRead(layer).storage; // collect()'s thread: live
         view.ringFrames = storage != nullptr ? storage->frames() : 0;
         view.spliceCount = std::min<uint32_t>(meta.spliceCount, gg::core::kMaxSplices);

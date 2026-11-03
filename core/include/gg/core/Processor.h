@@ -168,6 +168,9 @@ struct RingMeta
     std::array<int64_t, kMaxSplices> splices{};
     bool frozen{false};
     int64_t framesInUse{0};
+    /// The oldest ring frame the storage holds (LiveSource::oldestHeld): after a grow, frames
+    /// between it and head − N are in the window but were never copied (carry-over row 385).
+    int64_t oldestHeld{0};
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2

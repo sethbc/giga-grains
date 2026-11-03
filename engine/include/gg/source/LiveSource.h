@@ -249,6 +249,15 @@ class LiveSource
         return periodFadeEnd_ > writtenTo_ ? std::max(readFrames_, std::min(window_, periodFrom_))
                                            : readFrames_;
     }
+    /// The oldest ring frame the storage holds as it was written: max(0, R − N, the adoption or
+    /// restore floor). An adoption copies the old storage's frames only as far as both windows
+    /// reach (adoptStorage), so after a grow from N to N′ the frames [R − N′, R − N) at that
+    /// moment were never in the new storage; they don't come back until the head moves past
+    /// them (carry-over row 385's review: the editor's lane draws no peaks there).
+    int64_t oldestHeld() const noexcept
+    {
+        return std::max({int64_t{0}, head_ - frames_, heldFloor_});
+    }
     /// The output sample at which the overdub period's crossfade from the last change of the read
     /// limit ends (INT64_MIN when none has run since reset()): a further change waits for it
     /// (Engine::setRingLimit), so the frames written never step.
@@ -655,6 +664,7 @@ class LiveSource
     bool frozen_{false};
     int64_t ramp_{1};      // the write gain is ramp_ / rampLength_, ramp_ in [0, rampLength_]
     int64_t head_{0};      // R
+    int64_t heldFloor_{0}; // oldestHeld()'s floor: set at an adoption, 0 at reset() and restore
     int64_t writeSlot_{0}; // head_ mod C
 
     // The last write() block.

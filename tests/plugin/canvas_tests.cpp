@@ -1190,6 +1190,44 @@ TEST_CASE("the lane draws the ring's marks", "[plugin]")
     CHECK(f.canvas->marksDrawn(0).empty());
 }
 
+TEST_CASE("a grown ring's lane shows no peaks older than its storage holds", "[plugin]")
+{
+    // Row 385's review: an adoption copies the old storage's frames only as far as both windows
+    // reach, so after a grow from 16 s to 60 s the frames older than 16 s behind the head at that
+    // moment were never in the new storage. The strip still holds their peaks (it spans the
+    // longest ring); the lane must not draw them, frozen or not.
+    gg::test::useMediaScratch("canvas-ring-grow");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(24 * 48000);                                       // 24 s of noise into the 16 s ring
+    f.processWith(slotOf(gg::core::LayerParam::Freeze, 0), 1.0); // the head stops
+    f.process(48000);
+    const int64_t head = f.impl->processor()->ringMeta(0).head;
+    f.processWith(slotOf(gg::core::LayerParam::RingLength, 0), std::log2(60.0));
+    f.plugin.onMainThread(); // the watcher offers the 60 s ring
+    f.process(kBlock);       // adopted
+    f.plugin.onMainThread();
+    REQUIRE(f.impl->processor()->ringRead(0).storage->frames() == 60 * 48000);
+    const gg::core::RingMeta meta = f.impl->processor()->ringMeta(0);
+    REQUIRE(meta.head == head); // frozen
+    CHECK(meta.oldestHeld == head - 16 * 48000);
+    CHECK(f.context().ringView(0).oldestHeld == head - 16 * 48000);
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    REQUIRE_THAT(lane.ringSeconds, Catch::Matchers::WithinAbs(60.0, 0.1));
+    const juce::Rectangle<float> bars = f.canvas->peaksDrawn(0);
+    REQUIRE_FALSE(bars.isEmpty());
+    // The storage holds the newest 16 s of the 60 s lane: 44 s from its left. Without the clamp
+    // the strip's 24 s would draw from 36 s.
+    INFO("bars from " << bars.getX() << " of " << lane.width);
+    CHECK(bars.getX() >= lane.width * 44.0f / 60.0f - 1.0f);
+    CHECK(bars.getX() < lane.width * 45.0f / 60.0f);
+    // Still so after more frames: frozen, the head stands, and nothing comes back.
+    f.process(48000);
+    f.paint();
+    CHECK(f.canvas->peaksDrawn(0).getX() >= lane.width * 44.0f / 60.0f - 1.0f);
+}
+
 TEST_CASE("the lane outlines the splice the engine plays with Loop on", "[plugin]")
 {
     // Row 386: the engine numbers the splices from the first mark in storage and ignores Loop
