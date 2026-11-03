@@ -15,7 +15,7 @@
 
 #include "RenderSpec.h"
 #include "gg/core/ModMatrix.h"
-#include "gg/core/Processor.h"
+#include "gg/core/EnableFault.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/metrics/AudioData.h"
 
@@ -58,15 +58,8 @@ struct RenderOptions
 };
 
 /// What a render reports beside its audio: carry-over row 234's diagnostic, the Processor's
-/// enableFaults(), firstEnableFault() and engineGateFaults() at the render's end (0 and empty in
-/// sample mode, which has no Processor).
-struct RenderReport
-{
-    uint32_t enableFaults{0};
-    gg::core::Processor::EnableFault firstEnableFault{};
-    /// Processor::engineGateFaults() at the render's end.
-    uint32_t gateFaults{0};
-};
+/// faultCounts() at the render's end (all zero in sample mode, which has no Processor).
+using RenderReport = gg::core::FaultCounts;
 
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may
 /// be shorter). The output is stereo, and bit-identical for any blockSize.

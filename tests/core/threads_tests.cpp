@@ -12,7 +12,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -20,6 +19,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "core/LayersFixture.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/engine/Engine.h"
@@ -110,22 +110,6 @@ LayersSetup poolSetup(Mode mode, gg::TaskRunner *runner)
 }
 
 const char *nameOf(Mode mode) { return mode == Mode::Fx ? "FX" : "instrument"; }
-
-// Carry-over row 234's diagnostic, for an INFO: a render's enable faults, and the first one's
-// layer, frame and kind.
-std::string describeFaults(const LayersRender &r)
-{
-    const std::string gate = std::to_string(r.gateFaults) + " gate faults";
-    if (r.enableFaults == 0)
-    {
-        return "no enable faults, " + gate;
-    }
-    const auto &f = r.firstEnableFault;
-    return gate + ", " + std::to_string(r.enableFaults) + " enable faults, the first on layer " +
-           std::to_string(f.layer) + " at frame " + std::to_string(f.frame) +
-           (f.disagrees ? ", disagreeing with its on ramp" : "") +
-           (f.offGrid ? ", off the grid" : "");
-}
 } // namespace
 
 TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
@@ -147,9 +131,9 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
         // Row 234: every render here checks its enable faults first, the serial runner's and
         // each pool's (a recurrence then says whether a flip broke an invariant, and on which
         // runner).
-        INFO("the reference: " << describeFaults(ref));
-        REQUIRE(ref.enableFaults == 0);
-        REQUIRE(ref.gateFaults == 0);
+        INFO("the reference: " << gg::core::describeFaults(ref.faults));
+        REQUIRE(ref.faults.enableFaults == 0);
+        REQUIRE(ref.faults.gateFaults == 0);
         REQUIRE(allFinite(ref.audio.left));
         REQUIRE(allFinite(ref.audio.right));
         REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -170,9 +154,9 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
             LayersRender serial;
             renderLayers(input, events, 4096, {block}, serial, poolSetup(mode, nullptr));
             {
-                INFO("the serial runner: " << describeFaults(serial));
-                REQUIRE(serial.enableFaults == 0);
-                REQUIRE(serial.gateFaults == 0);
+                INFO("the serial runner: " << gg::core::describeFaults(serial.faults));
+                REQUIRE(serial.faults.enableFaults == 0);
+                REQUIRE(serial.faults.gateFaults == 0);
             }
             REQUIRE_FALSE(serial.log.overflowed);
             REQUIRE(sameBits(ref.audio.left, serial.audio.left));
@@ -191,9 +175,9 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
                 LayersRender r;
                 renderLayers(input, events, 4096, {block}, r, poolSetup(mode, &pool));
                 {
-                    INFO("the stub pool: " << describeFaults(r));
-                    REQUIRE(r.enableFaults == 0);
-                    REQUIRE(r.gateFaults == 0);
+                    INFO("the stub pool: " << gg::core::describeFaults(r.faults));
+                    REQUIRE(r.faults.enableFaults == 0);
+                    REQUIRE(r.faults.gateFaults == 0);
                 }
                 REQUIRE_FALSE(r.log.overflowed);
                 REQUIRE(sameBits(serial.audio.left, r.audio.left));

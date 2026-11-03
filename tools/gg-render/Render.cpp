@@ -1168,9 +1168,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     }
     if (report != nullptr)
     {
-        report->enableFaults = processor.enableFaults();
-        report->firstEnableFault = processor.firstEnableFault();
-        report->gateFaults = processor.engineGateFaults();
+        *report = processor.faultCounts();
     }
     return out;
 }

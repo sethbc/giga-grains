@@ -18,6 +18,7 @@
 
 #include "gg/core/Delay.h"
 #include "gg/core/Diffuser.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/LivePeaks.h"
@@ -827,22 +828,21 @@ class Processor
     /// in every build, Release included. A relaxed load: any thread may read it.
     uint32_t enableFaults() const noexcept { return enableFaults_.load(std::memory_order_relaxed); }
 
-    /// The first flip enableFaults() counted: its layer, its piece's first frame, and which
-    /// invariant it broke (disagrees: the first; offGrid: the second). All zero and false while
-    /// enableFaults() is 0. Read it on the audio thread, or on a thread that synchronizes with
-    /// the process() call that wrote it (tests read it after process() returns).
-    struct EnableFault
-    {
-        uint8_t layer{0};
-        int64_t frame{0};
-        bool disagrees{false};
-        bool offGrid{false};
-    };
+    /// The first flip enableFaults() counted (gg::core::EnableFault: its layer, its piece's first
+    /// frame, and which invariant it broke). All zero and false while enableFaults() is 0. Read it
+    /// on the audio thread, or on a thread that synchronizes with the process() call that wrote it
+    /// (tests read it after process() returns).
+    using EnableFault = gg::core::EnableFault;
     EnableFault firstEnableFault() const noexcept { return firstEnableFault_; }
     /// The four engines' Engine::gateFaults(), summed: row 234's other side, a grain an engine
     /// spawned with its gate requested off (a path enableFaults() does not see). 0 in every
     /// correct render. Read it on the audio thread or after process() returns.
     uint32_t engineGateFaults() const noexcept;
+    /// The three above together, for describeFaults() (gg/core/EnableFault.h).
+    FaultCounts faultCounts() const noexcept
+    {
+        return {enableFaults(), firstEnableFault(), engineGateFaults()};
+    }
     /// Layer `layer`'s Engine::activeGrains() (`layer` below kLayers), for tests.
     uint32_t layerActiveGrains(uint8_t layer) const noexcept
     {

@@ -459,22 +459,12 @@ int run(int argc, char **argv)
     {
         return fail(fmt::format("{}: {}", specPath, e.what()));
     }
-    if (report.enableFaults > 0)
+    if (report.enableFaults > 0 || report.gateFaults > 0)
     {
-        // Carry-over row 234's diagnostic (Processor::enableFaults()): never in a correct render,
-        // so a golden check that fails beside this line names the fault. The exit status is the
+        // Carry-over row 234's diagnostic (gg/core/EnableFault.h): never in a correct render, so a
+        // golden check that fails beside this line names the fault. The exit status is the
         // comparisons'.
-        const auto &f = report.firstEnableFault;
-        fmt::print("WARNING: {} layer enable faults (carry-over row 234); the first on layer {} at "
-                   "frame {}{}{}\n",
-                   report.enableFaults, f.layer, f.frame,
-                   f.disagrees ? ", disagreeing with its on ramp" : "",
-                   f.offGrid ? ", off the control grid" : "");
-    }
-    if (report.gateFaults > 0)
-    {
-        fmt::print("WARNING: {} grains spawned with an engine's gate off (carry-over row 234)\n",
-                   report.gateFaults);
+        fmt::print("WARNING: {} (carry-over row 234)\n", gg::core::describeFaults(report));
     }
     const gg::metrics::Metrics metrics = gg::metrics::computeMetrics(audio);
 

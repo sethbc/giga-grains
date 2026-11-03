@@ -31,6 +31,7 @@
 #include "Render.h"
 #include "RenderSpec.h"
 #include "Signals.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
@@ -90,22 +91,6 @@ std::string rejection(const nlohmann::json &j)
 bool bitIdentical(const std::vector<float> &a, const std::vector<float> &b)
 {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
-}
-
-/// Carry-over row 234's diagnostic, for an INFO: a render's enable faults (RenderReport), and the
-/// first one's layer, frame and kind.
-std::string describeFaults(const gg::render::RenderReport &r)
-{
-    const std::string gate = std::to_string(r.gateFaults) + " gate faults";
-    if (r.enableFaults == 0)
-    {
-        return "no enable faults, " + gate;
-    }
-    const auto &f = r.firstEnableFault;
-    return gate + ", " + std::to_string(r.enableFaults) + " enable faults, the first on layer " +
-           std::to_string(f.layer) + " at frame " + std::to_string(f.frame) +
-           (f.disagrees ? ", disagreeing with its on ramp" : "") +
-           (f.offGrid ? ", off the grid" : "");
 }
 
 /// The first line where two event logs differ, for an INFO (row 234: a recurrence's line names
@@ -487,8 +472,8 @@ TEST_CASE("render block size does not change output", "[render]")
     }
     // Row 234: no layer's enable flipped against its on ramp or off the grid, in either render
     // (a recurrence of its extra grain says here whether the flip was the cause).
-    INFO("the spec's block size: " << describeFaults(refReport));
-    INFO("block size " << blockSize << ": " << describeFaults(report));
+    INFO("the spec's block size: " << gg::core::describeFaults(refReport));
+    INFO("block size " << blockSize << ": " << gg::core::describeFaults(report));
     REQUIRE(refReport.enableFaults == 0);
     REQUIRE(report.enableFaults == 0);
     REQUIRE(refReport.gateFaults == 0);
@@ -501,6 +486,8 @@ TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault",
     // grid: layer B's ramp off ends 441 samples after its grid boundary, a legitimate flip off
     // the grid, which must not count as a fault. Layer B switched on, off and on again, over a
     // sine, in blocks of 1 and 128: no fault, the same bytes and the same grains.
+    // Not vacuous: at 44.1 kHz the ramp, R = round(10 ms x rate), ends off the 32-frame grid.
+    REQUIRE(std::llround(Processor::kRampSeconds * 44100.0) % Processor::kControlGrid != 0);
     std::string error;
     const auto spec = gg::render::parseRenderSpec(R"({
         "mode": "fx", "sampleRate": 44100, "durationSeconds": 2.0, "blockSize": 128, "seed": 1,
@@ -515,7 +502,7 @@ TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault",
     std::vector<std::string> refEvents;
     gg::render::RenderReport refReport;
     const auto ref = gg::render::render(*spec, &refEvents, {}, &refReport);
-    INFO("blocks of 128: " << describeFaults(refReport));
+    INFO("blocks of 128: " << gg::core::describeFaults(refReport));
     REQUIRE(refReport.enableFaults == 0);
     REQUIRE(refReport.gateFaults == 0);
     // Not vacuous: layer B spoke.
@@ -528,7 +515,7 @@ TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault",
     std::vector<std::string> events;
     gg::render::RenderReport report;
     const auto out = gg::render::render(ones, &events, {}, &report);
-    INFO("blocks of 1: " << describeFaults(report));
+    INFO("blocks of 1: " << gg::core::describeFaults(report));
     REQUIRE(report.enableFaults == 0);
     REQUIRE(report.gateFaults == 0);
     REQUIRE(out.channels.size() == 2);
@@ -1745,8 +1732,8 @@ TEST_CASE("note and file renders do not depend on block size", "[render]")
         CHECK(events == refEvents);
     }
     // Row 234, as in "render block size does not change output".
-    INFO("the spec's block size: " << describeFaults(refReport));
-    INFO("block size " << blockSize << ": " << describeFaults(report));
+    INFO("the spec's block size: " << gg::core::describeFaults(refReport));
+    INFO("block size " << blockSize << ": " << gg::core::describeFaults(report));
     REQUIRE(refReport.enableFaults == 0);
     REQUIRE(report.enableFaults == 0);
     REQUIRE(refReport.gateFaults == 0);
