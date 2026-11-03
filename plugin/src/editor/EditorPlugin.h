@@ -88,7 +88,8 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     {
         return clapJuceShim->guiSetParent(window);
     }
-    bool guiSetScale(double scale) noexcept override { return clapJuceShim->guiSetScale(scale); }
+    /// The shim's, and the scale it took is kept (guiScale), so a shim guiDestroy replaces gets it.
+    bool guiSetScale(double scale) noexcept override;
     bool guiAdjustSize(uint32_t *width, uint32_t *height) noexcept override;
     bool guiSetSize(uint32_t width, uint32_t height) noexcept override
     {
@@ -108,6 +109,9 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     /// The editors createEditor() made that are still alive (their destructors haven't run), for
     /// the tests. Main thread.
     uint32_t liveEditors() const noexcept { return liveEditors_; }
+    /// The last scale the host set that the shim took (1 until one is; the shim takes none on
+    /// Linux): what a shim guiDestroy replaces is given (row 232). Main thread.
+    double guiScale() const noexcept { return guiScale_; }
     /// For the shim on Linux, which runs JUCE's event loop from host timers and file
     /// descriptors.
     bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
@@ -149,6 +153,7 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     std::unique_ptr<gg::ui::EditorContext> editorContext_;
     uint32_t openEditors_{0}; // main thread
     uint32_t liveEditors_{0}; // main thread: liveEditors()
+    double guiScale_{1.0};    // main thread: guiScale()
     // The view the editor last showed, which the next one opens on (spec §6.2): the instance's,
     // not its state's. Main thread.
     gg::ui::View lastView_{gg::ui::View::Perform};

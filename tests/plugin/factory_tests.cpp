@@ -1478,6 +1478,20 @@ TEST_CASE("a gui created and destroyed without a parent, then created again, hol
         CHECK(plugin->liveEditors() == 0);
         CHECK_FALSE(plugin->publishing());
     }
+
+    // The host's scale is carried to the replacing shim: create, set_scale(2), destroy (the shim
+    // replaced), create: still 2 (where the shim takes a scale at all: not on Linux).
+    REQUIRE(gui->create(instance.clap(), api, false));
+    const bool taken = gui->set_scale(instance.clap(), 2.0);
+    CHECK(plugin->guiScale() == (taken ? 2.0 : 1.0));
+    gui->destroy(instance.clap());
+    REQUIRE(gui->create(instance.clap(), api, false));
+    CHECK(plugin->guiScale() == (taken ? 2.0 : 1.0));
+    CHECK(plugin->liveEditors() == 1);
+    gui->destroy(instance.clap());
+#if defined(__APPLE__) || defined(_WIN32)
+    CHECK(taken);
+#endif
 }
 
 TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")

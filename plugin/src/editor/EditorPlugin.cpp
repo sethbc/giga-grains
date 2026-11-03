@@ -653,13 +653,24 @@ void EditorPlugin::guiDestroy() noexcept
     {
         try
         {
-            replaceShim(clapJuceShim->getGuiScale());
+            // The scale the host set, which the shim's getGuiScale reports only on Windows.
+            replaceShim(guiScale_);
         }
         catch (...)
         {
             // Out of memory for a new shim: the old one stays, with its editor, as before.
         }
     }
+}
+
+bool EditorPlugin::guiSetScale(double scale) noexcept
+{
+    const bool taken = clapJuceShim->guiSetScale(scale);
+    if (taken)
+    {
+        guiScale_ = scale;
+    }
+    return taken;
 }
 
 bool EditorPlugin::guiAdjustSize(uint32_t *width, uint32_t *height) noexcept
