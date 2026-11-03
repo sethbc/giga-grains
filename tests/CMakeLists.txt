@@ -69,6 +69,7 @@ add_executable(gg-tests
         metrics/metrics_tests.cpp
         metrics/preset_goldens_tests.cpp
         metrics/spectrogram_tests.cpp
+        sweep/SweepDriver.cpp
         sweep/sweep_bursts_tests.cpp
         sweep/sweep_extremes_tests.cpp
         sweep/sweep_keying_tests.cpp

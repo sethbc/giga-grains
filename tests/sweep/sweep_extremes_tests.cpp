@@ -53,28 +53,26 @@ void setAll(SweepDriver &d, int state, uint64_t seed)
 /// Each exemption's own share of a driver's render (SweepDriver::exemptShare).
 struct Shares
 {
-    double fadeIn, reverbSize, reverbOnset, limiterDrive, delayGlideHold;
+    double fadeIn, reverbSize, limiterDrive, delayGlideHold;
 };
 
 Shares sharesOf(const SweepDriver &d)
 {
     using gg::test::Exemption;
     return {d.exemptShare(Exemption::FadeIn), d.exemptShare(Exemption::ReverbSize),
-            d.exemptShare(Exemption::ReverbOnset), d.exemptShare(Exemption::LimiterDrive),
-            d.exemptShare(Exemption::DelayGlideHold)};
+            d.exemptShare(Exemption::LimiterDrive), d.exemptShare(Exemption::DelayGlideHold)};
 }
 
 std::string describe(const Shares &s)
 {
     std::ostringstream o;
     o << "exempt shares: fade-in " << s.fadeIn << ", Reverb Size " << s.reverbSize
-      << ", reverb onset " << s.reverbOnset << ", kLimiterDrive " << s.limiterDrive
-      << ", kDelayGlideHold " << s.delayGlideHold;
+      << ", kLimiterDrive " << s.limiterDrive << ", kDelayGlideHold " << s.delayGlideHold;
     return o.str();
 }
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.402 in the FX, 0.300 in the instrument, with the draws keyed by CLAP ID):
+/// case measures (0.424 in the FX, 0.437 in the instrument, with the draws keyed by CLAP ID):
 /// Reverb Size moves are exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's
 /// stretches (SweepDriver.h; the delay's glide, at 0.5 samples a sample, runs for up to 4 s).
 /// The FX's was 0.413 before M2 sub-project 2's ring parameters were drawn too, and is 0.413 still
@@ -82,8 +80,10 @@ std::string describe(const Shares &s)
 /// Peak is driven under -6 dB longer and kLimiterDrive, unchanged, covers 12.8% of the render
 /// against 11.6%; every other exemption covers what it did. Each exemption's own share of the
 /// FX render (SweepDriver::exemptShare; they overlap): the fade-in 0.04%, Reverb Size moves
-/// 43.0%, the reverb's onset 18.5%, kLimiterDrive 12.8% and kDelayGlideHold 24.3%, leaving 40.17%
-/// scored. The instrument's: 0.04%, 37.3%, 20.7%, 13.0% and 21.5%, leaving 30.04%.
+/// 43.0%, kLimiterDrive 12.8% and kDelayGlideHold 24.3% (the instrument's: 0.04%, 37.3%, 13.0% and
+/// 21.5%; re-measured after row 302's fix). The reverb's onset, which was exempt for
+/// 18.5% of it (20.7% of the instrument's) until row 302's fix, is scored now: 42.41% of the FX's
+/// render is scored (40.17% before) and 43.67% of the instrument's (30.04% before).
 Shares extremes(Mode mode, uint64_t seed, double minScored)
 {
     SweepDriver d(mode, seed);
@@ -101,6 +101,9 @@ Shares extremes(Mode mode, uint64_t seed, double minScored)
         d.note(NoteEventType::Off, key);
         d.play(0.4, m);
     }
+    // No runaway under the last corner's settings (row 309), before the defaults come back: the
+    // check below sees the restored last second, which proves recovery alone.
+    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= gg::test::Checks::kRunawayDb);
     d.setDefaults();
     d.play(1.0, m);
     gg::test::requireClean(d, gg::test::chainBound(d, minScored));
@@ -110,7 +113,7 @@ Shares extremes(Mode mode, uint64_t seed, double minScored)
 
 TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
 {
-    const Shares shares = extremes(Mode::Fx, 2101, 0.395);
+    const Shares shares = extremes(Mode::Fx, 2101, 0.415);
     // The integration review's Minor 3: sub-project 2's Overdub can make the rings arbitrarily
     // loud, so kLimiterDrive's coverage grows with the draws rather than with the limiter's law
     // alone. A coarse cap on it, well above the 12.8% it covers.
@@ -120,7 +123,7 @@ TEST_CASE("extremes: minima, maxima and 32 corners, fx", "[sweep]")
 
 TEST_CASE("extremes: minima, maxima and 32 corners, instrument", "[sweep]")
 {
-    extremes(Mode::Instrument, 2102, 0.295);
+    extremes(Mode::Instrument, 2102, 0.43);
 }
 
 namespace
@@ -203,6 +206,8 @@ Shares chainCorners(Mode mode, uint64_t seed, double minScored)
         d.note(NoteEventType::Off, key);
         d.play(0.4, m);
     }
+    // No runaway under the last corner's settings (row 309), before the defaults come back.
+    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= gg::test::Checks::kRunawayDb);
     d.setDefaults();
     d.play(1.0, m);
     gg::test::requireClean(d, gg::test::chainBound(d, minScored));
@@ -211,21 +216,21 @@ Shares chainCorners(Mode mode, uint64_t seed, double minScored)
 } // namespace
 
 // The floors, a little under what each case measures (the integration review's Minor 2,
-// 2026-11-01): the FX scores 0.3323 of its render (the largest click score 8.81, the peak 1.082),
-// the instrument 0.2795 (11.08, 1.0). Each exemption's own share in the FX: the fade-in 0.08%,
-// Reverb Size moves 45.3%, the reverb's onset 21.5%, kLimiterDrive 0 and kDelayGlideHold 31.5%;
-// in the instrument 0.08%, 44.8%, 22.4%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling
-// is held at 0 dB, so a share there means the limiter is driven where the case says it isn't.
+// 2026-11-01): the FX scores 0.4253 of its render (it scored 0.3323 while the reverb's onset was
+// exempt, row 302), the instrument 0.3698 (0.2795). Each exemption's own share in the FX: the
+// fade-in 0.08%, Reverb Size moves 45.3%, kLimiterDrive 0 and kDelayGlideHold 31.5%; in the
+// instrument 0.08%, 44.8%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling is held at 0 dB,
+// so a share there means the limiter is driven where the case says it isn't.
 TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, fx", "[sweep]")
 {
-    const Shares shares = chainCorners(Mode::Fx, 2104, 0.325);
+    const Shares shares = chainCorners(Mode::Fx, 2104, 0.42);
     INFO(describe(shares));
     CHECK(shares.limiterDrive == 0.0);
 }
 
 TEST_CASE("extremes: Resample and Spectral under the delay and the limiter, instrument", "[sweep]")
 {
-    const Shares shares = chainCorners(Mode::Instrument, 2105, 0.27);
+    const Shares shares = chainCorners(Mode::Instrument, 2105, 0.365);
     INFO(describe(shares));
     CHECK(shares.limiterDrive == 0.0);
 }
