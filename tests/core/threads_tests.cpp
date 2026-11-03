@@ -115,12 +115,13 @@ const char *nameOf(Mode mode) { return mode == Mode::Fx ? "FX" : "instrument"; }
 // layer, frame and kind.
 std::string describeFaults(const LayersRender &r)
 {
+    const std::string gate = std::to_string(r.gateFaults) + " gate faults";
     if (r.enableFaults == 0)
     {
-        return "no enable faults";
+        return "no enable faults, " + gate;
     }
     const auto &f = r.firstEnableFault;
-    return std::to_string(r.enableFaults) + " enable faults, the first on layer " +
+    return gate + ", " + std::to_string(r.enableFaults) + " enable faults, the first on layer " +
            std::to_string(f.layer) + " at frame " + std::to_string(f.frame) +
            (f.disagrees ? ", disagreeing with its on ramp" : "") +
            (f.offGrid ? ", off the grid" : "");
@@ -148,6 +149,7 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
         // runner).
         INFO("the reference: " << describeFaults(ref));
         REQUIRE(ref.enableFaults == 0);
+        REQUIRE(ref.gateFaults == 0);
         REQUIRE(allFinite(ref.audio.left));
         REQUIRE(allFinite(ref.audio.right));
         REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -170,6 +172,7 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
             {
                 INFO("the serial runner: " << describeFaults(serial));
                 REQUIRE(serial.enableFaults == 0);
+                REQUIRE(serial.gateFaults == 0);
             }
             REQUIRE_FALSE(serial.log.overflowed);
             REQUIRE(sameBits(ref.audio.left, serial.audio.left));
@@ -190,6 +193,7 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
                 {
                     INFO("the stub pool: " << describeFaults(r));
                     REQUIRE(r.enableFaults == 0);
+                    REQUIRE(r.gateFaults == 0);
                 }
                 REQUIRE_FALSE(r.log.overflowed);
                 REQUIRE(sameBits(serial.audio.left, r.audio.left));

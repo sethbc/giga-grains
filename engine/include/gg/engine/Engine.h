@@ -413,6 +413,12 @@ class Engine
     uint64_t loweredGrains() const noexcept { return lowered_; }
     /// Grains the overload ladder stole to admit another, since construction or reset().
     uint64_t stolenGrains() const noexcept { return stolen_; }
+    /// Carry-over row 234's diagnostic, the engine's side: the grains the schedule emitted while
+    /// the enable gate was requested off, since construction (reset() keeps the count). process()
+    /// applies the request at its first frame and nothing changes it during the call, so a grain
+    /// emitted then means the gate (enabled_) was read as on when it was off: never in a correct
+    /// render. Read it on the thread that calls process(), or after it returns.
+    uint32_t gateFaults() const noexcept { return gateFaults_; }
     /// The source mode in effect: set by the last process() call (see setSourceMode).
     SourceMode sourceMode() const noexcept { return mode_; }
     /// N, the live ring's length in frames; 0 without a ring.
@@ -603,6 +609,7 @@ class Engine
     uint64_t dropped_{0};
     uint64_t lowered_{0};
     uint64_t stolen_{0};
+    uint32_t gateFaults_{0}; // gateFaults(): raised on a branch a correct render never takes
 };
 } // namespace gg
 

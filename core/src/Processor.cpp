@@ -1294,6 +1294,16 @@ uint64_t Processor::loweredGrains() const noexcept
     return lowered;
 }
 
+uint32_t Processor::engineGateFaults() const noexcept
+{
+    uint32_t faults = 0;
+    for (const auto &l : layers_)
+    {
+        faults += l->engine.gateFaults();
+    }
+    return faults;
+}
+
 uint64_t Processor::stolenGrains() const noexcept
 {
     uint64_t stolen = 0;

@@ -96,12 +96,13 @@ bool bitIdentical(const std::vector<float> &a, const std::vector<float> &b)
 /// first one's layer, frame and kind.
 std::string describeFaults(const gg::render::RenderReport &r)
 {
+    const std::string gate = std::to_string(r.gateFaults) + " gate faults";
     if (r.enableFaults == 0)
     {
-        return "no enable faults";
+        return "no enable faults, " + gate;
     }
     const auto &f = r.firstEnableFault;
-    return std::to_string(r.enableFaults) + " enable faults, the first on layer " +
+    return gate + ", " + std::to_string(r.enableFaults) + " enable faults, the first on layer " +
            std::to_string(f.layer) + " at frame " + std::to_string(f.frame) +
            (f.disagrees ? ", disagreeing with its on ramp" : "") +
            (f.offGrid ? ", off the grid" : "");
@@ -490,6 +491,8 @@ TEST_CASE("render block size does not change output", "[render]")
     INFO("block size " << blockSize << ": " << describeFaults(report));
     REQUIRE(refReport.enableFaults == 0);
     REQUIRE(report.enableFaults == 0);
+    REQUIRE(refReport.gateFaults == 0);
+    REQUIRE(report.gateFaults == 0);
 }
 
 TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault", "[render]")
@@ -514,6 +517,7 @@ TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault",
     const auto ref = gg::render::render(*spec, &refEvents, {}, &refReport);
     INFO("blocks of 128: " << describeFaults(refReport));
     REQUIRE(refReport.enableFaults == 0);
+    REQUIRE(refReport.gateFaults == 0);
     // Not vacuous: layer B spoke.
     REQUIRE(std::any_of(refEvents.begin(), refEvents.end(), [](const std::string &line) {
         return line.find(R"("layer":1,)") != std::string::npos;
@@ -526,6 +530,7 @@ TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault",
     const auto out = gg::render::render(ones, &events, {}, &report);
     INFO("blocks of 1: " << describeFaults(report));
     REQUIRE(report.enableFaults == 0);
+    REQUIRE(report.gateFaults == 0);
     REQUIRE(out.channels.size() == 2);
     CHECK(bitIdentical(out.channels[0], ref.channels[0]));
     CHECK(bitIdentical(out.channels[1], ref.channels[1]));
@@ -1744,6 +1749,8 @@ TEST_CASE("note and file renders do not depend on block size", "[render]")
     INFO("block size " << blockSize << ": " << describeFaults(report));
     REQUIRE(refReport.enableFaults == 0);
     REQUIRE(report.enableFaults == 0);
+    REQUIRE(refReport.gateFaults == 0);
+    REQUIRE(report.gateFaults == 0);
 }
 
 TEST_CASE("a chord's grains take its three keys, and its release decays to silence", "[render]")

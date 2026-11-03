@@ -1208,6 +1208,7 @@ TEST_CASE("disabled, the engine spawns nothing but writes its ring", "[engine][l
     REQUIRE_FALSE(engine.enabled());
     REQUIRE(engine.sourceMode() == gg::SourceMode::Live);
     REQUIRE(log.grains.empty());
+    REQUIRE(engine.gateFaults() == 0);
     REQUIRE(engine.activeGrains() == 0);
     REQUIRE(engine.droppedGrains() == 0);
     REQUIRE(engine.sampleClock() == 48000);
@@ -1253,6 +1254,8 @@ TEST_CASE("enabling forces an onset at that frame", "[engine][layers]")
     CHECK(log.grains[1].onsetSample == 96000);
     CHECK(log.grains[1].onsetFrac == 0.0);
     CHECK(peak(on.left) > 0.05f);
+    // Carry-over row 234: two grains, both spawned with the gate requested on (gateFaults()).
+    REQUIRE(engine.gateFaults() == 0);
 
     // Not vacuous: never disabled, grain 1 waits for 4 s.
     gg::Engine always(gg::EngineConfig{});

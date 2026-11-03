@@ -839,6 +839,10 @@ class Processor
         bool offGrid{false};
     };
     EnableFault firstEnableFault() const noexcept { return firstEnableFault_; }
+    /// The four engines' Engine::gateFaults(), summed: row 234's other side, a grain an engine
+    /// spawned with its gate requested off (a path enableFaults() does not see). 0 in every
+    /// correct render. Read it on the audio thread or after process() returns.
+    uint32_t engineGateFaults() const noexcept;
     /// Layer `layer`'s Engine::activeGrains() (`layer` below kLayers), for tests.
     uint32_t layerActiveGrains(uint8_t layer) const noexcept
     {

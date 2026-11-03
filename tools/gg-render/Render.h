@@ -58,12 +58,14 @@ struct RenderOptions
 };
 
 /// What a render reports beside its audio: carry-over row 234's diagnostic, the Processor's
-/// enableFaults() and firstEnableFault() at the render's end (0 and empty in sample mode, which
-/// has no Processor).
+/// enableFaults(), firstEnableFault() and engineGateFaults() at the render's end (0 and empty in
+/// sample mode, which has no Processor).
 struct RenderReport
 {
     uint32_t enableFaults{0};
     gg::core::Processor::EnableFault firstEnableFault{};
+    /// Processor::engineGateFaults() at the render's end.
+    uint32_t gateFaults{0};
 };
 
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may

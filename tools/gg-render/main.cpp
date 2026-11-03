@@ -471,6 +471,11 @@ int run(int argc, char **argv)
                    f.disagrees ? ", disagreeing with its on ramp" : "",
                    f.offGrid ? ", off the control grid" : "");
     }
+    if (report.gateFaults > 0)
+    {
+        fmt::print("WARNING: {} grains spawned with an engine's gate off (carry-over row 234)\n",
+                   report.gateFaults);
+    }
     const gg::metrics::Metrics metrics = gg::metrics::computeMetrics(audio);
 
     if (!wavPath.empty())

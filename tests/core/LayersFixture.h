@@ -524,6 +524,7 @@ struct LayersRender
     // fault's layer, frame and kind.
     uint32_t enableFaults{0};
     gg::core::Processor::EnableFault firstEnableFault{};
+    uint32_t gateFaults{0}; // Processor::engineGateFaults()
     // Every mod source's value on every layer after the render (Processor::sourceValue).
     std::array<std::array<float, static_cast<std::size_t>(gg::core::ModSource::Count)>, 4>
         sources{};
@@ -594,6 +595,7 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
     r.stolen = p.stolenGrains();
     r.enableFaults = p.enableFaults();
     r.firstEnableFault = p.firstEnableFault();
+    r.gateFaults = p.engineGateFaults();
     for (uint8_t L = 0; L < 4; ++L)
     {
         r.heads[L] = p.engine(L).liveWriteHead();
