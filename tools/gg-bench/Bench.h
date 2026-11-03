@@ -422,8 +422,14 @@ struct CanvasReport
     std::vector<CanvasResult> results; // 4,096, 8,192 and 16,384 grains
 };
 
-/// Times `frames` frames (after a 20-frame warm-up) at each of the three grain counts.
+/// Times `frames` frames (after a 20-frame warm-up) at each of the three grain counts, then
+/// checks the report (checkCanvasReport).
 CanvasReport runCanvas(int frames);
+
+/// Throws std::runtime_error ("the canvas bench timed no resolve at N grains") for the first
+/// result whose resolveMs isn't positive (0, negative or NaN): a resolve the compiler removed, or
+/// one that never ran.
+void checkCanvasReport(const CanvasReport &report);
 
 /// The report as JSON: {"benchmark": "canvas", machine, compiler, width, height, pixelScale,
 /// "lanes": 4, "resolve": "banded", frames, budgetMs, "results": [...]}.

@@ -1270,6 +1270,26 @@ TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
     CHECK_THROWS_AS(gg::bench::runChain({.rounds = 0}), std::invalid_argument);
 }
 
+TEST_CASE("the canvas bench refuses a report that timed no resolve", "[bench]")
+{
+    // Row 388 (c): runCanvas's check, apart from the timing.
+    const gg::bench::CanvasResult good{4096, 0.1, 0.2, 0.3, 0.4, 0.9, 0.9, 1.0};
+    gg::bench::CanvasReport report;
+    report.frames = 30;
+    report.results = {good, good, good};
+    CHECK_NOTHROW(gg::bench::checkCanvasReport(report));
+    CHECK_NOTHROW(gg::bench::checkCanvasReport(gg::bench::CanvasReport{}));
+    for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN()})
+    {
+        INFO(bad);
+        gg::bench::CanvasReport r = report;
+        r.results[1].grains = 8192;
+        r.results[1].resolveMs = bad;
+        CHECK_THROWS_WITH(gg::bench::checkCanvasReport(r),
+                          "the canvas bench timed no resolve at 8192 grains");
+    }
+}
+
 TEST_CASE("the canvas bench reports four banded lanes", "[bench]")
 {
     // --quick's frame count (gg-bench --canvas --quick).

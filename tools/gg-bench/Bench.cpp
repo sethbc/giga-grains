@@ -1985,15 +1985,24 @@ CanvasReport runCanvas(int frames)
     for (const uint32_t grains : kCanvasGrains)
     {
         report.results.push_back(measureCanvas(grains, frames, canvas, pixels));
-        // After the timing, outside it: a resolve that timed 0 ms was optimized out or never ran,
-        // and its figure (and the total's) would mean nothing.
-        if (!(report.results.back().resolveMs > 0.0))
+    }
+    // After the timing, outside it.
+    checkCanvasReport(report);
+    return report;
+}
+
+void checkCanvasReport(const CanvasReport &report)
+{
+    for (const CanvasResult &r : report.results)
+    {
+        // A resolve that timed 0 ms was optimized out or never ran, and its figure (and the
+        // total's) would mean nothing.
+        if (!(r.resolveMs > 0.0))
         {
             throw std::runtime_error("the canvas bench timed no resolve at " +
-                                     std::to_string(grains) + " grains");
+                                     std::to_string(r.grains) + " grains");
         }
     }
-    return report;
 }
 
 std::string toJson(const CanvasReport &report)
