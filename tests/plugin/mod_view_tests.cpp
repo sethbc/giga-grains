@@ -290,6 +290,19 @@ TEST_CASE("an undo that adds one route selects it; a load selects none", "[plugi
     h.routes = loaded;
     view.refresh();
     CHECK(routes->selected() == 0);
+    // A load (or a save) that leaves the routes as they were moves the count alone: the next
+    // look takes it in, and an undo after it that brings one route back still selects it (row
+    // 333's review: the count is read before the unchanged-routes return).
+    clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    clear->onClick();
+    view.refresh();
+    ++loads;
+    view.refresh(); // the same routes: only the count moved
+    routes->select(0);
+    h.undo.undo();
+    view.refresh();
+    CHECK(routes->selected() == 2);
     // After the loads, an undo that brings one back selects it again.
     clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
     REQUIRE(clear != nullptr);

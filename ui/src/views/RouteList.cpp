@@ -467,6 +467,12 @@ struct RouteList::Impl
     void refresh()
     {
         const ModRoutes now = routes();
+        // The load count is read at every look, the routes changed or not: a load (or a save)
+        // that leaves the routes as they were still moves it, and the next look must not take
+        // that for a load (row 333's review).
+        const uint64_t loads = context.presetLoads ? context.presetLoads() : 0;
+        const bool loaded = shown.has_value() && loads != loadsSeen;
+        loadsSeen = loads;
         if (shown && *shown == now)
         {
             return;
@@ -481,10 +487,8 @@ struct RouteList::Impl
         // A route that appeared since the last look comes into view, outlined, when it is the
         // only one that did (a drop, an undo or a redo); a load never selects, whatever it brings
         // (row 333, the director's answer, 2026-11-02): the plugin's presetLoads count moves at
-        // every preset or state load, in the same main-thread call that sets the routes.
-        const uint64_t loads = context.presetLoads ? context.presetLoads() : 0;
-        const bool loaded = shown.has_value() && loads != loadsSeen;
-        loadsSeen = loads;
+        // every preset or state load, in the same main-thread call that sets the routes (read
+        // above).
         uint8_t added = 0;
         std::size_t appeared = 0;
         if (shown)
