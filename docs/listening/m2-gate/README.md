@@ -9,10 +9,9 @@ numbers and words, for example "6 revisit, 12 further, 22 edit: ...". **An item 
 stands as accept**, and an accepted item closes its carry-over row. A verdict that isn't accept
 becomes the fix wave's first tasks.
 
-**About two and a half hours.** The listening is about 70 minutes and the carry-over items 15.
-The host matrix is about 70: eight cells of about 7 minutes each (ten steps; S5, a save and
-reopen, and S9, five editor reopens, are the long ones, and S8 needs the CPU meter to climb), and
-item 40's checks about 15 more if you do them all.
+**About two and a half hours.** The listening is about 70 minutes, the carry-over items about 15,
+the host matrix about 56 (eight cells of about 7 minutes each), and item 40's checks about 15
+more: about two and a half hours.
 
 ## Before you start
 
@@ -27,7 +26,7 @@ the packs' own ("Rendering the files" in [layers](../m2-layers/README.md),
 
 ```sh
 cmake --preset release && cmake --build --preset release --target gg-render gg-presets
-b=build/release; r=$b/tools/gg-render/gg-render; c=$b/content-cache/content
+b=build/release; r=$b/tools/gg-render/gg-render
 for p in layers engine extremes views sources; do
   L=$b/listening/m2-$p; mkdir -p "$L"; $r --write-media "$L/media"
   for s in docs/listening/m2-$p/specs/*.json; do
@@ -182,7 +181,7 @@ check that a long ring's lane still draws its peaks (rows 385 and 386). Answer: 
 
 Row 387, the new strings. Each is a text the views added; answer `ok` or give the replacement.
 
-Row 387 names eight strings; I find nine distinct texts, and the seven items below (19 to 25)
+Row 387 names eight strings; there are nine distinct texts, and the seven items below (19 to 25)
 cover all nine, the strip's three short forms being one item.
 
 **19. "Load a sample"** (a lane menu's file chooser). Answer: `ok` or edit.
