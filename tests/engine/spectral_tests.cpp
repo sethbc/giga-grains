@@ -383,45 +383,54 @@ TEST_CASE("dc and nyquist reconstruct at unity", "[engine][spectral]")
     // Row 365: DC and Nyquist keep their phase, so they add in amplitude, and are scaled by
     // kOverlapGain before the inverse as the redrawn bins' power is: a constant c and c(-1)^n
     // come out at c within 0.05 dB (+2.5 dB before). The Hann window also puts -cN/4 into the
-    // bin beside each, whose phase is redrawn: an offset of random sign per frame, which the
-    // level here averages out over 9 s of 12 kHz (N = 1024), both channels and 128 seeds. Eight
-    // seeds scatter by about 0.1 dB; these 128 measure +0.001 dB (DC) and +0.032 dB (Nyquist).
-    constexpr double kRate = 12000.0;
-    constexpr int64_t kTotal = 10 * 12000;
-    constexpr int64_t kSettled = 12000;
+    // bin beside each, whose phase is redrawn, so a smear of c alone carries a random offset per
+    // frame. Its magnitude is the same for -c, and so are its phases (the same seed), while the
+    // DC (or Nyquist) bin changes sign: half the difference of the two smears is the coherent bin
+    // alone, every settled sample of it at c (or c(-1)^n) to within rounding.
+    constexpr int64_t kTotal = 48000;
     constexpr float kLevel = 0.25f;
     for (const bool nyquist : {false, true})
     {
         INFO((nyquist ? "nyquist" : "dc"));
-        Stereo s{std::vector<float>(8192), std::vector<float>(8192)};
-        for (std::size_t i = 0; i < s.left.size(); ++i)
-        {
-            s.left[i] = s.right[i] = nyquist && i % 2 == 1 ? -kLevel : kLevel;
-        }
-        const SpectralMaterial m = sampleMaterial(s);
-        double sum = 0.0;
-        int64_t count = 0;
-        for (uint64_t seed = 0; seed < 128; ++seed)
-        {
-            SpectralSource source(kRate, kMaxBlock);
-            REQUIRE(source.fftSize() == 1024);
-            source.setActive(true);
-            renderSplit(source, m, 0.5, seed, 0, kTotal, {kMaxBlock});
-            const std::vector<float> out = ringFrames(source, kTotal);
-            double seedSum = 0.0;
-            for (int64_t t = kSettled; t < kTotal; ++t)
+        const auto smear = [&](float level) {
+            Stereo s{std::vector<float>(16384), std::vector<float>(16384)};
+            for (std::size_t i = 0; i < s.left.size(); ++i)
             {
-                const double sign = nyquist && t % 2 == 1 ? -1.0 : 1.0;
-                seedSum += sign * (static_cast<double>(out[2 * static_cast<std::size_t>(t)]) +
-                                   out[2 * static_cast<std::size_t>(t) + 1]);
+                s.left[i] = s.right[i] = nyquist && i % 2 == 1 ? -level : level;
             }
-            sum += std::abs(seedSum); // the Nyquist's sign follows the window's start
-            count += 2 * (kTotal - kSettled);
+            SpectralSource source(kSampleRate, kMaxBlock);
+            source.setActive(true);
+            renderSplit(source, sampleMaterial(s), 0.5, 17, 0, kTotal, {kMaxBlock});
+            return ringFrames(source, kTotal);
+        };
+        const std::vector<float> plus = smear(kLevel);
+        const std::vector<float> minus = smear(-kLevel);
+        SpectralSource probe(kSampleRate, kMaxBlock);
+        const int64_t settled = 2 * static_cast<int64_t>(probe.fftSize()); // every frame overlaps
+        double sum = 0.0;
+        double low = 1.0e9;
+        double high = 0.0;
+        double offset = 0.0; // the random part's size, for the record: plus less the coherent bin
+        for (int64_t t = settled; t < kTotal; ++t)
+        {
+            for (std::size_t c = 0; c < 2; ++c)
+            {
+                const auto i = 2 * static_cast<std::size_t>(t) + c;
+                const double coherent =
+                    std::abs(0.5 * (static_cast<double>(plus[i]) - static_cast<double>(minus[i])));
+                sum += coherent;
+                low = std::min(low, coherent);
+                high = std::max(high, coherent);
+                const double sign = nyquist && plus[i] - minus[i] < 0.0f ? -1.0 : 1.0;
+                offset = std::max(offset, std::abs(static_cast<double>(plus[i]) - sign * coherent));
+            }
         }
-        const double level = sum / static_cast<double>(count);
-        const double db = 20.0 * std::log10(level / kLevel);
-        INFO("level " << level << ", " << db << " dB");
-        REQUIRE(std::abs(db) <= 0.05);
+        const double level = sum / static_cast<double>(2 * (kTotal - settled));
+        INFO("level " << level << " (" << 20.0 * std::log10(level / kLevel) << " dB), samples "
+                      << low << " to " << high << ", the random part up to " << offset);
+        REQUIRE(offset > 0.01); // not vacuous: the bin beside the coherent one is there
+        REQUIRE(std::abs(20.0 * std::log10(low / kLevel)) <= 0.05);
+        REQUIRE(std::abs(20.0 * std::log10(high / kLevel)) <= 0.05);
     }
 }
 
@@ -717,9 +726,10 @@ std::vector<float> smearRing(const Stereo &s, double position,
     for (int64_t t = 0; t < frames; t += 512)
     {
         before(live, t);
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(512, frames - t));
         const float *in[2] = {s.left.data(), s.right.data()};
-        live.write(in, 2, static_cast<uint32_t>(t), t, 512);
-        source.process(m, position, 5, 0, t, 512);
+        live.write(in, 2, static_cast<uint32_t>(t), t, n);
+        source.process(m, position, 5, 0, t, n);
     }
     return ringFrames(source, frames);
 }

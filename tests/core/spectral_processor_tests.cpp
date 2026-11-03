@@ -450,6 +450,8 @@ TEST_CASE("a spectral layer over its ring takes splice commands", "[core][spectr
     // The boundaries are 48000 and 48032: 48000 - 0.5 x 48000 and 48032 - 0.25 x 48000.
     const auto marks = rig.p.engine(0).live().splices();
     CHECK(std::vector<int64_t>(marks.begin(), marks.end()) == std::vector<int64_t>{24000, 36032});
+    // B's ring exists and records, so no mark on it is the readsRing gate's doing.
+    REQUIRE(rig.p.engine(1).live().enabled());
     CHECK(rig.p.engine(1).live().spliceCount() == 0);
     CHECK(rig.p.ringMeta(0).spliceCount == 2);
 
