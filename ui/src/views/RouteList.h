@@ -32,7 +32,8 @@ class RouteList final : public juce::Component
     ~RouteList() override;
 
     /// Shows the routes as they are now. When exactly one route appeared since the last refresh
-    /// (a drop, an undo, a redo) it is selected; a load that brings several selects none.
+    /// (a drop, an undo, a redo) it is selected; a load (EditorContext::presetLoads moved) never
+    /// selects, whatever it brings.
     void refresh();
     /// Outlines row `slot` (1 to 48) and scrolls it into view; 0 or out of range clears it.
     void select(uint8_t slot);

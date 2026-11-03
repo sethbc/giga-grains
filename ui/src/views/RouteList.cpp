@@ -479,9 +479,12 @@ struct RouteList::Impl
             }
         }
         // A route that appeared since the last look comes into view, outlined, when it is the
-        // only one that did (a drop, an undo or a redo, a host's single edit); a load, which
-        // brings several, leaves the selection and the scroll alone (row 333, the director's
-        // option 1, 2026-11-02).
+        // only one that did (a drop, an undo or a redo); a load never selects, whatever it brings
+        // (row 333, the director's answer, 2026-11-02): the plugin's presetLoads count moves at
+        // every preset or state load, in the same main-thread call that sets the routes.
+        const uint64_t loads = context.presetLoads ? context.presetLoads() : 0;
+        const bool loaded = shown.has_value() && loads != loadsSeen;
+        loadsSeen = loads;
         uint8_t added = 0;
         std::size_t appeared = 0;
         if (shown)
@@ -496,7 +499,7 @@ struct RouteList::Impl
                 }
             }
         }
-        if (appeared != 1)
+        if (appeared != 1 || loaded)
         {
             added = 0;
         }
@@ -600,7 +603,8 @@ struct RouteList::Impl
     std::array<std::optional<ModRoute>, gg::core::kModSlots> drafts;
     bool refreshing{false}; ///< refresh() sets the controls: their callbacks edit nothing
     uint8_t selected{0};
-    uint8_t depthSlot{0}; ///< the slot whose depth slider is being dragged
+    uint64_t loadsSeen{0}; ///< context.presetLoads() at the last refresh
+    uint8_t depthSlot{0};  ///< the slot whose depth slider is being dragged
     ModRoutes depthBefore{}, depthAfter{};
 };
 

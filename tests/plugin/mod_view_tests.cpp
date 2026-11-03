@@ -240,7 +240,24 @@ TEST_CASE("an undo that adds one route selects it; a load selects none", "[plugi
     view.refresh();
     CHECK(routes->selected() == 2);
 
-    // A load that brings five routes leaves the selection alone.
+    // A load never selects (the director's answer: "never on a load"), whatever it brings: the
+    // plugin's presetLoads count moves with it. One route, then five.
+    uint64_t loads = 0;
+    h.recording.context.presetLoads = [&loads] { return loads; };
+    view.refresh(); // the count's first look
+    routes->select(0);
+    {
+        gg::core::ModRoutes one = h.routes;
+        REQUIRE(one[30].source == gg::core::ModSource::None);
+        one[30] = {.source = gg::core::ModSource::Lfo2,
+                   .target = ParamSlot::Size,
+                   .depth = 0.5f,
+                   .curve = gg::core::ModCurve::Bipolar};
+        h.routes = one;
+        ++loads;
+        view.refresh();
+        CHECK(routes->selected() == 0);
+    }
     routes->select(0);
     gg::core::ModRoutes loaded = h.routes;
     for (std::size_t i = 12; i < 17; ++i)
@@ -251,6 +268,7 @@ TEST_CASE("an undo that adds one route selects it; a load selects none", "[plugi
                      .curve = gg::core::ModCurve::Bipolar};
     }
     h.routes = loaded;
+    ++loads;
     view.refresh();
     CHECK(routes->selected() == 0);
     // And so does one that brings them while a row is selected.
@@ -260,8 +278,26 @@ TEST_CASE("an undo that adds one route selects it; a load selects none", "[plugi
         loaded[i] = loaded[12];
     }
     h.routes = loaded;
+    ++loads;
     view.refresh();
     CHECK(routes->selected() == 3);
+    // Several routes at once without a load (no source does that today) select none either.
+    routes->select(0);
+    for (std::size_t i = 40; i < 42; ++i)
+    {
+        loaded[i] = loaded[12];
+    }
+    h.routes = loaded;
+    view.refresh();
+    CHECK(routes->selected() == 0);
+    // After the loads, an undo that brings one back selects it again.
+    clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    clear->onClick();
+    view.refresh();
+    h.undo.undo();
+    view.refresh();
+    CHECK(routes->selected() == 2);
 }
 
 TEST_CASE("choosing no source in the route list clears the row", "[plugin]")
