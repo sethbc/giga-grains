@@ -1122,6 +1122,32 @@ TEST_CASE("a Live lane spans its ring", "[plugin]")
     CHECK(f.canvas->laneGeometry(0).ringSeconds == 16.0);
 }
 
+TEST_CASE("a 60 s ring's lane shows peaks over its 60 s", "[plugin]")
+{
+    // Row 385: each layer's peak strip was sized once for the 16 s ring, so a longer ring's lane
+    // showed peaks for its newest 16 s only. The strips now span the longest ring.
+    gg::test::useMediaScratch("canvas-ring-peaks");
+    PluginCanvas f(kFxPlugin);
+    f.flush(slotOf(gg::core::LayerParam::RingLength, 0), std::log2(60.0));
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    CHECK(f.impl->processor()->livePeaks(0).frames() >=
+          static_cast<int64_t>(gg::core::kRingMaxSeconds * kPluginRate));
+    // 20 s of noise: the lane's newest third holds it, older than the old strip's 16 s.
+    f.process(20 * 48000);
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    REQUIRE_THAT(lane.ringSeconds, Catch::Matchers::WithinAbs(60.0, 0.1));
+    const juce::Rectangle<float> bars = f.canvas->peaksDrawn(0);
+    REQUIRE_FALSE(bars.isEmpty());
+    // The oldest bar is 20 s behind the head, 40 s into the 60 s lane (the head runs on a
+    // little by the clock's extrapolation): well left of the 44 s a 16 s strip reached.
+    const float width = lane.width;
+    INFO("bars from " << bars.getX() << " to " << bars.getRight() << " of " << width);
+    CHECK(bars.getX() < width * 42.0f / 60.0f);
+    CHECK(bars.getX() > width * 38.0f / 60.0f); // nothing older than the 20 s written
+    CHECK(bars.getRight() > width * 59.0f / 60.0f);
+}
+
 TEST_CASE("the lane draws the ring's marks", "[plugin]")
 {
     gg::test::useMediaScratch("canvas-ring-marks");

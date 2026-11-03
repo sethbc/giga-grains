@@ -722,9 +722,7 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         // Frames head − span .. head across the lane (peakColumnFrames), but none past the last
         // published block (written) and none older than the strip's oldest whole bucket. That
         // is measured from head, at least written and nearer the writer, which may since have
-        // overwritten the buckets just older than written − frames(). Those columns stay empty,
-        // as do those of a ring longer than the strip holds (its newest frames(); the grains
-        // still draw there).
+        // overwritten the buckets just older than written − frames(). Those columns stay empty.
         const double framesPerColumn = lane.ringSeconds * lane.sampleRate / columns;
         const int64_t head = head_[layer];
         if (stale(peaks,
@@ -732,7 +730,13 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         {
             strip.bars.clear(); // keeps its storage
             strip.outline.reset();
-            const int64_t oldest = head - peaks->frames() + gg::core::LivePeaks::kBucket;
+            // The strip spans the longest ring (Processor::livePeaks); the lane reads no older
+            // than its own ring holds (row 385).
+            const RingView ring = ringOf(layer);
+            const int64_t held = ring.valid && ring.ringFrames > 0
+                                     ? std::min(peaks->frames(), ring.ringFrames)
+                                     : peaks->frames();
+            const int64_t oldest = head - held + gg::core::LivePeaks::kBucket;
             for (int x = 0; x < columns; ++x)
             {
                 const FrameSpan span =
@@ -861,6 +865,12 @@ std::vector<float> GrainCanvas::marksDrawn(uint8_t layer) const
 int64_t GrainCanvas::headDrawn(uint8_t layer) const noexcept
 {
     return layer < kLaneCount ? headDrawn_[layer] : 0;
+}
+
+juce::Rectangle<float> GrainCanvas::peaksDrawn(uint8_t layer) const
+{
+    return layer < kLaneCount && strips_[layer].valid ? strips_[layer].bars.getBounds()
+                                                      : juce::Rectangle<float>();
 }
 
 void GrainCanvas::drawRect(juce::Graphics &g, const WindowRect &r, bool ghost, bool oneSided,

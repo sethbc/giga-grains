@@ -148,6 +148,10 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// The head (ring frames) the last paint drew layer `layer`'s marks against; 0 before. For
     /// the tests.
     int64_t headDrawn(uint8_t layer) const noexcept;
+    /// The bounds of the peak bars the last paint built for layer `layer`'s lane, x in columns
+    /// from the lane's left edge; empty when it drew none, or for a lane out of range. For the
+    /// tests.
+    juce::Rectangle<float> peaksDrawn(uint8_t layer) const;
 
     /// Layer `layer`'s lane menu (the class comment), for the place last right-clicked on it, or
     /// for the keyboard (no place) when the menu was opened by Shift+F10 or not at all. Its

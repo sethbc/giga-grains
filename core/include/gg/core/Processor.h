@@ -776,8 +776,9 @@ class Processor
     GrainQueue &grainQueue() noexcept { return *grainQueue_; }
     /// The latest UiSnapshot, for the editor (the buffer's consumer).
     SnapshotBuffer &snapshot() noexcept { return snapshot_; }
-    /// The peak strip of layer `layer`'s live ring (`layer` below kLayers), kLiveSeconds long
-    /// (ceil(kLiveSeconds × sampleRate) frames), written on every call whether or not publishing
+    /// The peak strip of layer `layer`'s live ring (`layer` below kLayers), as long as the longest
+    /// ring (ringFramesFor(kRingMaxSeconds, sampleRate) frames: about 0.9 MB a layer at 48 kHz),
+    /// so it holds a whole ring of any Ring Length; written on every call whether or not publishing
     /// is on, and whether or not the layer is on (the class comment), in both products. Any
     /// thread may read it. livePeaks() is layer A's.
     const LivePeaks &livePeaks(uint8_t layer) const noexcept { return layerAt(layer).peaks; }

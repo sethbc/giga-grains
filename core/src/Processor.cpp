@@ -236,8 +236,9 @@ Processor::Processor(const ProcessorConfig &config)
         base_[s] = clampToRange(s, meta.defaultVal);
     }
     // Publishing (sub-project 5's spec §6.4): the engines' sink is ours for good, and forwards to
-    // setEventSink's after each piece. Each peak strip spans its ring, N = ceil(kLiveSeconds ×
-    // sampleRate) frames.
+    // setEventSink's after each piece. Each peak strip spans the longest ring, ceil(kRingMaxSeconds
+    // × sampleRate) frames, so a Ring Length resize never outgrows it (carry-over row 385): it is
+    // indexed by absolute ring time, so it serves any shorter ring as it is.
     grainQueue_ = std::make_unique<GrainQueue>();
     for (uint8_t L = 0; L < kLayers; ++L)
     {
@@ -263,7 +264,7 @@ Processor::Processor(const ProcessorConfig &config)
             channel.assign(pieceMax_, 0.0f);
         }
         l.overdubGain.assign(pieceMax_, 0.0f);
-        l.peaks.prepare(l.engine.liveFrames());
+        l.peaks.prepare(ringFramesFor(kRingMaxSeconds, config_.sampleRate));
         // The pool's storage bound on the spawns of one block (spec §6.7), each with at most one
         // steal before it (M2 engine spec §6.5).
         l.events.reserve(4 * static_cast<size_t>(engine.grainCapacity));

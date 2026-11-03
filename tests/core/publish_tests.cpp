@@ -628,7 +628,9 @@ TEST_CASE("publishing off costs nothing", "[core][publish]")
     UiSnapshot snap;
     CHECK_FALSE(off.snapshot().take(snap));
     CHECK(off.publishedClock().load() == 0);
-    CHECK(off.livePeaks().frames() == static_cast<int64_t>(std::ceil(16.0 * kRate)));
+    // The strip spans the longest ring (row 385), whatever the ring's length.
+    CHECK(off.livePeaks().frames() ==
+          static_cast<int64_t>(std::ceil(gg::core::kRingMaxSeconds * kRate)));
 
     CHECK(on.grainQueue().pop(g));
     CHECK(on.snapshot().take(snap));
@@ -687,7 +689,8 @@ TEST_CASE("the instrument publishes snapshots and its rings' peaks", "[core][pub
     // (none here), so the head advances over silence.
     Processor p({kRate, 512, 3, Mode::Instrument});
     p.setPublishing(true);
-    CHECK(p.livePeaks().frames() == static_cast<int64_t>(std::ceil(16.0 * kRate)));
+    CHECK(p.livePeaks().frames() ==
+          static_cast<int64_t>(std::ceil(gg::core::kRingMaxSeconds * kRate)));
     const std::array<gg::core::NoteEvent, 1> note{{{0, gg::core::NoteEventType::On, 0, 60}}};
     float l[512];
     float r[512];
