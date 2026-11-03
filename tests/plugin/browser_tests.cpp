@@ -308,7 +308,11 @@ TEST_CASE("the header's preset strip keeps the label's place", "[plugin][ui]")
     auto &strip = *find(*f.editor, "header.preset");
     CHECK(strip.getX() == 162);
     CHECK(strip.getWidth() == 90);
-    CHECK(strip.getParentComponent() == f.editor.get());
+    // In the header (row 331), which spans the editor's top from its left edge.
+    REQUIRE(strip.getParentComponent() != nullptr);
+    CHECK(strip.getParentComponent()->getComponentID() == "header");
+    CHECK(strip.getParentComponent()->getParentComponent() == f.editor.get());
+    CHECK(strip.getParentComponent()->getPosition() == juce::Point<int>(0, 0));
     CHECK(find(strip, "preset.mutate") == nullptr); // Mutate is the browser's (spec §6.9)
     CHECK(find(strip, "preset.prev") != nullptr);
     CHECK(find(strip, "preset.next") != nullptr);
