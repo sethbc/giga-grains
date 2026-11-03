@@ -58,8 +58,14 @@ The instrument files hold one note over the whole file, at Position 0.25 to 0.5 
 - **The delay and the limiter** (`09` to `12`, `13`): the delay sits after the layers' sum, the
   limiter after the delay.
 
-The peaks and RMS levels below were measured on the `release` renders, over both channels and the
-whole file unless a span is given. No file peaks above −3.9 dBFS.
+The peaks and RMS levels below were measured on the `release` renders, over both channels (the
+samples' own RMS, not the mono mix's envelope: the Spectral kind decorrelates the channels, and
+the mono mix of `04` reads 3 dB lower) and the whole file unless a span is given. No file peaks
+above −3.9 dBFS. **Re-rendered on `release` at `df1c3ae` (the M2 close, Task 16),** which moves the Spectral renders
+(`03`, `04`, `05`, `13`) by the DC and Nyquist change (row 365: DC and Nyquist at unity) and the
+ring window (row 381): every peak and RMS figure matched to 0.1 dB, and the spectrograms show no
+artifact (`03`'s one scanning line, `04`'s pulses then a steady pad, `05`'s flat line). `07`'s
+spans are 0.5–2, 2.5–4, … 10.5–12 s.
 
 | File | Length | What it is | Listen for |
 |---|---|---|---|

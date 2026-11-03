@@ -42,7 +42,9 @@ generated drum-like loop: a 30 ms noise burst every 250 ms for 4 s; `tone-44k1.w
 in slots 13 and up, on top of the factory routes (the macros' twelve, at rest).
 
 The peaks and RMS levels below were measured on the `release` renders, over both channels and the
-whole file unless a span is given. No file peaks above −5 dBFS.
+whole file unless a span is given. No file peaks above −5 dBFS. **Re-rendered on `release` at `df1c3ae` (the M2 close, Task 16),** after
+row 301's morph fix and the close's engine changes: every peak and every RMS span below matched
+to 0.1 dB, so `01`, `05` and `14` read as written.
 
 **Layers sum under one pad (D1).** With the pad at its centre, the weights of the layers that are
 on share 1 between them: two layers play at half amplitude each, four at a quarter. Layers that
