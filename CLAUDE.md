@@ -48,7 +48,9 @@ AGPL-3.0-or-later.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
-  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`).
+  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`), and the
+  dependency watch, `docs/dependency-watch.md`: the pins that trail upstream on purpose, each with
+  what would move it and what to check (not carry-over; INTENT §23 #90).
 
 Development is Claude-led. The director steers, listens and reviews. Ears are the scarce
 resource, so machines must catch everything they can catch.
@@ -208,10 +210,14 @@ check. CI's Linux leg is the only GCC build: push early (as a draft pull request
 **The Linux products' libstdc++.** On Linux with GCC, outside the sanitizer builds, the four
 products link libstdc++ and libgcc statically with their symbols kept local, and the CLAP and
 VST3 export their entry points alone (`clients/clap-first/CMakeLists.txt`,
-`linux-exports.map`; INTENT §15). CI's Linux leg checks it after the build: "Linux products need
-no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CXXABI` above
-1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
-summary.
+`linux-exports.map`; INTENT §15). The Linux baseline is Ubuntu 24.04 (§23 #91): the products
+need its glibc, 2.39, and no longer run on 22.04. CI's Linux leg (`ubuntu-24.04`, gcc-13 from the
+archive) checks it after the build: "Linux products need no libstdc++ or glibc newer than Ubuntu
+24.04's" reads the ceilings from the runner's own `libstdc++.so.6` and `libc.so.6` (after
+checking both packages are Ubuntu's, and that the runner's glibc is exactly the documented 2.39,
+`GG_BASELINE_GLIBC`), fails on a `GLIBCXX`, `CXXABI` or `GLIBC` version
+above them or an exported `std::` symbol, and lists the ceilings and each product's symbol
+versions in the step summary.
 
 **The required checks** (INTENT §23 #77). `main`'s ruleset requires two: `ci-ok` and
 `clang-format`. `ci-ok` passes only when `plan`, every build leg and every sanitizer job passed. A
@@ -239,9 +245,10 @@ tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -
 - **ccache**, every build leg and the sanitizer jobs, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows uses
   ccache's own pinned release (4.14.2, SHA-256 checked) since the leg moved to Ninja (INTENT §23
-  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
-  (the sanitizer jobs' by sanitizer, LLVM version and commit; one ASan shard and the RTSan job
-  save), restored by prefix.
+  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset,
+  runner image (`macos-26`, `windows-2022`, `ubuntu-24.04`; a new image misses once, as the Linux
+  leg's move from `ubuntu-22.04` did, §23 #91) and commit (the sanitizer jobs' by sanitizer, LLVM
+  version and commit; one ASan shard and the RTSan job save), restored by prefix.
 - **The pinned LLVM archive** (sanitizer jobs), keyed by version and SHA-256. The SHA-256 is
   checked on a hit too.
 - **The content** (every build leg and the sanitizer jobs): `scripts/fetch-content.sh` fetches
@@ -266,7 +273,7 @@ except `windows-clangcl`, which builds into `build/windows/`.
 | `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
-| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). |
+| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). `linux-gcc13` is gcc-13 on Ubuntu 24.04, the Linux baseline (INTENT §15). |
 
 Every preset uses the same three commands:
 
@@ -288,7 +295,9 @@ ctest --preset dev --output-on-failure
     editor, so they aren't built.
 - **RTSan:** set `GG_LLVM` when configuring:
   - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
-  - CI uses LLVM's 20.1.8 release for Linux, checked against its SHA-256, in `/opt/llvm-20.1.8`.
+  - CI uses LLVM's 23.1.4 release for Linux, checked against its SHA-256, in `/opt/llvm-23.1.4`
+    (Homebrew's `llvm` was at 23.1.4 too on 2026-11-03, so CI's sanitizer builds and a local
+    `rtsan` matched then).
   - Configuring fails, naming `GG_LLVM`, if the compiler isn't upstream Clang 20 or newer.
 - **Outputs:**
   - The plugins and standalone apps land in `build/<preset>/gg_assets/`.
@@ -300,8 +309,11 @@ ctest --preset dev --output-on-failure
     CC0 text and `content-version.txt`): the installers' Content component. It depends on
     `gg-content`, so a tree needs the fetched release (or `GG_CONTENT_DIR`).
   - `cmake --build --preset <p> --target gg-installer` builds `gg-products`, then packs it into
-    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno Setup
-    6's `ISCC.exe` is found at configure, its installer, or the Linux tarball. Unsigned unless
+    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno
+    Setup's `ISCC.exe` is found at configure, its installer, or the Linux tarball. CI's Windows
+    leg installs Inno Setup 7.1.1 (pinned, SHA-256 checked) and names its `ISCC.exe` with
+    `-DGG_ISCC`; locally `cmake/products.cmake` looks in `Program Files\Inno Setup 7`, then Inno
+    Setup 6's folder (the script needs 6.3 or later). Unsigned unless
     the signing environment is set ("Releasing" below; `docs/releasing.md`).
 - **If you delete a bundle or `gg_assets/`, configure again before building.** The `Info.plist`
   files of the CLAP, VST3 and app bundles are link dependencies, and CMake writes them at

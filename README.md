@@ -29,8 +29,9 @@ installs the rest with Homebrew: CMake, Ninja, Git and LLVM):
 curl -fsSL https://raw.githubusercontent.com/sethbc/giga-grains/main/scripts/bootstrap-macos.sh | bash -s -- --clone ~/src/giga-grains
 ```
 
-Ubuntu 22.04 or 24.04 and Debian-family systems with the same packages (gcc-13, CMake, Ninja and
-JUCE's development libraries; run as root or with `sudo` available):
+Ubuntu 24.04 (the Linux baseline; 22.04's archive has no gcc-13) and Debian-family systems with
+the same packages (gcc-13, CMake, Ninja and JUCE's development libraries; run as root or with
+`sudo` available):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sethbc/giga-grains/main/scripts/bootstrap-linux.sh | bash -s -- --clone ~/src/giga-grains

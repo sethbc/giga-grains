@@ -17,12 +17,12 @@
 #               §23 #60, #61). On a pull request and a push to main it runs --quick, as a smoke
 #               check only (no verdict, no artifact; INTENT §23 #73). The gate turns blocking
 #               at 1.0.0, after M5, with the published §16 headline (INTENT §16, §19).
-#   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 20 (the pinned LLVM
-#               20.1.8 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
+#   sanitizers  ASan + UBSan, and RealtimeSanitizer, with upstream clang 23 (the pinned LLVM
+#               23.1.4 release) on ubuntu-24.04: ASan in six shards and RTSan in one job, side
 #               by side, then this one check over all seven (INTENT §23 #74).
 #
 # Not a required check: on the nightly and on a dispatch, bootstrap-fresh-linux runs
-# scripts/bootstrap-linux.sh in a bare ubuntu:22.04 container (M2 close spec §6.3).
+# scripts/bootstrap-linux.sh in a bare ubuntu:24.04 container (M2 close spec §6.3).
 #
 # Once the build succeeds, every later check runs even if an earlier one failed, so one run
 # reports them all; any failure still fails the job. The clang-format check is in format.yml.
@@ -281,7 +281,8 @@ jobs:
             build_dir: build/windows
             bench: build/windows/tools/gg-bench/gg-bench.exe
             exe: .exe
-          - os: ubuntu-22.04
+          # Ubuntu 24.04, INTENT §15's Linux baseline (§23 #91), with gcc-13 from its archive.
+          - os: ubuntu-24.04
             preset: linux-gcc13
             build_dir: build/linux-gcc13
             bench: build/linux-gcc13/tools/gg-bench/gg-bench
@@ -316,6 +317,13 @@ jobs:
       # isn't none.
       GG_RELEASE_KIND: ${{ needs.plan.outputs.release_kind }}
       GG_VERSION: ${{ needs.plan.outputs.version }}
+      # Inno Setup, the Windows installer's compiler (INTENT §23 #90): its 64-bit edition's
+      # release from jrsoftware/issrc (tag is-7_1_1), checked against its SHA-256 (the digest
+      # GitHub publishes for the asset), installed on every Windows run, so ctest's
+      # installer_windows_inno and gg-installer compile the script with it, not the image's
+      # Inno Setup 6.
+      INNO_VERSION: 7.1.1
+      INNO_SHA256: 8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -381,11 +389,12 @@ jobs:
 
       # What each leg's build needs comes from the bootstrap scripts, the ones a reader of the
       # README runs (M2 close spec §6.3), so CI keeps them honest. Linux: gcc-13 for the C++23
-      # build (the m2-layers spec, §6.1) from the ubuntu-toolchain-r/test PPA, since
-      # ubuntu-22.04's archive has none, then CMake, Ninja, the twelve JUCE development packages
-      # that prepare-for-juce used to install, libxi-dev (JUCE 9's juce_gui_basics includes
-      # <X11/extensions/XInput2.h>) and xvfb. A nightly job (bootstrap-fresh-linux, below) runs
-      # it in a bare container, so a package this image happens to carry can't hide a missing one.
+      # build (the m2-layers spec, §6.1) from ubuntu-24.04's own archive (no PPA, so the
+      # runner's libstdc++6 is the baseline's), then CMake, Ninja, the twelve JUCE development
+      # packages that prepare-for-juce used to install, libxi-dev (JUCE 9's juce_gui_basics
+      # includes <X11/extensions/XInput2.h>) and xvfb. A nightly job (bootstrap-fresh-linux,
+      # below) runs it in a bare container, so a package this image happens to carry can't hide a
+      # missing one.
       - name: Install the build requirements (Linux)
         if: runner.os == 'Linux'
         run: scripts/bootstrap-linux.sh
@@ -458,6 +467,35 @@ jobs:
             }
           }
           & (Join-Path $llvm "clang-cl.exe") --version
+
+      # Inno Setup 7.1.1 (INNO_VERSION, above), installed silently into Program Files\Inno Setup 7
+      # beside the image's Inno Setup 6. Configure names its ISCC.exe (GG_ISCC), so the image's
+      # copy is never found in its place; the installer step checks the version the script
+      # printed. pwsh, not Git Bash, which would rewrite the installer's /SWITCHES as paths.
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $name = "innosetup-$env:INNO_VERSION-x64.exe"
+          $tag = "is-" + ($env:INNO_VERSION -replace '\.', '_')
+          $exe = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/$tag/$name" -OutFile $exe
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          if ($hash -ne $env:INNO_SHA256) { throw "${name}: SHA-256 $hash, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:ProgramFiles "Inno Setup 7"
+          $log = Join-Path $env:RUNNER_TEMP "innosetup-install.log"
+          $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$dir`"", "/LOG=`"$log`"")
+          $p = Start-Process -FilePath $exe -ArgumentList $setupArgs -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -ErrorAction SilentlyContinue
+            throw "$name exited $($p.ExitCode)"
+          }
+          $iscc = Join-Path $dir "ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "no ISCC.exe in $dir" }
+          "ISCC: $iscc, file version $((Get-Item $iscc).VersionInfo.FileVersion)"
+          "GG_ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Saved (below) only on main, so pull requests don't fill the repository's cache quota
       # with a 500 MB cache per leg per run.
@@ -560,6 +598,8 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then
             command -v ninja >/dev/null || choco install -y ninja --no-progress
             launcher+=("-DCMAKE_LINKER=$(cygpath -m "$GG_WIN_LINKER")")
+            # The pinned Inno Setup (Install Inno Setup, above), not whichever find_program meets.
+            launcher+=("-DGG_ISCC=$(cygpath -m "$GG_ISCC_PATH")")
           fi
           release_opts=()
           if [[ "$GG_RELEASE_KIND" == nightly ]]; then
@@ -575,15 +615,87 @@ jobs:
         id: build
         run: cmake --build --preset ${{ matrix.preset }} --config Release --parallel --target gg-all gg-products
 
-      # INTENT §15: the Linux products run on an Ubuntu 22.04 baseline, whose libstdc++6 (GCC 12)
-      # provides up to GLIBCXX_3.4.30 and CXXABI_1.3.13. This runner's libstdc++6 came from the
-      # gcc-13 PPA, so loading a product here proves nothing: each ELF file under gg-products must
-      # need no newer version, and export no std:: symbol (the products link libstdc++ statically
-      # and keep it local; clients/clap-first/CMakeLists.txt). The versions each file needs go in
-      # the step summary either way.
-      - name: Linux products need no libstdc++ newer than Ubuntu 22.04's
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.os == 'ubuntu-22.04' }}
+      # INTENT §15 (§23 #91): the Linux products run on an Ubuntu 24.04 baseline, and this runner
+      # is that image. The ceilings are read here, from the runner's own libstdc++6 and libc6
+      # (strings on libstdc++.so.6 and libc.so.6), once both packages are shown to be Ubuntu's:
+      # in apt-cache policy, neither the installed version nor any candidate at or above it comes
+      # from an origin other than ubuntu.com (a PPA or any other; the image's other lists, such
+      # as git-core's PPA or Microsoft's, don't matter unless they serve these packages), and the
+      # installed upstream version (before the Ubuntu revision: 2.39, 14.2.0) is one a noble,
+      # noble-updates or noble-security pocket lists (madison lists each pocket's newest only, so
+      # an image a revision behind still passes). The runner's glibc must also be exactly the
+      # documented baseline's, GG_BASELINE_GLIBC (INTENT §15, installer/linux/README.md): ceilings
+      # read from the runner that linked the products can't fail them, so this is what catches the
+      # image drifting from the docs. Each ELF file under gg-products must need no GLIBCXX_,
+      # CXXABI_ or GLIBC_ version above the ceilings, and export no std:: symbol (the products
+      # link libstdc++ statically and keep it local; clients/clap-first/CMakeLists.txt), so glibc
+      # is the real floor. The ceilings and the versions each file needs go in the step summary.
+      - name: Linux products need no libstdc++ or glibc newer than Ubuntu 24.04's
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
+        env:
+          GG_BASELINE_GLIBC: "2.39"
         run: |
+          . /etc/os-release
+          if [[ "$ID" != ubuntu || "$VERSION_ID" != 24.04 ]]; then
+            echo "::error::the ceilings come from the runner, which must be Ubuntu 24.04, not $PRETTY_NAME"
+            exit 1
+          fi
+          status=0
+          # policy_origins: apt-cache policy's version table on stdin, one "<version> <origin URL>"
+          # line per origin of each version (/var/lib/dpkg/status, a path, is left out).
+          policy_origins() {
+            awk '/Version table:/ { t = 1; next }
+              t && $1 ~ /^[0-9]+$/ && $2 ~ /^[a-z]+:\/\// { print v, $2; next }
+              t && $1 == "***" { v = $2; next }
+              t && NF >= 2 { v = $1 }'
+          }
+          # madison and policy read the package lists, so they are fetched first.
+          sudo apt-get update -qq
+          for pkg in libstdc++6 libc6; do
+            version="$(dpkg-query -W -f='${Version}' "$pkg")"
+            # The installed version, or a candidate at or above it, from anywhere but ubuntu.com.
+            others=()
+            while read -r v origin; do
+              if [[ -n "$v" ]] && dpkg --compare-versions "$v" ge "$version" \
+                  && ! [[ "$origin" =~ ^https?://([a-z0-9-]+\.)*ubuntu\.com/ ]]; then
+                others+=("$v from $origin")
+              fi
+            done < <(apt-cache policy "$pkg" | policy_origins)
+            if ((${#others[@]} > 0)); then
+              echo "::error::$pkg $version: a version at or above it comes from outside ubuntu.com: ${others[*]}"
+              status=1
+            fi
+            if ! apt-cache madison "$pkg" | awk -F'|' -v u="${version%-*}" \
+                '{ gsub(/ /, "", $2); sub(/-[^-]*$/, "", $2) } $2 == u && $3 ~ /ubuntu\.com\/ubuntu noble(-updates|-security)?\// { found = 1 } END { exit !found }'; then
+              echo "::error::$pkg $version: no noble pocket lists upstream version ${version%-*}: $(apt-cache madison "$pkg" | tr '\n' ';')"
+              status=1
+            fi
+          done
+          # The first x86-64 entry ldconfig lists for each (awk reads to the end: no SIGPIPE).
+          libstdcxx="$(ldconfig -p | awk '$1 == "libstdc++.so.6" && /x86-64/ && !n++ { print $NF }')"
+          libc="$(ldconfig -p | awk '$1 == "libc.so.6" && /x86-64/ && !n++ { print $NF }')"
+          # ceiling <library> <prefix>: the highest <prefix>_<n>[.<n>...] version it defines.
+          ceiling() { { strings "$1" | grep -E "^${2}_[0-9][0-9.]*\$" || true; } | sort -uV | tail -n 1; }
+          max_glibcxx="$(ceiling "$libstdcxx" GLIBCXX)"
+          max_cxxabi="$(ceiling "$libstdcxx" CXXABI)"
+          max_glibc="$(ceiling "$libc" GLIBC)"
+          if [[ -z "$max_glibcxx" || -z "$max_cxxabi" || -z "$max_glibc" ]]; then
+            echo "::error::no ceiling read from $libstdcxx and $libc: '$max_glibcxx' '$max_cxxabi' '$max_glibc'"
+            exit 1
+          fi
+          if [[ "$max_glibc" != "GLIBC_$GG_BASELINE_GLIBC" ]]; then
+            echo "::error::the runner's glibc is $max_glibc, not the documented baseline's GLIBC_$GG_BASELINE_GLIBC (INTENT §15, installer/linux/README.md)"
+            status=1
+          fi
+          {
+            echo "### Ubuntu 24.04's ceilings (this runner)"
+            echo '```'
+            echo "libstdc++6 $(dpkg-query -W -f='${Version}' libstdc++6): $libstdcxx: $max_glibcxx, $max_cxxabi"
+            echo "libc6 $(dpkg-query -W -f='${Version}' libc6): $libc: $max_glibc"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # above <version> <ceiling>: true when the version sorts after the ceiling.
+          above() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }
           products="$PWD/${{ matrix.build_dir }}/gg-products"
           files=()
           while IFS= read -r -d '' f; do
@@ -593,22 +705,28 @@ jobs:
             echo "::error::no ELF file under $products"
             exit 1
           fi
-          too_new='^(GLIBCXX_3\.4\.(3[1-9]|[4-9][0-9])|GLIBCXX_3\.([5-9]|[1-9][0-9])(\..*)?|CXXABI_1\.3\.(1[4-9]|[2-9][0-9])|CXXABI_1\.([4-9]|[1-9][0-9])(\..*)?)$'
-          status=0
           echo "### Linux products' symbol versions" >> "$GITHUB_STEP_SUMMARY"
           for f in "${files[@]}"; do
             name="${f#"$products"/}"
-            versions="$(objdump -T "$f" | grep -o 'GLIBCXX_[0-9.]*\|CXXABI_[0-9.]*\|GLIBC_[0-9.]*' | sort -uV || true)"
+            versions="$(objdump -T "$f" | grep -o 'GLIBCXX_[0-9][0-9.]*\|CXXABI_[0-9][0-9.]*\|GLIBC_[0-9][0-9.]*' | sort -uV || true)"
             {
               echo "#### $name"
               echo '```'
               echo "${versions:-(none)}"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            bad="$(printf '%s\n' "$versions" | grep -E "$too_new" || true)"
-            if [[ -n "$bad" ]]; then
-              # $(echo $bad), unquoted: flatten lines.
-              echo "::error::$name needs a libstdc++ newer than Ubuntu 22.04's: $(echo $bad)"
+            bad=()
+            while IFS= read -r v; do
+              case "$v" in
+                GLIBCXX_*) max="$max_glibcxx" ;;
+                CXXABI_*) max="$max_cxxabi" ;;
+                GLIBC_*) max="$max_glibc" ;;
+                *) continue ;;
+              esac
+              if above "$v" "$max"; then bad+=("$v"); fi
+            done <<<"$versions"
+            if ((${#bad[@]} > 0)); then
+              echo "::error::$name needs a libstdc++ or glibc newer than Ubuntu 24.04's: ${bad[*]}"
               status=1
             fi
             exported="$(nm -D --defined-only "$f" | awk '{print $NF}' | grep -E '^(_ZSt|_ZNSt|_ZNKSt)' || true)"
@@ -951,7 +1069,8 @@ jobs:
       # GG_SIGN; Windows ships unsigned (spec decision 3) and Linux has nothing to sign. The
       # expected files, named by plan's version, are staged in $RUNNER_TEMP/installer for the
       # upload: macOS the DMG (the PKG is inside it), Windows the zip and the Inno Setup EXE
-      # (GG_ISCC must have been found at configure), Linux the tarball.
+      # (GG_ISCC, the pinned Inno Setup, named at configure; the script prints the compiler's
+      # version, which must be INNO_VERSION), Linux the tarball.
       - name: Build the installer
         id: installer
         if: ${{ needs.plan.outputs.release_kind != 'none' && steps.products.outcome == 'success' }}
@@ -982,6 +1101,11 @@ jobs:
             fi
             cp "$dir/$file" "$stage/"
           done
+          # (grep without -q reads to the end, so pipefail sees no SIGPIPE from tr.)
+          if [[ "$RUNNER_OS" == Windows ]] && ! tr -d '\r' < "$log" | grep -F "Inno Setup $INNO_VERSION: Giga Grains" >/dev/null; then
+            echo "::error title=gg-installer::the log names no Inno Setup $INNO_VERSION (giga-grains.iss prints the compiler's version)"
+            exit 1
+          fi
           if [[ "$RUNNER_OS" == macOS ]]; then
             signed="$(tr -d '\r' < "$log" | grep -E '^signed: (yes|no)$' | tail -n 1 | cut -d ' ' -f 2 || true)"
             expected=no
@@ -1066,12 +1190,12 @@ jobs:
           - { sanitizer: asan, shard: 6 }
           - { sanitizer: rtsan, shard: 0 }
     env:
-      # LLVM's official 20.1.8 release for Linux x64, checked against its SHA-256 (the digest
+      # LLVM's official 23.1.4 release for Linux x64, checked against its SHA-256 (the digest
       # GitHub publishes for the release asset). RTSan needs upstream clang 20 or newer.
-      LLVM_VERSION: 20.1.8
-      LLVM_SHA256: 1ead36b3dfcb774b57be530df42bec70ab2d239fbce9889447c7a29a4ddc1ae6
+      LLVM_VERSION: 23.1.4
+      LLVM_SHA256: 25d814fda50d5fb0084b42be09605d8b1595d49d5e2e03a3345d7e112ff6f9f3
       # The rtsan preset takes its compilers from $GG_LLVM; the asan step uses the same clang.
-      GG_LLVM: /opt/llvm-20.1.8
+      GG_LLVM: /opt/llvm-23.1.4
       # The content, as in the build job: both configures point at it (-DGG_CONTENT_DIR).
       CONTENT_CACHE_DIR: ${{ github.workspace }}/.content-cache
       # ccache, as in the build job (CI only; the same notes apply).
@@ -1101,7 +1225,7 @@ jobs:
           path: ${{ runner.temp }}/llvm-archive
           key: llvm-${{ env.LLVM_VERSION }}-${{ env.LLVM_SHA256 }}
 
-      - name: Install LLVM 20.1.8 (pinned release) and Ninja
+      - name: Install LLVM 23.1.4 (pinned release) and Ninja
         id: toolchain
         timeout-minutes: 20
         run: |
@@ -1117,11 +1241,11 @@ jobs:
           echo "$LLVM_SHA256  $archive" | sha256sum --check --strict
           sudo mkdir -p "$GG_LLVM"
           sudo tar -xJf "$archive" -C "$GG_LLVM" --strip-components=1 \
-            "$name/bin/clang" "$name/bin/clang++" "$name/bin/clang-20" \
-            "$name/bin/llvm-symbolizer" "$name/lib/clang/20"
+            "$name/bin/clang" "$name/bin/clang++" "$name/bin/clang-23" \
+            "$name/bin/llvm-symbolizer" "$name/lib/clang/23"
           echo "$GG_LLVM/bin" >> "$GITHUB_PATH"
           "$GG_LLVM/bin/clang++" --version
-          ls "$GG_LLVM/lib/clang/20/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
+          ls "$GG_LLVM/lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.rtsan.a"
 
       - name: Save the LLVM archive
         if: ${{ !cancelled() && matrix.sanitizer == 'rtsan' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.llvm_cache.outputs.cache-hit != 'true' && steps.toolchain.outcome == 'success' }}
@@ -1201,15 +1325,15 @@ jobs:
           key: ccache-sanitizers-${{ matrix.sanitizer }}-llvm-${{ env.LLVM_VERSION }}-${{ github.sha }}
 
   # Nightly and on dispatch only (M2 close spec §6.3): the README's Linux line, from nothing. A
-  # bare ubuntu:22.04 container has none of the packages the hosted image carries, so a package
+  # bare ubuntu:24.04 container has none of the packages the hosted image carries, so a package
   # missing from scripts/bootstrap-linux.sh fails here and nowhere else. It installs, clones the
   # repository (public), checks out the commit under test, then configures, builds and tests the
   # dev preset.
   bootstrap-fresh-linux:
     name: bootstrap (linux, fresh container)
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-22.04
-    container: ubuntu:22.04
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
     timeout-minutes: 90
     steps:
       # No git in the container: the checkout action falls back to the REST archive.
