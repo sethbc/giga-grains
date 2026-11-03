@@ -657,3 +657,36 @@ TEST_CASE("the delay and limiter do not allocate", "[core][fx][rt]")
         }
     }
 }
+
+TEST_CASE("the delay's echo through the processor moves without a step", "[core][fx]")
+{
+    // Row 369. The same render with Delay Amount 1 and 0 (no reverb, no feedback): the difference
+    // is the delay's return alone. Delay Time moves from 100 ms to 50 ms mid-render; the read
+    // glides at half a sample a sample, so the echo's slope is at most 1.5 times the wet's, and no
+    // step of it after the move is more than 1.6 times the wet's own largest.
+    constexpr int64_t kFrames = 24000, kMove = 12000;
+    const auto renderWith = [&](float amount) {
+        Processor p({kRate, 4096, 41, Mode::Fx});
+        hotLayers(p);
+        p.setBase(ParamSlot::ReverbAmount, 0.0f);
+        p.setBase(ParamSlot::DelayAmount, amount);
+        p.setBase(ParamSlot::DelayFeedback, 0.0f);
+        p.setBase(ParamSlot::DelayTime, -3.3219281f); // 100 ms
+        const std::vector<TimedEvent> events{{kMove, ParamSlot::DelayTime, false, -4.3219281}};
+        Stereo out = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {256}, events, out);
+        return out;
+    };
+    const Stereo dry = renderWith(0.0f);
+    const Stereo wet = renderWith(1.0f);
+    REQUIRE(peakIn(dry.left, 0, kFrames) > 0.1f);
+    std::vector<float> echo(kFrames);
+    for (size_t i = 0; i < echo.size(); ++i)
+    {
+        echo[i] = wet.left[i] - dry.left[i];
+    }
+    REQUIRE(allFinite(echo));
+    CHECK(peakIn(echo, kMove, kFrames) > 0.05f);
+    const float own = largestStep(dry.left, 0, kFrames);
+    CHECK(largestStep(echo, kMove, kFrames) <= 1.6f * own);
+}
