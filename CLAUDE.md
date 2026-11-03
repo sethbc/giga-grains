@@ -198,10 +198,19 @@ no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CX
 1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
 summary.
 
+**The required checks** (INTENT §23 #77). `main`'s ruleset requires two: `ci-ok` and
+`clang-format`. `ci-ok` passes only when `plan`, every build leg and every sanitizer job passed. A
+pull request whose every changed file is under `docs/`, or is `INTENT.md` or `CLAUDE.md`, is
+documents only: `plan` says so, the build legs and the sanitizers skip, and `ci-ok` passes on the
+skip in about a minute. Any other Markdown file counts as code (`THIRD_PARTY_NOTICES.md` is
+embedded in the editor, the content and installer READMEs are staged into the products, and the
+root `README.md` is checked by a test). Pushes, the nightly, dispatches and tags always run
+everything.
+
 **CI's sanitizer jobs** (INTENT §23 #74). ASan + UBSan runs in six shards side by side, each
 running every sixth test (`ctest -I <shard>,,6`; a fixture's setup test joins any shard that needs
-it), and RTSan in a seventh job. `sanitizers (asan, rtsan)`, the check the `main` ruleset requires
-and the release job needs, passes only when all seven pass. ASan leaves out the `slow` tests
+it), and RTSan in a seventh job. `sanitizers (asan, rtsan)`, the check the release job needs, passes
+only when all seven pass. ASan leaves out the `slow` tests
 (`-LE slow`) on a pull request and a push to `main`, and runs them on the nightly, a dispatch and a
 tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -I 3,,6 -LE slow`.
 
