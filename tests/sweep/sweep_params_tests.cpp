@@ -640,6 +640,7 @@ TEST_CASE("sweep: kLimiterDrive covers a mode fade into Peak at any call boundar
     // sine clicks 461 samples into the 480-sample mode fade, in the call before the first one
     // whose gain passes -6 dB. The exemption is by samples: the fade's every sample is covered
     // whatever the calls, the dip's included, so the check passes at every phase of the calls.
+    bool dipInDrivenCall = false, dipInQuietCall = false;
     for (const uint32_t block : {64u, 480u, 1000u})
     {
         for (const int64_t phase : {int64_t{0}, int64_t{1}, int64_t{29}, int64_t{63}, int64_t{200}})
@@ -652,26 +653,55 @@ TEST_CASE("sweep: kLimiterDrive covers a mode fade into Peak at any call boundar
             const int64_t fadeAt = d.clock();
             d.set(ParamSlot::LimiterCeiling, -18.0);
             d.set(ParamSlot::LimiterMode, 2.0);
-            d.play(2.0, Material::SineLive);
             // The mode applies on the Processor's 32-sample control grid. Every sample of the
             // fade from there, the dip at 461 among them, and 10 ms past it.
             const int64_t fadeStart = (fadeAt + 31) / 32 * 32;
+            const int64_t dip = fadeStart + 461;
+            // One call at a time, so the call holding the dip can be told from the others.
+            while (d.clock() < fadeAt + 2 * 48000)
+            {
+                const int64_t before = d.clock();
+                d.play(static_cast<double>(block) / SweepDriver::kRate, Material::SineLive);
+                if (before <= dip && dip < d.clock())
+                {
+                    const bool driven =
+                        d.processor().limiterDrive().leastGain < SweepDriver::kPeakDriveGain;
+                    (driven ? dipInDrivenCall : dipInQuietCall) = true;
+                }
+            }
             for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
             {
                 INFO("sample " << i << " into the fade");
                 CHECK(d.exemptAt(fadeStart + i));
             }
+            // The control: the render clicks without the exemption.
+            CHECK(d.wholeRenderClickScore() > gg::test::chainBound(d, 0.2).clickLimit);
             const auto v = d.check(gg::test::chainBound(d, 0.2));
             INFO(v.where);
             CHECK(v.where.empty());
         }
     }
+    // Both arrangements came up: the dip in a call whose gain passes -6 dB (the call-based
+    // exemption missed it) and in one whose gain stays above (the arrangement that was exempt).
+    CHECK(dipInDrivenCall);
+    CHECK(dipInQuietCall);
 }
 
 TEST_CASE("sweep: kLimiterDrive does not cover a mode fade into Soft or Off", "[sweep]")
 {
     // At -9 dB the sine stays under twice the ceiling, so Soft isn't driven, and a step planted
     // inside the fade still scores. Nothing of the fade is exempt, and the Peak tap stays idle.
+    // (Peak's fade toward Soft: below, with Peak driven the calls are exempt by D5b, so the
+    // narrowness is the fade's own samples once Peak has stopped being in use.)
+    const auto scoresStep = [](SweepDriver &d, int64_t at) {
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        plantStepFrom(d, at);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, static_cast<std::size_t>(at)));
+    };
     SECTION("into Soft")
     {
         SweepDriver d(Mode::Fx, 1302, 64);
@@ -687,13 +717,7 @@ TEST_CASE("sweep: kLimiterDrive does not cover a mode fade into Soft or Off", "[
         {
             CHECK(!d.exemptAt(fadeAt + i));
         }
-        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
-        REQUIRE(d.check(c).where.empty());
-        plantStepFrom(d, fadeAt + 240);
-        const auto v = d.check(c);
-        INFO(v.where);
-        CHECK(v.clickScore > c.clickLimit);
-        CHECK(namesSample(v.where, static_cast<std::size_t>(fadeAt + 240)));
+        scoresStep(d, fadeAt + 240);
     }
     SECTION("into Off, from Soft")
     {
@@ -710,6 +734,26 @@ TEST_CASE("sweep: kLimiterDrive does not cover a mode fade into Soft or Off", "[
         {
             CHECK(!d.exemptAt(fadeAt + i));
         }
+        scoresStep(d, fadeAt + 240);
+    }
+    SECTION("out of Peak, into Soft")
+    {
+        // Peak at -9 dB holds its gain above -6 dB, so only the fade into Peak (at the start) is
+        // exempt; the fade out of it, a second on, is not.
+        SweepDriver d(Mode::Fx, 1304, 64);
+        limiterBed(d);
+        d.set(ParamSlot::LimiterCeiling, -9.0);
+        d.set(ParamSlot::LimiterMode, 2.0);
+        d.play(1.0, Material::SineLive);
+        const int64_t fadeAt = d.clock();
+        d.set(ParamSlot::LimiterMode, 1.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(d.processor().peakFadeSpan().first < 0);
+        for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+        {
+            CHECK(!d.exemptAt(fadeAt + i));
+        }
+        scoresStep(d, fadeAt + 240);
     }
 }
 
@@ -717,7 +761,8 @@ TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[
 {
     // Soft at -24 dB has the cloud at about eight times its ceiling: exempt. At -9 dB the input
     // stays under twice it, and Peak at -9 dB holds its gain above -6 dB: nothing is exempt, so
-    // a planted step fails there and the scored share is the unlimited render's.
+    // a planted step fails there. (The render's start enters Peak or Soft from Off: Peak's mode
+    // fade is exempt by K-2, 960 samples with its tail.)
     const auto render = [](double mode, double ceiling) {
         auto d = std::make_unique<SweepDriver>(Mode::Fx, 1205);
         limiterBed(*d);
