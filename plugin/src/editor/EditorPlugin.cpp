@@ -200,7 +200,8 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         std::shared_ptr<const gg::SampleBuffer> buffer;
         try
         {
-            buffer = media().captureRing(layer, splice, *p);
+            // The lane's Capture: the splice the engine plays (carry-over row 386).
+            buffer = media().captureRing(layer, splice, *p, true);
         }
         catch (const std::bad_alloc &)
         {

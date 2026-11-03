@@ -1214,6 +1214,55 @@ TEST_CASE("a capture with splice 0 under Loop is the last L frames", "[plugin]")
     }
 }
 
+TEST_CASE("the lane's capture with Loop on takes the splice the engine plays", "[plugin]")
+{
+    // Row 386: with Loop on and the marks older than the loop, the engine plays Splice 1 from the
+    // first mark in storage (SP-T1a/b); the lane's capture (asPlayed, the editor's) takes those
+    // frames, where a capture's own numbering (SP-T8a, gg-render's) finds no mark inside the loop
+    // and takes the loop window.
+    gg::test::useMediaScratch("ring-capture-played");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.activate(kRate, kBlock));
+    setParam(fx, idOf(LayerParam::Loop, 0), 1.0);
+    setParam(fx, idOf(LayerParam::LoopLength, 0), -2.0);                 // 0.25 s: 12,000 frames
+    render(fx, 200, 81);                                                 // 102,400 frames
+    fx.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 1.0f}); // 48,000 behind
+    render(fx, 1, 82);
+    fx.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 0.5f}); // 24,000 behind
+    render(fx, 1, 83);
+    setParam(fx, idOf(LayerParam::Splice, 0), 1.0);
+    render(fx, 1, 84);
+    const auto *processor = fx.impl().processor();
+    const auto marks = processor->engine(0).live().splices();
+    REQUIRE(marks.size() == 2);
+    const int64_t head = processor->engine(0).live().head();
+    REQUIRE(marks[1] < head - 12000); // both older than the loop
+    // The engine's window is splice 1, [marks[0], marks[1]).
+    CHECK(processor->ringMeta(0).windowFrames == marks[1] - marks[0]);
+    const std::vector<float> window = gg::test::ringWindow(*processor, 0);
+    const int64_t oldest = head - static_cast<int64_t>(window.size() / 2);
+    auto &media = fx.impl().media();
+    const auto played = media.captureRing(0, 1, *processor, true);
+    REQUIRE(played != nullptr);
+    CHECK(played->frames() == marks[1] - marks[0]);
+    CHECK(interleaved(*played) == std::vector<float>(window.begin() + 2 * (marks[0] - oldest),
+                                                     window.begin() + 2 * (marks[1] - oldest)));
+    // A k past the count is the last splice, to the head, as the engine plays it.
+    const auto last = media.captureRing(0, 9, *processor, true);
+    REQUIRE(last != nullptr);
+    CHECK(last->frames() == head - marks[1]);
+    // SP-T8a's numbering (gg-render's): no mark inside the loop, so the loop window.
+    const auto own = media.captureRing(0, 1, *processor);
+    REQUIRE(own != nullptr);
+    CHECK(own->frames() == 12000);
+    CHECK(interleaved(*own) == std::vector<float>(window.end() - 2 * 12000, window.end()));
+    // Splice 0 with asPlayed: the loop window too, which the engine plays then.
+    const auto whole = media.captureRing(0, 0, *processor, true);
+    REQUIRE(whole != nullptr);
+    CHECK(whole->frames() == 12000);
+}
+
 TEST_CASE("a ring held at deactivation comes back at the next activation", "[plugin]")
 {
     // D1's rings outlive a deactivation, as a sample does: kept, then restored before the first

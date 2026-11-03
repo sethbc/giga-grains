@@ -197,7 +197,9 @@ struct EditorContext
     /// while inactive; applied at the next process().
     std::function<void(uint8_t layer, RingCommand, float seconds)> ringCommand;
     /// Captures layer `layer`'s ring window (`splice` 0), or its splice k >= 1, into layer
-    /// `target` as an in-memory sample. "" on success, else the message for the user:
+    /// `target` as an in-memory sample. Splice k is the one the engine plays for the Splice
+    /// parameter at k (numbered from the first mark in storage, Loop ignored: what the lane
+    /// outlines; carry-over row 386). "" on success, else the message for the user:
     /// "the plugin isn't running", "no ring to capture", or the target's status after the memory
     /// cap refused it.
     std::function<std::string(uint8_t layer, uint32_t splice, uint8_t target)> captureTo;

@@ -25,15 +25,19 @@ void setRingReadHook(RingReadHook hook) { ringReadHook.store(hook); }
 Span spanOf(const RingSpanRequest &request, const core::RingMeta &meta, int64_t r0, int64_t n,
             std::vector<int64_t> &marks)
 {
-    int64_t lo = std::max<int64_t>(0, r0 - n);
+    const int64_t stored = std::max<int64_t>(0, r0 - n);
+    int64_t lo = stored;
     if (request.loop)
     {
         lo = std::max(lo, r0 - std::max<int64_t>(1, request.loopFrames));
     }
+    // The splices are numbered inside the window, or (fromStorage, a splice selected) from the
+    // first mark in storage, Loop ignored, as the engine numbers the Splice parameter's.
+    const int64_t numberedFrom = request.fromStorage && request.splice != 0 ? stored : lo;
     marks.clear();
     for (uint32_t k = 0; k < std::min<uint32_t>(meta.spliceCount, core::kMaxSplices); ++k)
     {
-        if (meta.splices[k] >= lo && meta.splices[k] < r0)
+        if (meta.splices[k] >= numberedFrom && meta.splices[k] < r0)
         {
             marks.push_back(meta.splices[k]);
         }
