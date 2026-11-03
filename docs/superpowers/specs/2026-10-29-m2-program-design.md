@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the director 2026-10-29** (brainstorming; builder check and decisions 5 to 8 the same day; INTENT §23 #64). Not yet built: wave 1 starts with the programme plan |
+| **Status** | **Approved by the director 2026-10-29** (brainstorming; builder check and decisions 5 to 8 the same day; INTENT §23 #64). In progress: sub-projects 1 to 6 built and merged (§23 #65, #66, #68 to #71); sub-project 7 (the close) running; amended as marked |
 | **Milestone** | M2 (Giga), tagged 0.2.0 as an unpublished draft release at its close (INTENT §20, §23 #62) |
 | **Depends on** | M1 closed (§23 #60); the installers and release pipeline merged (PR #13, §23 #61) |
 | **Authority** | INTENT.md. This document places every M2 deliverable in a sub-project. Each sub-project then gets its own spec, plan, build and review, as M1's did (§23 #35). Part II changes below each add a dated §23 row |
@@ -59,8 +59,9 @@ each and of the milestone (§6, §9).
 - Every item in §5's inventory built, or closed with a recorded reason, by M2's close.
 - Both products render bit-identically to M1 with every new feature at rest: the 22 M1 goldens keep
   their WAV SHA-256s through the whole milestone, except where a commit says why one moved (§7.6).
-- No CPU regression on the §16 headline case: `engine-sample`'s ratios against M1's baselines show
-  no `regressed` verdict on any CI model at the close (§20's exit criterion, §23 #41).
+- No CPU regression on the §16 headline case: `engine-sample`'s ratios against the committed
+  baselines (M1's on `mac-universal`; on x86 the entries remade at the AVX2 task, §23 #66) show no
+  `regressed` verdict on any CI model at the close (§20's exit criterion, §23 #41).
 - Deferred items are logged in `docs/m2-carry-over.md` and listed in each sub-project's final
   report (the carry-over count rules were retired by the director on 2026-10-30; §8 is history).
 - Listening gate #2 passed by the director on the packs the sub-projects rendered.
@@ -97,8 +98,8 @@ each and of the milestone (§6, §9).
   stays out of this repository's history (§12; §7.8).
 - The process is M1's: one branch and draft PR per sub-project; spec → plan → build → review;
   `scripts/check.sh` across `dev,asan,rtsan` and CI green before merge; goldens updated with
-  `scripts/update-goldens.sh` and the WAV hashes reported; the carry-over counted at each
-  sub-project's start and end.
+  `scripts/update-goldens.sh` and the WAV hashes reported; the deferred items listed in each
+  sub-project's final report (the count rules are retired, §23 #67).
 - The gg-bench `reference` kernel is frozen; it is never edited to follow the engine, so every
   baseline stays valid.
 
@@ -123,8 +124,9 @@ each and of the milestone (§6, §9).
 - **Waves (chosen, pending the director's confirmation).** The hub sub-project runs alone, then the
   three engine-side sub-projects run in parallel, then presets and views in parallel, then the
   close: four waves instead of seven steps. Each wave's sub-projects branch from the same `main`,
-  own disjoint areas (§6, "Owns"), and merge in a fixed order, each rebased on the one before and
-  re-verified. The cost is merge work in the shared files (`Processor`, `ParamIds.h`, the golden
+  own disjoint areas (§6, "Owns"), and merge as each is ready (§23 #88; first drafted as a fixed
+  order, each rebased on the one before and re-verified), the later one rebasing on, or merging,
+  the merged result and then re-verifying (the director, 2026-11-02, §23 #84). The cost is merge work in the shared files (`Processor`, `ParamIds.h`, the golden
   hash list), bounded by the ownership rules and the reservations §7.1 and §7.5 make in wave 1.
 
 **The split.** Five sub-projects were proposed; the inventory made the fourth two sub-projects'
@@ -146,10 +148,10 @@ belongs to two is listed under the one that finishes it.
 | I6 | Pitch spread (per-grain pitch distribution) and the canvas's y axis freed from pan | §17 ("one pitch until M2's spread") | 1 (engine); 6 (canvas) |
 | I7 | C++23 with a toolchain floor raise | §22, §23 #51 | 1 (first task; §7.9) |
 | I8 | The resample/feedback source; the instrument's Feedback and its Macro 7 recipe | §4, §14 (Feedback), §17, §18, §20 | 2 |
-| I9 | Carry-over 118, 119: the source-mode switch under the RT tripwire, and a fade instead of a hard cut | `docs/m2-carry-over.md` | 2 |
+| I9 | Carry-over 118, 119: the source-mode switch under the RT tripwire, and a fade instead of a hard cut | `docs/m2-carry-over.md` | 1 (moved from 2, 2026-10-29; ratified by the director, §23 #65, #85) |
 | I10 | Minutes-long live buffers; minutes-long samples; the 600 s cap replaced | §5, §14 (Loading, Live ring), §20 | 2 |
 | I11 | Memory: a per-instance cap shown in the UI; a process-wide sample pool | §14 (Memory management), §21 | 2 (cap and pool); 6 (shown) |
-| I12 | Persistence: `AUDI` (FLAC embed, `embed=1`), the 32 MB per-instance embed cap, the captures folder for larger ones, saving the live ring and captures; Freeze no longer "live until toggled" where the ring is restored | §18, §14 (Freeze; §23 #40), §20 | 2 |
+| I12 | Persistence: `AUDI` (float32 WAV payloads, `embed=1`; §23 #68), the 32 MB per-instance embed cap, the captures folder for larger ones, saving the live ring and captures; Freeze no longer "live until toggled" where the ring is restored | §18, §14 (Freeze; §23 #40), §20 | 2 |
 | I13 | Collect and save | §18 (Missing media) | 2 |
 | I14 | The budget manager: fixed weights per tier and channel count, the overload ladder (tier, drop, steal with fades), per-layer and per-voice quotas; carry-over 51 | §14 (Grain pool; Deterministic CPU budget), §16, §20 | 3 |
 | I15 | The pool up to 16,384 grains | §14 | 3 |
@@ -175,7 +177,7 @@ belongs to two is listed under the one that finishes it.
 | I35 | §17's basics: keyboard navigation, light and dark themes, color-blind-safe layer palette, resizing and HiDPI kept | §17 (Basics) | 6 |
 | I36 | The timeboxed GPU-canvas spike (Visage or native Metal/GL) | §17, §23 #26 | 6 |
 | I38 | The live buffer's operations: overdub (smoothed gains, crossfaded seams), loop length, splices, record/capture into an embedded or filed capture; the Perform gestures for freeze, record and drop | §4, §5, §14 (Live ring), §17 (Direct manipulation); decision 6 | 2 (the operations); 6 (the gestures); 5 (presets using them) |
-| I37 | Listening gate #2; benchmarks against M1's baselines; the carry-over burn-down; INTENT §20 marked; the 0.2.0 draft | §20, §19, §23 #41 | 7 |
+| I37 | Listening gate #2; benchmarks against the committed baselines (§2); the carry-over swept (§23 #67); INTENT §20 marked; the 0.2.0 draft | §20, §19, §23 #41 | 7 |
 
 Items the inventory leaves where INTENT puts them, outside M2: carry-over 184 (M3, the Voice
 scheduler); rows 144 and 148 (1.0.0); rows 85, 87, 88, 218 and 232 (upstream bumps; §8 says what
@@ -183,8 +185,8 @@ M2 does if a bump happens inside it).
 
 ## 6. The seven sub-projects, in four waves
 
-Each goes through spec → plan → build → review on its own branch and draft PR. Each spec records
-its carry-over count at start and end, names its goldens and benchmark cases, and renders its A/B
+Each goes through spec → plan → build → review on its own branch and draft PR. Each spec lists its deferred
+items (the count rules are retired, §23 #67), names its goldens and benchmark cases, and renders its A/B
 pack into `docs/listening/m2-<name>/` for the record, to be listened to at sub-project 7. Each
 INTENT Part II change it makes adds a §23 row in the same change.
 
@@ -205,14 +207,18 @@ INTENT Part II change it makes adds a §23 row in the same change.
   the Mod view, the About box, themes, keyboard navigation, the GPU spike) proceed at once; the
   work that needs wave 2's parameters (voicing the presets; the Edit panels for wave-2
   parameters, the FX view, the memory readout) waits in their plans until wave 2 has merged,
-  and they merge after it, rebased. The wave-1 worker likewise starts while the programme's own
+  and they merge after it, rebasing on, or merging, the merged result. The wave-1 worker likewise starts while the programme's own
   PR is in CI, branched from that PR's commits.
 - The sub-projects of a wave branch from that `main`. Each **owns** the directories and files its
   entry names and may edit the shared files (`core/include/gg/core/Processor.h` and its sources,
   `ParamIds.h`, `tests/CMakeLists.txt`, the golden hash list, INTENT) only within its own additions.
-- **Merge order within a wave is fixed** (3, then 2, then 4; 5, then 6). Each later one rebases on
-  the merged result, re-runs `scripts/check.sh`, the goldens and its benchmark cases, and re-states
-  its hash claim before it merges. Conflicts are the later one's to resolve.
+- **A wave's sub-projects merge as each is ready** (the director, 2026-10-30, about 23:45; §23
+  #88). Each later one rebases on, or merges, the merged result (§23 #84), then re-runs
+  `scripts/check.sh`, the goldens and its benchmark cases, and re-states its hash claim before it
+  merges. Conflicts are the later one's to resolve. This section first fixed the order (3, then 2,
+  then 4; 5, then 6). What happened: sub-project 3 (PR #16, then PR #23), then wave 3's presets
+  group 1 (PR #17) and views PR 1 (PR #18), then sub-projects 2 (PR #19) and 4 (PR #20), then
+  views PR 2 (PR #24) before presets group 2 (PR #25).
 - One wave's sub-projects share no new parameter indices, chunk IDs or patch version (§7.1, §7.5).
 - A sub-project that finds it needs another's unfinished work stops at the boundary and takes the
   dependency in the next wave rather than copying the other's code.
@@ -221,7 +227,7 @@ INTENT Part II change it makes adds a §23 row in the same change.
 
 **Delivers:** I1 to I7. Four layers in the engine and the `Processor`, each owning a source, a
 scheduler and a grain stream, summed in a fixed order into the mix; XY morph as a modulation-free
-mixer law in the engine (the pad comes in 6); per-layer parameters in scopes 2 to 4 mirroring scope
+mixer law in the `Processor` (`gg-core`; the pad comes in 6); per-layer parameters in scopes 2 to 4 mirroring scope
 1's indices, and the new globals (morph X and Y, per-layer level and on/off) appended in scope 0;
 the task-split renderer with CLAP `thread-pool` support, bit-identical with and without a pool; the
 mod matrix with every §14 source and its determinism rules (§7.3), the eight macros re-targeted
@@ -229,7 +235,7 @@ onto it as fixed factory routings with their M1 depths; pitch spread as a per-gr
 remote-controls pages for layers B to D; `gg-render` specs addressing layers; the C++23 move as the
 first task (§7.9).
 
-**Owns:** `engine/` (Engine, the layer and task structure, the mod matrix and its sources), the
+**Owns:** `engine/` (the per-layer Engine, the task runner), `gg-core`'s mod matrix and sources (layers spec §5), the
 `Processor`'s layer and routing structure and the chain of §7.2, the source interface (read, plus a
 mip-level accessor that returns one level until sub-project 3), the Source-kind parameter, the
 patch migration, `ParamIds.h` and `ParamMap.h`, `tools/gg-render`'s spec, the toolchain (§7.9).
@@ -252,14 +258,14 @@ check is recorded (I4) and §22's row resolved (its in-host half at the close, b
 
 ### 6.2 Sub-project 2: Sources and persistence
 
-**Delivers:** I8 to I13 and I38's operations. The resample source: a per-layer tap on the instance's output (one block
+**Delivers:** I8, I10 to I13 and I38's operations. The resample source: a per-layer tap on the instance's output (one block
 late, §14) that a layer can granulate, giving the instrument Feedback and a writable buffer; the
 source-mode switch made reachable, fading sounding grains instead of clearing the pool (rows 118,
-119); the ring and sample caps replaced by the per-instance memory cap, with a process-wide sample
+119, moved to sub-project 1, I9, §23 #65); the ring and sample caps replaced by the per-instance memory cap, with a process-wide sample
 pool deduplicating files across instances; minutes-long rings and samples, with the ring-length
 parameter (§7.2); the incremental halfband pyramids of the live and resample buffers, built after
-sub-project 3 merges its file pyramid and level selection (it merges first); the `AUDI` chunk (FLAC
-through libFLAC, `embed=1`), the 32 MB embed cap and the captures folder; the ring saved and
+sub-project 3 merges its file pyramid and level selection (it merges first); the `AUDI` chunk (float32
+WAV payloads, `embed=1`; §23 #68), the 32 MB embed cap and the captures folder; the ring saved and
 restored, which lets Freeze hold a restored ring (§23 #40 amended); `MEDI` version 2 with up to four
 samples; collect and save; **the ring's operations** (decision 6): overdub with a smoothed gain and
 crossfaded seams, a loop length within the ring, splices (marks the scan can address, saved with
@@ -273,7 +279,7 @@ adoption and resample tap. Wave 2, merged second.
 **Exit:** a session with a frozen minutes-long ring reopens and renders bit-identically on another
 machine with its captures folder; a 16 s ring at Freeze renders bit-identically to M1 when nothing
 is embedded; the memory cap refuses a load deterministically with a status; the RT tripwire covers
-the mode switch both ways; libFLAC is pinned; new goldens cover resample feedback in the instrument,
+the mode switch both ways; no new codec dependency (float32, §23 #68); new goldens cover resample feedback in the instrument,
 a restored ring, and a four-sample instrument; `gg-render` loads `AUDI` from a spec.
 
 **INTENT:** §14 (Loading, Memory management, Live ring, Feedback), §18 (`AUDI`, `MEDI` v2, captures,
@@ -334,6 +340,8 @@ installers' Content component filled, and the plugins' content search path (§7.
 --preset`; Mutate with locks and an amount, on the main thread; the browser (tags, favorites,
 search, INIT) replacing the header's "Init".
 
+**It ran as two PRs** (group 1, PR #17; group 2, PR #25; §23 #70), which the paragraph above did not foresee.
+
 **Owns:** the preset system in `plugin/` and `core/` (discovery, `preset-load`, the preset
 container's reading), `scripts/fetch-content.sh` and the installers' Content component, the content
 repository, the browser's UI files, Mutate. Wave 3, merged first.
@@ -356,8 +364,7 @@ spike, timeboxed to one plan task, ending in `docs/spikes/m2-gpu-canvas.md` and 
 (the CPU renderer stays unless the spike beats it on the §16 UI budget with no new platform risk).
 
 **Its spec may split it into two PRs** (Perform and Edit; Mod, FX, About and the spike) if the plan
-exceeds M1's Perform UI in size, which it will. Both PRs belong to sub-project 6 for the carry-over
-count.
+exceeds M1's Perform UI in size, which it will. Both PRs belong to sub-project 6 (PRs #18 and #24).
 
 **Owns:** `ui/` and `plugin/src/editor/` apart from the browser's files; the spike under
 `docs/spikes/`. Wave 3, merged second. Its Edit panels take their parameter list from `ParamIds.h`
@@ -378,8 +385,9 @@ ratio explained or fixed; the carry-over burned down (§8); INTENT §20's M2 row
 §16's figures updated; `GG_VERSION_PRERELEASE` emptied and `docs/releases/v0.2.0.md` written; the
 `v0.2.0` tag pushed and the draft release left unpublished, as `docs/releasing.md` says.
 
-**Exit:** the director passes the gate; no regressed ratio stands; the carry-over count is at or
-below its §8 target; `main` returns to `0.3.0-dev`.
+**Exit:** the director passes the gate; no regressed ratio stands; the carry-over is swept, every
+row closed or carrying the reason it waits, and the deferred items are listed in the close's report
+(§23 #67; the close's spec §1 replaces the count clause); `main` returns to `0.3.0-dev`.
 
 ## 7. Cross-cutting decisions
 
@@ -421,8 +429,8 @@ them):
   renders bit-identically to M1; the global delay and limiter rest as the identity (§7.7).
 - **The resample tap reads the instance output 256 samples late,** the quantum of M1's Feedback
   pieces, never the host block: block-size invariance is non-negotiable, and INTENT §14's "one
-  block of latency" is amended to say 256 samples. The tap costs nothing, and adds no latency,
-  while no layer's source is Resample.
+  block of latency" is amended to say 256 samples. The tap adds no latency; its history is two
+  stores a sample whatever the kinds (SP-T12ac, §23 #68).
 - **Source kind is a per-layer stepped CLAP parameter, defined in wave 1** with its whole
   enumeration (Sample, Live, Resample, Spectral Smear; Oscillator reserved for M5), a value whose
   kind isn't built yet clamped to Sample or Live until its sub-project lands, so sub-projects 2
@@ -481,10 +489,12 @@ preset is a `GGST` container** with `PTCH`,
 content-relative reference** beside `path` and `relative`, so a factory preset names its sample by
 its place in the content folder (§7.8) and sub-project 5 needs nothing from 2 after 2 merges. **The
 `AUDI` codec is sub-project 2's choice** between FLAC at 24 bits (small, not bit-exact for the
-ring's floats) and uncompressed float32 (exact, two to three times larger under the 32 MB cap), and
-the programme's criterion is worded for either: every machine that restores a session renders it
-identically, and the restore matches the saved session's own render within the goldens' metric
-tolerances; INTENT §18's "as FLAC" is amended if float32 wins. The memory cap is a setting, per
+ring's floats) and uncompressed float32 (exact, two to three times larger under the 32 MB cap); it
+chose float32 (§23 #68). The criterion as first worded: every machine that restores a session
+renders it identically, and the restore matches the saved session's own render within the goldens'
+metric tolerances. **Amended** (the director, 2026-11-02, §23 #78, K-1): every restore renders
+identically and restores the saved frames bit for bit; the clock and the grain index restart, so a
+restored session is not the saved session continuing (ruling SP-T7e). The memory cap is a setting, per
 instance, saved with the state; its default and ceiling are sub-project 2's.
 
 ### 7.6 Goldens and benchmarks
@@ -499,8 +509,9 @@ that sub-project, not carried.
 ### 7.7 The FX chain and buses (my addition, for the director to confirm)
 
 §20's row doesn't name the global delay, the limiter or the layer filter, but §14 draws them, §17
-gives them panels, and the director asked for everything: sub-project 4 builds them. The limiter
-keeps M1's soft-limiter law as its default so no golden moves; its stronger mode is opt-in. §22's
+gives them panels, and the director asked for everything: sub-project 4 builds them. The global limiter
+is Off by default, the identity, with M1's per-layer soft limiters kept, so no golden moves; Soft and Peak are
+opt-in (§23 #69). §22's
 buses question is answered in sub-project 4's spec by building two buses per layer with a filter
 each and measuring whether per-grain filters are still wanted (my expectation: they wait for M5's
 budget weights, as §14 says).
@@ -514,8 +525,10 @@ like), each recorded with its URL, author, license and SHA-256 before it is admi
 our own tools generate (gg-render and scripts; textures, sweeps, noises that granulate well),
 recorded as the command that made them. Nothing without a CC0 statement; no recordings are planned. CI fetches it at a pinned tag
 and SHA-256 into the installers' Content component (release-pipeline spec §6.9); a local
-`scripts/fetch-content.sh` does the same into `build/content`. The plugins search the installed
-Content folder, then a user content folder in the settings file. Nothing from it enters this
+`scripts/fetch-content.sh` does the same into a folder it is given, and the `gg-content` target
+fetches into `build/<preset>/content-cache/content/`. The plugins search four roots in this order
+(`media/include/gg/media/ContentPaths.h`; presets spec §6.4, §23 #70): `GG_CONTENT_DIR`, the user's
+`contentFolder` setting, the per-user install and the system install. Nothing from it enters this
 repository's history. Not LFS: it costs money on GitHub and weighs every clone.
 
 ### 7.9 C++23
@@ -556,7 +569,7 @@ sub-project 7, whose checklist names each. A failure there is fixed in the close
 | Rows | Where | Expected at the close |
 |---|---|---|
 | 51 | Sub-project 3 | Closed |
-| 118, 119 | Sub-project 2 | Closed |
+| 118, 119 | Sub-project 1 (moved 2026-10-29; §23 #65, #85) | Closed (`263696d`) |
 | 217, 221 | Sub-project 6 | Closed |
 | 85, 87, 88, 218, 232 | Upstream bumps | Open unless a bump inside M2 fixes them. Sub-project 5 may bump clap-wrapper for preset discovery; if it does, it re-checks 87, 88 and 218 and runs the identity and AU state tests before accepting it |
 | 144, 148 | 1.0.0 | Open |
@@ -587,7 +600,7 @@ New rows number from 300. (The former target of 8 open rows and the no-net-growt
 | clap-wrapper's preset bridges or the selector parameter break identities or AU state | Identity and AU tests run on every bump; the bump is sub-project 5's and re-checks rows 87, 88, 218 |
 | The CC0 set's provenance | Each sample's source and license recorded in the content repository; nothing without a CC0 statement |
 | UI sub-project too large for one review | Two PRs under one sub-project (§6.6) |
-| Three parallel engine sub-projects collide in `Processor` and `Engine` | Ownership per entry (§6), fixed merge order with rebase and re-verification, reserved ID blocks (§7.1), one state-change owner (§7.5); the programme manager resolves what remains |
+| Three parallel engine sub-projects collide in `Processor` and `Engine` | Ownership per entry (§6), merge as each is ready, with rebase or merge and re-verification, reserved ID blocks (§7.1), one state-change owner (§7.5); the programme manager resolves what remains |
 | Sub-project 2 grows (persistence, the memory cap, the ring's operations) | Its spec may split into two PRs under one sub-project, as §6.6 allows the views |
 | A worker's spec drifts from this document or INTENT | The programme manager approves each spec against both before the plan; the director sees its forced choices (§12) |
 | The gate finds a sound problem six sub-projects deep | Every sub-project's pack exists from its own merge; fixes go through the close's fix wave, carried only if genuinely large |
@@ -602,13 +615,14 @@ layout; the GPU spike's candidate order; each sub-project's golden and benchmark
 
 ## 12. Execution: the agent hierarchy
 
-Decision 4 of §1. Three tiers, each on the model tier the project's practice assigns (reviews and
-decisions on the top tier; implementation on the tier below).
+Decision 4 of §1. Three tiers. The models are CLAUDE.md's rule ("Working style", the director, 2026-10-30): no
+Fable; name `model` on every dispatch; opus where "the most capable model" is called for,
+otherwise haiku for mechanical work and sonnet for integration and as the reviewer floor.
 
 - **The programme manager** is one session (this one's successor), driving the others as the
   `claude-session-driver` skill describes: it launches a worker session per sub-project when its
   wave opens, hands it this document and the sub-project's entry, reviews its spec, watches its
-  progress, reviews its PR, resolves merge order, and keeps the carry-over count. It writes no
+  progress, reviews its PR, resolves what the sub-projects' merges leave, and keeps the carry-over log. It writes no
   product code.
 - **A sub-project worker** is one Claude Code session per sub-project, in its own worktree
   (`scripts/worktree-setup.sh`), running the project's process end to end: brainstorm its spec from
