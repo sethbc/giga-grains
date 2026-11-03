@@ -340,19 +340,35 @@ grains); the variable changes nothing else.
 
 **32. Live 12, VST3, Giga Grains FX.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **33. Live 12, VST3, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **34. Live 12, AU, Giga Grains FX.** Steps S1 to S10. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S10 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **35. Live 12, AU, Giga Grains.** Steps S1 to S10. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S10 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **36. Bitwig, CLAP, Giga Grains FX.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **37. Bitwig, CLAP, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **38. Bitwig, VST3, Giga Grains FX.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **39. Bitwig, VST3, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **40. Once-only host checks.** The packs' longer host checklists stay in the packs as their
 record; these are the ones worth a sitting, each in the host named. Answer each bullet `pass` or
