@@ -296,14 +296,43 @@ class LiveSource
         return blockHead_ + std::min(t - blockStart_ + 1, blockAdvance_);
     }
 
+    /// The last write() block's window at head R(t) = `head`: its end E (the head, or while a
+    /// splice is in effect its later mark, at most the head) and its oldest frame O = E − W, which
+    /// the admission limit N′ (ruling SP-T12ad) holds to never below R(t) − N′ (+ kCapSlack while
+    /// the read limit waits), nor past E. One splice lookup serves both.
+    struct Window
+    {
+        int64_t end;
+        int64_t oldest;
+    };
+    Window windowAt(int64_t head) const noexcept
+    {
+        int64_t start = 0;
+        int64_t end = 0;
+        if (spliceAt(head, start, end))
+        {
+            const int64_t e = std::min(head, end);
+            if (blockAdmit_ == 0)
+            {
+                return {e, start};
+            }
+            return {e, std::min(e, std::max(start, head - blockAdmit_ + blockSlack_))};
+        }
+        if (blockAdmit_ == 0)
+        {
+            return {head, head - window_};
+        }
+        return {head, std::max(head - window_, head - blockAdmit_ + blockSlack_)};
+    }
+
     /// The window's end E at output sample t of the last write() block: headAt(t), or while a
     /// splice is in effect its later mark (at most the head), or headAt(t) for the last splice.
     /// Position and Spray read seconds behind it (Engine's admission clamp).
-    int64_t anchorAt(int64_t t) const noexcept { return windowEnd(headAt(t)); }
+    int64_t anchorAt(int64_t t) const noexcept { return windowAt(headAt(t)).end; }
 
     /// The window's oldest frame E − W at output sample t of the last write() block: never below
     /// R(t) − N, and R(t) − N itself with Loop off and no splice.
-    int64_t windowOldestAt(int64_t t) const noexcept { return windowOldest(headAt(t)); }
+    int64_t windowOldestAt(int64_t t) const noexcept { return windowAt(headAt(t)).oldest; }
 
     /// headRunAfter(t), or 0 while a splice is in effect at t: a splice's window doesn't move
     /// with the head (the last splice's end does, which admission then treats as still,
@@ -344,12 +373,17 @@ class LiveSource
     int64_t windowFramesAt(int64_t t) const noexcept
     {
         const int64_t head = headAt(t);
-        return windowEnd(head) - windowOldest(head);
+        const Window w = windowAt(head);
+        return w.end - w.oldest;
     }
 
     /// W in effect at the end of the last write() block (a splice's span, the loop or N): the
     /// length of the window as of head(), which a capture reads.
-    int64_t windowFrames() const noexcept { return windowEnd(head_) - windowOldest(head_); }
+    int64_t windowFrames() const noexcept
+    {
+        const Window w = windowAt(head_);
+        return w.end - w.oldest;
+    }
 
     /// The sample of the last write() block from which on the head stands still for the rest of
     /// the block: blockStart + the frames written in the block, which is the block's end unless
@@ -572,35 +606,6 @@ class LiveSource
             ++first;
         }
         return first;
-    }
-
-    // The last write() block's window at head R(t): its end E, and its oldest frame E − W, never
-    // below R(t) − N.
-    int64_t windowEnd(int64_t head) const noexcept
-    {
-        int64_t start = 0;
-        int64_t end = 0;
-        return spliceAt(head, start, end) ? std::min(head, end) : head;
-    }
-    // With the admission limit N′ (ruling SP-T12ad), never below R(t) − N′ (+ kCapSlack while the
-    // read limit waits), nor past the window's end.
-    int64_t windowOldest(int64_t head) const noexcept
-    {
-        int64_t start = 0;
-        int64_t end = 0;
-        if (spliceAt(head, start, end))
-        {
-            if (blockAdmit_ == 0)
-            {
-                return start;
-            }
-            return std::min(std::min(head, end), std::max(start, head - blockAdmit_ + blockSlack_));
-        }
-        if (blockAdmit_ == 0)
-        {
-            return head - window_;
-        }
-        return std::max(head - window_, head - blockAdmit_ + blockSlack_);
     }
 
     // Points the source at `storage` (nullptr: none), for prepare(), adoptStorage() and

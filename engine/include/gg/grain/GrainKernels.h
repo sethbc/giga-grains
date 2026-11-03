@@ -1186,9 +1186,9 @@ struct LiveInterior
 
 namespace detail
 {
-/// One part of liveInterior: the samples of [lo, hi) where R(t) = r0 + slope × (t − lo), with
-/// slope 1 or 0, satisfies the interior's conditions, reading at `decimation`. Requires lo < hi,
-/// live.enabled(), and a finite rate > 0 and invDuration > 0.
+/// One part of liveInterior: the samples of [lo, hi) that satisfy the interior's conditions, with
+/// the head R(t) advancing by `slope` (1 or 0) per sample from lo, reading at `decimation`.
+/// Requires lo < hi, live.enabled(), and a finite rate > 0 and invDuration > 0.
 ///
 /// The part ends at the grain's steal, if it comes before hi: hi becomes min(hi, fadeStart), so
 /// every fading sample goes through the reference (spec §6.5), as does the rest of a grain
@@ -1222,7 +1222,7 @@ namespace detail
 /// end (at most hi − lo). A part where the solution isn't finite is empty.
 template <class Reader, DecimationLike Dec>
 Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decimation, int64_t lo,
-            int64_t hi, int64_t r0, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
+            int64_t hi, int64_t slope) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     // A selected splice's window changes its lines where a mark leaves storage: the part ends
@@ -1257,8 +1257,9 @@ Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decim
             return false;
         }
         const int64_t head = live.headAt(t);
-        const int64_t end = live.anchorAt(t);
-        const int64_t oldest = live.windowOldestAt(t);
+        const LiveSource::Window window = live.windowAt(head);
+        const int64_t end = window.end;
+        const int64_t oldest = window.oldest;
         const auto r = static_cast<double>(end);
         if (!(r - 1.0 - (pos + kA) >= kM + 1.0 &&
               (pos - kB) - static_cast<double>(oldest) >= kM + 1.0))
@@ -1281,15 +1282,16 @@ Run liveRun(const GrainRows &rows, uint32_t i, const LiveSource &live, Dec decim
     //                     =: kTail
     // - pos >= b:         n >= onsetFrac + (b − startPos) / rate
     // - the phase:        onsetFrac <= n <= onsetFrac + duration
-    static_cast<void>(r0); // E(lo) is LiveSource::anchorAt(lo), the head r0 without a splice
     const auto s = static_cast<double>(slope);
     const double nLo = static_cast<double>(lo - onsetSample);
     const double nHi = static_cast<double>(hi - onsetSample); // exclusive
-    const int64_t endLo = live.anchorAt(lo);
-    const int64_t oldestLo = live.windowOldestAt(lo);
+    const LiveSource::Window windowLo = live.windowAt(live.headAt(lo));
+    const int64_t endLo = windowLo.end;
+    const int64_t oldestLo = windowLo.oldest;
     const bool steps = hi - lo > 1; // one sample has no slope to measure
-    const double sE = steps ? static_cast<double>(live.anchorAt(lo + 1) - endLo) : s;
-    const double sO = steps ? static_cast<double>(live.windowOldestAt(lo + 1) - oldestLo) : s;
+    const LiveSource::Window windowNext = steps ? live.windowAt(live.headAt(lo + 1)) : windowLo;
+    const double sE = steps ? static_cast<double>(windowNext.end - endLo) : s;
+    const double sO = steps ? static_cast<double>(windowNext.oldest - oldestLo) : s;
     const double rho0 = static_cast<double>(endLo) - sE * nLo;
     const double tail0 = static_cast<double>(endLo) - sO * nLo;
     const auto w0 = static_cast<double>(oldestLo - endLo);
@@ -1399,16 +1401,14 @@ LiveInterior liveInterior(const GrainRows &rows, uint32_t i, const LiveSource &l
     if (first < kink)
     {
         // The head advances by one per sample: R(t) = R(first) + (t − first).
-        const detail::Run run =
-            detail::liveRun<Reader>(rows, i, live, decimation, first, kink, live.headAt(first), 1);
+        const detail::Run run = detail::liveRun<Reader>(rows, i, live, decimation, first, kink, 1);
         in.begin[0] = run.begin;
         in.end[0] = run.end;
     }
     if (kink < last)
     {
         // The head stands still.
-        const detail::Run run =
-            detail::liveRun<Reader>(rows, i, live, decimation, kink, last, live.headAt(kink), 0);
+        const detail::Run run = detail::liveRun<Reader>(rows, i, live, decimation, kink, last, 0);
         in.begin[1] = run.begin;
         in.end[1] = run.end;
     }
@@ -1647,8 +1647,9 @@ Run liveLevelRun(const GrainRows &rows, uint32_t i, const LiveSource &live, uint
             return false;
         }
         const int64_t head = live.headAt(t);
-        const int64_t end = live.anchorAt(t);
-        const int64_t oldest = live.windowOldestAt(t);
+        const LiveSource::Window window = live.windowAt(head);
+        const int64_t end = window.end;
+        const int64_t oldest = window.oldest;
         if (!(static_cast<double>(end) - 1.0 - (pos0 + kA) >= kM + 1.0 &&
               (pos0 - kB) - static_cast<double>(oldest) >= kM + 1.0))
         {
@@ -1664,11 +1665,13 @@ Run liveLevelRun(const GrainRows &rows, uint32_t i, const LiveSource &live, uint
     const auto s = static_cast<double>(slope);
     const double nLo = static_cast<double>(lo - onsetSample);
     const double nHi = static_cast<double>(hi - onsetSample); // exclusive
-    const int64_t endLo = live.anchorAt(lo);
-    const int64_t oldestLo = live.windowOldestAt(lo);
+    const LiveSource::Window windowLo = live.windowAt(live.headAt(lo));
+    const int64_t endLo = windowLo.end;
+    const int64_t oldestLo = windowLo.oldest;
     const bool steps = hi - lo > 1;
-    const double sE = steps ? static_cast<double>(live.anchorAt(lo + 1) - endLo) : s;
-    const double sO = steps ? static_cast<double>(live.windowOldestAt(lo + 1) - oldestLo) : s;
+    const LiveSource::Window windowNext = steps ? live.windowAt(live.headAt(lo + 1)) : windowLo;
+    const double sE = steps ? static_cast<double>(windowNext.end - endLo) : s;
+    const double sO = steps ? static_cast<double>(windowNext.oldest - oldestLo) : s;
     const double rho0 = static_cast<double>(endLo) - sE * nLo;
     const double tail0 = static_cast<double>(endLo) - sO * nLo;
     const auto w0 = static_cast<double>(oldestLo - endLo);
