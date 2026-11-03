@@ -4,7 +4,7 @@
 
 #include "gg/grain/CloudScheduler.h"
 
-#include "gg/spectral/SpectralSource.h"
+#include "gg/spectral/SpectralConstants.h"
 
 namespace gg
 {
@@ -56,7 +56,7 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
         break;
     case SourceMode::Spectral:
         maxPosition = std::max(1.0, liveBound);
-        maxSpray = SpectralSource::kRingSeconds;
+        maxSpray = spectral::kRingSeconds;
         break;
     }
     const bool sprayInSeconds = mode_ == SourceMode::Sample && in.sprayInSeconds;

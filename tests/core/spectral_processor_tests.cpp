@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <memory>
 #include <numbers>
 #include <span>
@@ -28,6 +30,7 @@
 #include "gg/metrics/Metrics.h"
 #include "gg/source/PreparedSource.h"
 #include "gg/source/SampleBuffer.h"
+#include "gg/spectral/SpectralSource.h"
 #include "support/AllocTripwire.h"
 
 using gg::core::LayerParam;
@@ -301,4 +304,218 @@ TEST_CASE("a spectral layer alongside the others does not allocate", "[core][spe
         REQUIRE(allocations == 0);
     }
     REQUIRE(allFinite(o0));
+}
+
+namespace
+{
+using gg::core::CommandEvent;
+using gg::core::CommandKind;
+
+// A ring command at an absolute sample.
+struct TimedCommand
+{
+    int64_t time;
+    CommandKind kind;
+    uint8_t layer;
+    float value;
+};
+
+// Renders [from, to) of `input` through p in calls of `block` frames, each given the events and
+// commands inside it, into out[from, to). `after`, if given, runs after each call with the
+// call's first sample.
+void renderCommands(Processor &p, const Stereo &input, int64_t from, int64_t to, uint32_t block,
+                    const std::vector<TimedEvent> &events,
+                    const std::vector<TimedCommand> &commands, Stereo &out,
+                    const std::function<void(int64_t)> &after = {})
+{
+    std::vector<ParamEvent> blockEvents;
+    std::vector<CommandEvent> blockCommands;
+    std::size_t nextEvent = 0;
+    std::size_t nextCommand = 0;
+    for (int64_t done = from; done < to;)
+    {
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(block, to - done));
+        blockEvents.clear();
+        for (; nextEvent < events.size() && events[nextEvent].time < done + n; ++nextEvent)
+        {
+            const TimedEvent &e = events[nextEvent];
+            if (e.time >= done)
+            {
+                blockEvents.push_back(
+                    {static_cast<uint32_t>(e.time - done), e.slot, e.isModulation, e.value});
+            }
+        }
+        blockCommands.clear();
+        for (; nextCommand < commands.size() && commands[nextCommand].time < done + n;
+             ++nextCommand)
+        {
+            const TimedCommand &c = commands[nextCommand];
+            if (c.time >= done)
+            {
+                blockCommands.push_back(
+                    {static_cast<uint32_t>(c.time - done), c.kind, c.layer, c.value});
+            }
+        }
+        const auto j = static_cast<std::size_t>(done);
+        const float *in[2] = {input.left.data() + j, input.right.data() + j};
+        float *o[2] = {out.left.data() + j, out.right.data() + j};
+        p.process(in, 2, o, 2, n, blockEvents, {}, {}, blockCommands);
+        if (after)
+        {
+            after(done);
+        }
+        done += n;
+    }
+}
+
+// The analysis frames a Spectral layer over its ring computed in a render of calls of 32 frames
+// (the control grid, so each call is one engine block and the ring's window at the call's first
+// sample is still readable after it): at every hop boundary, its first material frame and the
+// window [windowOldestAt, anchorAt) at the hop.
+struct FrameRead
+{
+    int64_t hop;
+    int64_t start;
+    int64_t oldest;
+    int64_t end;
+};
+
+std::function<void(int64_t)> recordFrames(const Processor &p, uint8_t layer,
+                                          std::vector<FrameRead> &frames)
+{
+    return [&p, layer, &frames](int64_t t0) {
+        const gg::Engine &e = p.engine(layer);
+        const gg::SpectralSource &smear = *e.spectral();
+        if (t0 % static_cast<int64_t>(smear.hop()) == 0 && smear.active())
+        {
+            frames.push_back({t0, smear.lastRingFrameStart(), e.live().windowOldestAt(t0),
+                              e.live().anchorAt(t0)});
+        }
+    };
+}
+} // namespace
+
+TEST_CASE("a spectral layer over its ring reads inside the loop window", "[core][spectral]")
+{
+    // Row 381 (D-specwindow built): Loop on with a Loop Length of 1 s, Position 1.7 s behind the
+    // head, past the loop. Every analysis frame starts inside the window [windowOldestAt,
+    // anchorAt) and ends at or before its end, Position clamped to the loop's oldest frame.
+    constexpr int64_t kFrames = 3 * 48000;
+    FxRig rig;
+    rig.p.setBase(A(LayerParam::Loop), 1.0f);
+    rig.p.setBase(A(LayerParam::LoopLength), 0.0f); // log2 seconds: 1 s
+    rig.p.setBase(A(LayerParam::Position), 0.6f);   // (16/255)(2^4.8 - 1) = 1.69 s behind
+    const Stereo input = noise(kFrames, 0.5f, 92);
+    Stereo out = silence(kFrames);
+    std::vector<FrameRead> frames;
+    renderCommands(rig.p, input, 0, kFrames, 32, {}, {}, out, recordFrames(rig.p, 0, frames));
+    const int64_t n = rig.p.engine(0).spectral()->fftSize();
+    REQUIRE(frames.size() > 100);
+    int64_t clamped = 0;
+    for (const FrameRead &f : frames)
+    {
+        INFO("hop " << f.hop << ": start " << f.start << ", window [" << f.oldest << ", " << f.end
+                    << ")");
+        REQUIRE(f.end - f.oldest == 48000); // the loop, 1 s
+        REQUIRE(f.start >= f.oldest);
+        REQUIRE(f.start < f.end);
+        REQUIRE(f.start + n <= f.end);
+        clamped += f.start == f.oldest ? 1 : 0;
+    }
+    CHECK(clamped > 100); // Position past the loop reads from its oldest frame
+    CHECK(allFinite(out.left));
+    CHECK(peakIn(out.left, 48000, kFrames) > 1.0e-4f);
+}
+
+TEST_CASE("a spectral layer over its ring takes splice commands", "[core][spectral][source]")
+{
+    // Row 381: the ring commands reach a layer whose ring is read (gg::core::readsRing): a
+    // Spectral layer with no sample. One with a sample ignores them, as a Sample layer does. With
+    // a splice selected, the analysis reads inside it.
+    constexpr int64_t kFrames = 2 * 48000;
+    FxRig rig;
+    rig.p.setBase(gg::core::layerOnSlot(1), 1.0f);
+    rig.p.setBase(layerSlot(LayerParam::Source, 1), kSpectralKind);
+    rig.p.setSourceNow(1, noiseSample()); // B smears its sample
+    REQUIRE(rig.p.layerMaterial(0) == gg::SourceMode::Live);
+    REQUIRE(rig.p.layerMaterial(1) == gg::SourceMode::Sample);
+    const Stereo input = noise(kFrames, 0.5f, 93);
+    Stereo out = silence(kFrames);
+    renderCommands(rig.p, input, 0, 48000, 512, {}, {}, out);
+    renderCommands(
+        rig.p, input, 48000, 48032, 32, {},
+        {{48000, CommandKind::AddSplice, 0, 0.5f}, {48000, CommandKind::AddSplice, 1, 0.5f}}, out);
+    renderCommands(rig.p, input, 48032, 48064, 32, {}, {{48032, CommandKind::AddSplice, 0, 0.25f}},
+                   out);
+    // The boundaries are 48000 and 48032: 48000 - 0.5 x 48000 and 48032 - 0.25 x 48000.
+    const auto marks = rig.p.engine(0).live().splices();
+    CHECK(std::vector<int64_t>(marks.begin(), marks.end()) == std::vector<int64_t>{24000, 36032});
+    // B's ring exists and records, so no mark on it is the readsRing gate's doing.
+    REQUIRE(rig.p.engine(1).live().enabled());
+    CHECK(rig.p.engine(1).live().spliceCount() == 0);
+    CHECK(rig.p.ringMeta(0).spliceCount == 2);
+
+    // Splice 1, [24000, 36032): every frame from there on starts inside it.
+    std::vector<FrameRead> frames;
+    const std::vector<TimedEvent> select{{48064, A(LayerParam::Splice), false, 1.0}};
+    renderCommands(rig.p, input, 48064, kFrames, 32, select, {}, out,
+                   recordFrames(rig.p, 0, frames));
+    const int64_t n = rig.p.engine(0).spectral()->fftSize();
+    REQUIRE(frames.size() > 20);
+    for (const FrameRead &f : frames)
+    {
+        INFO("hop " << f.hop << ": start " << f.start << ", window [" << f.oldest << ", " << f.end
+                    << ")");
+        REQUIRE(f.oldest == 24000);
+        REQUIRE(f.end == 36032);
+        REQUIRE(f.start >= f.oldest);
+        REQUIRE(f.start + n <= f.end);
+    }
+
+    renderCommands(rig.p, input, kFrames - 32, kFrames, 32, {},
+                   {{kFrames - 32, CommandKind::ClearSplices, 0, 0.0f}}, out);
+    CHECK(rig.p.engine(0).live().spliceCount() == 0);
+}
+
+TEST_CASE("a spectral layer over its ring is block-size invariant with Loop and a splice",
+          "[core][spectral][determinism]")
+{
+    // Row 381: the window steers the analysis by the sample clock, so a Spectral layer over its
+    // ring with Loop on, two splices marked and one selected, then Loop off and the marks
+    // cleared, renders the same bytes at blocks of 1 and 512.
+    constexpr int64_t kFrames = 2 * 48000;
+    const Stereo input = noise(kFrames, 0.5f, 94);
+    const std::vector<TimedEvent> events{
+        {4801, A(LayerParam::Loop), false, 1.0},
+        {4801, A(LayerParam::LoopLength), false, -1.0}, // 0.5 s
+        {40003, A(LayerParam::Splice), false, 1.0},
+        {60007, A(LayerParam::Splice), false, 2.0},
+        {72011, A(LayerParam::Loop), false, 0.0},
+        {80013, A(LayerParam::Splice), false, 0.0},
+    };
+    const std::vector<TimedCommand> commands{
+        {24005, CommandKind::AddSplice, 0, 0.3f},
+        {36007, CommandKind::AddSplice, 0, 0.1f},
+        {88001, CommandKind::ClearSplices, 0, 0.0f},
+    };
+    const auto run = [&](uint32_t block, uint32_t &maxSplices) {
+        FxRig rig(512);
+        rig.p.setBase(A(LayerParam::Position), 0.4f);
+        Stereo out = silence(kFrames);
+        maxSplices = 0;
+        renderCommands(rig.p, input, 0, kFrames, block, events, commands, out, [&](int64_t) {
+            maxSplices = std::max(maxSplices, rig.p.engine(0).live().spliceCount());
+        });
+        return out;
+    };
+    uint32_t refSplices = 0;
+    const Stereo ref = run(512, refSplices);
+    CHECK(refSplices == 2); // the commands reached the layer
+    REQUIRE(allFinite(ref.left));
+    REQUIRE(peakIn(ref.left, 24000, kFrames) > 1.0e-4f);
+    uint32_t oneSplices = 0;
+    const Stereo one = run(1, oneSplices);
+    CHECK(oneSplices == 2);
+    REQUIRE(std::memcmp(one.left.data(), ref.left.data(), ref.left.size() * sizeof(float)) == 0);
+    REQUIRE(std::memcmp(one.right.data(), ref.right.data(), ref.right.size() * sizeof(float)) == 0);
 }

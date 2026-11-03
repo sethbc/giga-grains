@@ -197,7 +197,9 @@ class Engine
     /// liveSeconds is not finite and >= 0, grainCapacity is above kMaxGrainCapacity, or layer is
     /// 4 or more
     /// (all checked before anything is allocated), or if the ring's storage, N + maxBlockSize
-    /// frames, would exceed 2^40, and std::bad_alloc if the Spectral Smear can't be allocated.
+    /// frames, would exceed 2^40; std::bad_alloc if the Spectral Smear's buffers can't be
+    /// allocated, and std::logic_error if pffft rejects its FFT size (SpectralSource's
+    /// constructor; unreachable for fftSizeFor's sizes).
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. PreparedSource::make, then

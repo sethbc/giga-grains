@@ -2740,6 +2740,31 @@ TEST_CASE("a capture is the ring's newest frames, or a splice's span", "[render]
     expect("last.wav", 28800, sr - 28800); // [0.6 s, the head)
 }
 
+TEST_CASE("a spectral layer's splices reach a capture", "[render][spectral]")
+{
+    // Row 381: the ring commands reach a Spectral layer that smears its ring (no sample), so a
+    // capture of its splice k is that span of the ring, as a Live layer's is.
+    const std::string dir = freshDirectory("ring-capture-spectral");
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"A Ring Length", 3.0}, {"A Source", 3}};
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.3, "layer": "A", "op": "splice"},
+        {"time": 0.6, "layer": "A", "op": "splice"},
+        {"time": 1.0, "layer": "A", "op": "capture", "splice": 1}])");
+    j["operations"][2]["file"] = dir + "/first.wav";
+    const RenderSpec spec = parseJson(j);
+    (void)gg::render::render(spec, nullptr);
+    const auto input = gg::render::makeInput(spec.fx.input, 1, 48000.0, 1);
+    const auto cap = gg::metrics::readAudioFile(dir + "/first.wav");
+    REQUIRE(cap.has_value());
+    REQUIRE(cap->channels.size() == 2);
+    REQUIRE(cap->channels[0].size() == 14400); // [0.3 s, 0.6 s)
+    const std::vector<float> want(input.channels[0].begin() + 14400,
+                                  input.channels[0].begin() + 28800);
+    CHECK(bitIdentical(cap->channels[0], want));
+    CHECK(bitIdentical(cap->channels[1], want));
+}
+
 TEST_CASE("clearSplices removes the marks a save would keep", "[render]")
 {
     const std::string dir = freshDirectory("ring-clear-splices");

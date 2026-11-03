@@ -91,16 +91,21 @@ RingParams toRingParams(const ParamValues &effective, uint8_t layer) noexcept;
 /// (WetParams::freeze's). `layer` is below kLayers (asserted).
 bool freezeOn(const ParamValues &values, uint8_t layer) noexcept;
 
+/// Whether a layer whose Source builds to `kind` (builtKind) reads its live ring: SourceMode::Live
+/// (Live or Resample, the kinds whose grains read it), or SourceMode::Spectral without a sample
+/// (`hasSample` false), so the Spectral analysis smears the ring (the extremes spec §6.2; the
+/// integration review's I2, INTENT §23 #69). A Sample layer's ring, and a Spectral layer's with a
+/// sample, record for a later switch but nothing reads them. ringSaved decides by it, and so do
+/// the Processor's ring commands (row 381: a layer whose ring isn't read ignores them).
+bool readsRing(SourceMode kind, bool hasSample) noexcept;
+
 /// Whether a session saves layer `layer`'s ring (M2 sub-project 2's spec D1), from its base
-/// values and its material: the layer's ring is read, and its Freeze or its Loop is on (each above
-/// 0.5: freezeOn, RingParams::loop). The ring is read when the Source builds to SourceMode::Live
-/// in `mode`'s product (builtKind: Live or Resample, the kinds whose grains read it), or to
-/// SourceMode::Spectral with `material` SourceMode::Live, no sample loaded, so the Spectral
-/// analysis smears the ring (the extremes spec §6.2; the integration review's I2, INTENT §23
-/// #69). A Sample layer's ring, and a Spectral layer's with a sample, record for a later switch
-/// but nothing reads them: they aren't saved. `material` is Processor::layerMaterial's, as the
-/// main thread knows it at the save (the layer's sample loaded or not). The plugin's MediaSession
-/// and gg-render's --save-state both decide by it. `layer` is below kLayers (asserted).
+/// values and its material: the layer's ring is read (readsRing, the kind builtKind gives in
+/// `mode`'s product, with a sample unless `material` is SourceMode::Live), and its Freeze or its
+/// Loop is on (each above 0.5: freezeOn, RingParams::loop). A ring nothing reads isn't saved.
+/// `material` is Processor::layerMaterial's, as the main thread knows it at the save (the layer's
+/// sample loaded or not). The plugin's MediaSession and gg-render's --save-state both decide by it.
+/// `layer` is below kLayers (asserted).
 bool ringSaved(const ParamValues &base, Mode mode, uint8_t layer, SourceMode material) noexcept;
 
 /// Layer `layer`'s Cloud stream controls (`layer` below kLayers, asserted), from its own slots

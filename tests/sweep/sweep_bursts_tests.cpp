@@ -27,7 +27,7 @@ constexpr int kBursts = 16;
 constexpr int kEvents = 1024;
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
-/// case measures (0.425, 0.409 and 0.380 for the FX, the instrument and block size 1, with the
+/// case measures (0.431, 0.410 and 0.402 for the FX, the instrument and block size 1, with the
 /// draws keyed by CLAP ID): Reverb Size is among the random slots, and each of its real moves is
 /// exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's stretches (SweepDriver.h;
 /// they cost the cases 0.09, 0.015 and 0.08 of it).
@@ -40,10 +40,13 @@ void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
     for (int b = 0; b < kBursts; ++b)
     {
         d.burst(kEvents, seed * 100 + static_cast<uint64_t>(b));
-        // Past the 0.6 s a Reverb Size move exempts, and the up to 1.1 s the reverb's onset does
-        // (SweepDriver.h), so the click check sees some of each state.
+        // Past the 0.6 s a Reverb Size move exempts (SweepDriver.h), so the click check sees
+        // some of each state.
         d.play(1.5, m);
     }
+    // No runaway under the last burst's settings, held for 1.5 s (row 309): the check below sees
+    // the restored defaults' last second, which proves recovery alone.
+    CHECK(d.check(gg::test::chainBound(d, 0.0)).runawayDb <= gg::test::Checks::kRunawayDb);
     d.setDefaults();
     d.note(gg::core::NoteEventType::AllOff, -1, 1.0f, -1);
     d.play(0.05, m);
@@ -52,11 +55,11 @@ void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 }
 } // namespace
 
-TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.42); }
+TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.425); }
 
 TEST_CASE("bursts: 16 x 1024 events, instrument", "[sweep]")
 {
     bursts(Mode::Instrument, 3102, 0.405);
 }
 
-TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.375, 1); }
+TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.395, 1); }

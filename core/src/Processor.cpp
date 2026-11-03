@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include "gg/core/Processor.h"
+#include "gg/core/Window.h"
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,10 @@ static_assert(kBudgetUnitsPerGrain == gg::kNormalStereoWeight);
 
 namespace
 {
+/// The rising half of this table is the reverb's onset fade (row 302). Built at load, off the
+/// audio thread.
+const HannTable kReverbFade;
+
 /// The configuration the engines would reject, rejected before anything is allocated.
 const ProcessorConfig &validated(const ProcessorConfig &c)
 {
@@ -999,6 +1004,8 @@ void Processor::reset() noexcept
         publishStorage(*l); // ring time restarted: a read spanning it is retried
     }
     reverb_->reset();
+    reverbPrevActive_ = false;
+    reverbOnsetAt_ = -1;
 }
 
 void Processor::setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s)
@@ -1265,8 +1272,9 @@ void Processor::applyCommands(int64_t b) noexcept
         const CommandEvent &c = pendingCommands_[k];
         Layer &l = *layers_[c.layer]; // validCommand: below kLayers
         LiveSource &live = l.engine.live();
-        // Spec §6.4: a layer that reads a sample ignores them.
-        if (l.kind != SourceMode::Live || !live.enabled())
+        // Spec §6.4: a layer that reads a sample ignores them. A layer whose ring is read takes
+        // them (readsRing: Live or Resample, or Spectral smearing its ring; row 381).
+        if (!readsRing(l.kind, l.engine.hasSampleSource()) || !live.enabled())
         {
             continue;
         }
@@ -2140,6 +2148,17 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             const float a = amount_.at(t, rampSamples_);
             const float s = drySend_.at(t, rampSamples_);
             const bool active = a != 0.0f; // read by the reverb at a chunk's first sample
+            if ((t & (static_cast<int64_t>(kControlGrid) - 1)) == 0)
+            {
+                // Row 302: a chunk that turns the reverb on after idle ones, at t > 0, starts
+                // the send's fade-in (the room is empty, and a step at its input would click).
+                // The sequence of chunks decides, so the fade is block-size invariant.
+                if (active && !reverbPrevActive_ && t > 0)
+                {
+                    reverbOnsetAt_ = t;
+                }
+                reverbPrevActive_ = active;
+            }
             // Read both inputs before writing either output: out may be in, and a mono input
             // feeds both channels. The instrument's input feeds the rings alone.
             float d[2] = {0.0f, 0.0f};
@@ -2202,6 +2221,22 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                 for (uint32_t c = 0; c < 2; ++c)
                 {
                     side[c] = fx ? wet[c] * m : wet[c];
+                }
+            }
+            if (reverbOnsetAt_ >= 0)
+            {
+                const int64_t into = t - reverbOnsetAt_;
+                if (into < rampSamples_)
+                {
+                    // The rising half of the Hann window, sin^2, over kRampSeconds.
+                    const float g = kReverbFade.at(0.5 * static_cast<double>(into) /
+                                                   static_cast<double>(rampSamples_));
+                    rIn[0] *= g;
+                    rIn[1] *= g;
+                }
+                else
+                {
+                    reverbOnsetAt_ = -1;
                 }
             }
             // Reverb 2 sums (L + R)·0.5, which overflows to inf (and its loop to NaN, held until
