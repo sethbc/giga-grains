@@ -136,7 +136,9 @@ class Limiter
 
     /// A mode's slot in the weights (Off, Soft, Peak). A stray value maps to Off's slot, the
     /// identity, which is also what a settled call does with it, so a fade toward a stray mode
-    /// and its last call agree. For tests, which can't run process() with one (it asserts).
+    /// and its last call agree. This is deliberate (carry-over row 363): the old clamp mapped a
+    /// stray mode to Peak, the most invasive law; the identity is the safe one. For tests, which
+    /// can't run process() with one (it asserts).
     static constexpr size_t lawSlot(LimiterMode m) noexcept
     {
         return static_cast<uint8_t>(m) <= static_cast<uint8_t>(LimiterMode::Peak)

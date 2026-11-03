@@ -39,9 +39,12 @@ void SourceExchange::offerRing(std::unique_ptr<RingStorage> storage, const RingO
 
 void SourceExchange::withdrawRing()
 {
-    // Only an untaken offer with a ring: one the audio side has taken is adopted or declined
-    // there. Should it take this one in between, publish() makes the offer of no ring anyway,
-    // which the audio side settles as nothing to adopt.
+    // Only an untaken offer with a ring. Settled: an offer the audio side took before this call
+    // is adopted or declined there, and the newer load's values then arrive after it. Not
+    // settled, a narrow window: the audio side may take the older offer between the kFresh
+    // check below and publish(), and then that ring is still adopted, before the newer load's
+    // values (publish() makes the next offer one of no ring, which only replaces it afterwards).
+    // Carry-over row 355 records it as a known limit.
     if ((middle_.load(std::memory_order_acquire) & kFresh) == 0 || !lastHasRing_ ||
         lastRing_.storage == nullptr)
     {

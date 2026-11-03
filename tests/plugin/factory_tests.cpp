@@ -2050,6 +2050,12 @@ TEST_CASE("the editor's ring commands map to the Processor's", "[plugin]")
           gg::core::CommandKind::AddSplice);
     CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::ClearSplices) ==
           gg::core::CommandKind::ClearSplices);
+    CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::AddSpliceAt) ==
+          gg::core::CommandKind::AddSpliceAt);
+    // A stray value maps to a kind validCommand rejects (past AddSpliceAt), not to a destructive
+    // one.
+    const auto stray = gg::plugin::toCommandKind(static_cast<gg::ui::RingCommand>(0x7F));
+    CHECK(stray > gg::core::CommandKind::AddSpliceAt);
 }
 
 TEST_CASE("formatOf names each wrapper flavor", "[plugin]")

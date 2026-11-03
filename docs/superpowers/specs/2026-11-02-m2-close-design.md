@@ -168,7 +168,12 @@ Three scripts, each idempotent, each printing what it installs and what it found
   installs with Homebrew (installing Homebrew itself if missing) `cmake`, `ninja`, `git` and `llvm`.
   Homebrew's `llvm` is 23.1.4 today, so one formula gives `format.sh` its clang-format 23 and the
   `rtsan` preset its LLVM 20 or newer.
-- `scripts/bootstrap-linux.sh`: Ubuntu 22.04 and 24.04 (and Debian-family systems with the same
+- **Amended 2026-11-03 (§23 #91):** Ubuntu 24.04 alone is the Linux baseline; 22.04 exits 1 (no
+  gcc-13 in its archive, no PPA), the container below is `ubuntu:24.04`, and the script also
+  installs a font (`fonts-dejavu-core`: the GUI tests lay out text, and a bare container has none).
+  Its `--clone` runs `ctest --preset dev -LE serial`, in all three scripts, leaving out the
+  `[serial]` timing and memory cases (final review ruling, 2026-11-03).
+- `scripts/bootstrap-linux.sh` (as first written): Ubuntu 22.04 and 24.04 (and Debian-family systems with the same
   packages). gcc-13 (from the `ubuntu-toolchain-r/test` PPA on 22.04, the archive on 24.04), CMake,
   `ninja-build`, git, curl, unzip, `file`, `binutils`, the twelve JUCE development packages that
   CI's pinned `prepare-for-juce` action installs (`libfontconfig1-dev libasound2-dev libx11-dev
@@ -195,7 +200,7 @@ pointer to CLAUDE.md.
 macOS leg's become `scripts/bootstrap-macos.sh --ci` (which skips `llvm`, the leg doesn't use it);
 the Windows leg runs `scripts/bootstrap-windows.ps1 -Verify` on the hosted image, whose Visual
 Studio is preinstalled (a winget install of the Build Tools takes longer than the leg's budget). A
-nightly-only job runs `bootstrap-linux.sh --clone` in a fresh `ubuntu:22.04` container, so a
+nightly-only job runs `bootstrap-linux.sh --clone` in a fresh `ubuntu:24.04` container (**amended 2026-11-03, §23 #91**; first `ubuntu:22.04`), so a
 package the hosted image happens to carry can't hide a missing one. A `scripts` test checks that
 the README's three lines name the scripts and options that exist.
 

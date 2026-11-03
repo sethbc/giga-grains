@@ -95,7 +95,9 @@ gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept
     case gg::ui::RingCommand::AddSpliceAt:
         return gg::core::CommandKind::AddSpliceAt;
     }
-    return gg::core::CommandKind::ClearSplices; // unreachable: every command is named above
+    // Unreachable: every command is named above. A stray value maps to a kind the Processor's
+    // validCommand rejects (a harmless no-op), never to ClearSplices, which destroys marks.
+    return static_cast<gg::core::CommandKind>(0xFF);
 }
 
 std::string formatOf(const clap_host *host)

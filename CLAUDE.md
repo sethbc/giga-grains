@@ -436,6 +436,9 @@ runs the tests labeled either. The labels are:
   M2 sub-project 2 the memory cap's accounting (`MemoryBudget`; the 600 s file cap is gone), the
   sample pool, float32 WAV bytes, a ring's saved audio and collect and save. `slow` marks one of
   them, the search's 50,000-entry scan.
+  - The memory cap counts the rings and loaded samples, not the fixed costs. One of those is
+    `LivePeaks` (the editor's peak strip): each layer's is sized for a 300 s ring in every
+    instance, about 0.9 MB a layer at 48 kHz (scaling with the rate), outside the cap.
   - The WAV, AIFF and AIFC files they decode are written at run time
     (`tests/media/AudioFixtures.h`). dr_libs can't write FLAC or MP3, so
     `tests/fixtures/audio/` holds one tiny FLAC and one MP3, the only audio committed to the
