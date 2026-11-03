@@ -1763,8 +1763,9 @@ struct Mismatch
     int64_t head{0};
     int64_t frames{0};
     bool trimmed{false};
-    bool full{false}; // the copy's head >= N
-    int64_t frame{0}; // the first bad frame, by ring time
+    bool full{false};     // the copy's head >= N
+    bool hasFrame{false}; // a bad frame (the fields below), not a copy that isn't contiguous
+    int64_t frame{0};     // the first bad frame, by ring time
     float foundL{0.0f};
     float foundR{0.0f};
     float againL{0.0f};
@@ -1964,17 +1965,30 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         const gg::SampleBuffer &w = *copy->window;
         const bool wasTrimmed = copy->oldest > std::max<int64_t>(0, copy->head - kN);
         trimmed += wasTrimmed ? 1 : 0;
+        // Carry-over row 403's diagnostics: the first bad copy, and the swaps' state at it.
+        const auto recordBad = [&](const char *kind) {
+            Mismatch &m = mismatch;
+            m.seen = true;
+            m.kind = kind;
+            m.read = reads;
+            m.oldest = copy->oldest;
+            m.head = copy->head;
+            m.frames = w.frames();
+            m.trimmed = wasTrimmed;
+            m.full = copy->head >= kN;
+            m.swaps = swaps;
+            m.adopted = adopted;
+            m.adoptedFull = adoptedFull;
+            m.offerOpen = offerOpen;
+            m.lastSwapHead = lastSwapHead;
+            m.headNow = p.ringRead(0).head->load(std::memory_order_acquire);
+        };
         if (copy->oldest + w.frames() != copy->head)
         {
             ++bad;
             if (!mismatch.seen)
             {
-                mismatch.seen = true;
-                mismatch.kind = "not contiguous";
-                mismatch.read = reads;
-                mismatch.oldest = copy->oldest;
-                mismatch.head = copy->head;
-                mismatch.frames = w.frames();
+                recordBad("not contiguous");
             }
             continue;
         }
@@ -1993,15 +2007,10 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
             ++bad;
             if (!mismatch.seen)
             {
-                // Carry-over row 403's diagnostics: what the bad frame holds names the mechanism.
+                // What the bad frame holds names the mechanism (classifyMismatch).
+                recordBad("");
                 Mismatch &m = mismatch;
-                m.seen = true;
-                m.read = reads;
-                m.oldest = copy->oldest;
-                m.head = copy->head;
-                m.frames = w.frames();
-                m.trimmed = wasTrimmed;
-                m.full = copy->head >= kN;
+                m.hasFrame = true;
                 m.frame = copy->oldest + first;
                 m.foundL = w.channel(0)[first];
                 m.foundR = w.channel(1)[first];
@@ -2020,12 +2029,7 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
                         m.lastBad = copy->oldest + f;
                     }
                 }
-                m.swaps = swaps;
-                m.adopted = adopted;
-                m.adoptedFull = adoptedFull;
-                m.offerOpen = offerOpen;
-                m.lastSwapHead = lastSwapHead;
-                m.headNow = p.ringRead(0).head->load(std::memory_order_acquire);
+                // Every storage in this test is RingStorage(kN, kPiece): capacity kN + kPiece.
                 m.kind = classifyMismatch(m.frame, m.foundL, m.foundR,
                                           kN + static_cast<int64_t>(kPiece));
             }
@@ -2046,12 +2050,16 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         firstBad << "first bad read: " << m.kind << "; read " << m.read << ", oldest " << m.oldest
                  << ", head " << m.head << ", frames " << m.frames
                  << (m.trimmed ? ", trimmed" : ", untrimmed")
-                 << (m.full ? ", head >= N" : ", head < N") << "; frame " << m.frame << " (index "
-                 << m.frame - m.oldest << "): found L " << m.foundL << " R " << m.foundR
-                 << " (read again: L " << m.againL << " R " << m.againR << "), expected L "
-                 << m.expected << "; bad frames in the copy " << m.badFrames << ", the last "
-                 << m.lastBad << "; at that read: swaps " << m.swaps << ", adopted " << m.adopted
-                 << " (" << m.adoptedFull << " of a full ring), an offer "
+                 << (m.full ? ", head >= N" : ", head < N");
+        if (m.hasFrame)
+        {
+            firstBad << "; frame " << m.frame << " (index " << m.frame - m.oldest << "): found L "
+                     << m.foundL << " R " << m.foundR << " (read again: L " << m.againL << " R "
+                     << m.againR << "), expected L " << m.expected << "; bad frames in the copy "
+                     << m.badFrames << ", the last " << m.lastBad;
+        }
+        firstBad << "; at that read: swaps " << m.swaps << ", adopted " << m.adopted << " ("
+                 << m.adoptedFull << " of a full ring), an offer "
                  << (m.offerOpen ? "open" : "settled") << ", the last swap's head "
                  << m.lastSwapHead << ", the head now " << m.headNow;
     }
