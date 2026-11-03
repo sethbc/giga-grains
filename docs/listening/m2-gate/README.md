@@ -206,12 +206,9 @@ double-click the pad, then undo. Answer: `accept` or `no`.
 
 ## Carry-over
 
-**18. Row 352: does a Ring Length drag click?** A drag at about 120 Hz clicks on the ring (its
-click score is 12.7 against 15; the output's is 0). In any cell of the matrix, play audio through
-the FX with a running ring (a Live layer, Freeze off) and drag Ring Length in the Edit view's Ring
-panel (or the host's generic editor, where it shows the parameter) up and down for ten seconds;
-check that a long ring's lane still draws its peaks (rows 385 and 386). Answer: `no click` or
-`click` (fix it).
+**18. Row 352: does a Ring Length drag click?** *Moved to the host matrix as item 40i, in plain
+steps: the director didn't follow it as first written (2026-11-03).* Answer: pending: answered
+during the host matrix.
 
 Row 387, the new strings. Each is a text the views added; answer `ok` or give the replacement.
 
@@ -220,23 +217,37 @@ cover all nine, the strip's three short forms being one item.
 
 **19. "Load a sample"** (a lane menu's file chooser). Answer: `ok` or edit.
 
+> *Director, 2026-11-03:* **ok**.
+
 **20. "Save the capture as"** (the capture's file chooser: the lane's right-click menu, Save
 capture as…). Answer: `ok` or edit.
 
+> *Director, 2026-11-03:* **ok**.
+
 **21. "can't save the capture"**, in a notice, with ": the file can't be written" or ": not
 enough memory". Answer: `ok` or edit.
+
+> *Director, 2026-11-03:* **ok**.
 
 **22. The strip's short forms "Osc", "Resamp" and "Spec"** (Oscillator, Resample, Spectral),
 drawn where a narrow strip's Source button can't fit the name. Answer: `ok` or edit, naming the
 word.
 
+> *Director, 2026-11-03:* **ok**.
+
 **23. "<L>'s sample is loading: set <L> Source to Sample to play it"** (a drop, or a capture,
 onto a Live layer: drop a file on a Live lane). Answer: `ok` or edit.
 
+> *Director, 2026-11-03:* **ok**.
+
 **24. "Captured into <L>"** (a capture into a Sample layer). Answer: `ok` or edit.
+
+> *Director, 2026-11-03:* **ok**.
 
 **25. "can't capture the ring: not enough memory"** (set a low memory cap and capture). Answer:
 `ok` or edit.
+
+> *Director, 2026-11-03:* **ok**.
 
 Rows 394 to 397 (the presets):
 
@@ -251,6 +262,8 @@ so quiet), [inst-10-felt-mallets](../../../build/release/listening/m2-presets/in
 [inst-02-glass-orchard](../../../build/release/listening/m2-presets/inst-02-glass-orchard.wav) and [inst-20-shatter-glass](../../../build/release/listening/m2-presets/inst-20-shatter-glass.wav) (wine glass +30.6),
 [fx-04-undertow](../../../build/release/listening/m2-presets/fx-04-undertow.wav) and [fx-23-splinter-keys](../../../build/release/listening/m2-presets/fx-23-splinter-keys.wav) (cymbal roll +38.5). Answer:
 `accept` or `fix`; if fix, list the preset numbers (optional).
+
+> *Director, 2026-11-03:* **ok**: accepted as it is.
 
 **27. Row 395: are Shard Storm's ticks on drums acceptable?** Short pitched-up grains on sharp
 onsets tick at drum transients (its golden uses a sweep because its click score swung 8.5 to 22.7
@@ -358,3 +371,15 @@ record; these are the ones worth a sitting, each in the host named. Answer each 
   ([layers](../m2-layers/README.md#host-checklist), [presets](../m2-presets/README.md#host-checklist)).
 - **40h. Both:** the installer's content status line reads "Factory content v2 in ..."
   ([presets](../m2-presets/README.md#host-checklist)).
+- **40i. Both: does dragging Ring Length click?** (Item 18, row 352.) *What it is:* each layer
+  keeps a ring, a rolling recording of what the plugin has heard, and Ring Length is how many
+  seconds it holds. Changing it while the ring plays resizes the ring. A test measures a small
+  kink in the ring's signal when it is dragged fast (about 120 times a second) but none in the
+  output; the question is whether you hear a click. *Steps:* (1) Put the FX on a track with audio
+  playing through it (any loop), with layer A's Source on Live and Freeze off. (2) Open the Edit
+  view, layer A, the Ring panel; if the host hides it, use the host's generic parameter view and
+  find "A Ring Length". (3) While the audio plays, drag Ring Length slowly up and down for ten
+  seconds, then again quickly. (4) Pick a long length, such as two minutes, and check that layer
+  A's lane still draws its peaks along the whole ring. *Listen for:* a click or pop at the moment
+  the value changes. A slight change in the texture is expected. Answer `no click` or `click`
+  (say whether the slow or the fast drag) in the matrix.
