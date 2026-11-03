@@ -233,6 +233,13 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
     }
 }
 
+void SpectralSource::clearOutside(int64_t lo, int64_t hi) noexcept
+{
+    float *const frame = frame_.get();
+    std::fill(frame, frame + lo, 0.0f);
+    std::fill(frame + hi, frame + fftSize_, 0.0f);
+}
+
 void SpectralSource::readSample(const SpectralMaterial &m, uint32_t c, int64_t start) noexcept
 {
     const auto n = static_cast<int64_t>(fftSize_);
@@ -241,12 +248,11 @@ void SpectralSource::readSample(const SpectralMaterial &m, uint32_t c, int64_t s
     // Window index i reads sample frame start + i, inside [0, frames) for i in [lo, hi).
     const int64_t lo = std::clamp<int64_t>(-start, 0, n);
     const int64_t hi = std::clamp<int64_t>(m.sampleFrames - start, lo, n);
-    std::fill(frame, frame + lo, 0.0f);
+    clearOutside(lo, hi);
     for (int64_t i = lo; i < hi; ++i)
     {
         frame[i] = src[start + i] * analysis_[static_cast<std::size_t>(i)];
     }
-    std::fill(frame + hi, frame + n, 0.0f);
 }
 
 void SpectralSource::readRing(const LiveSource &ring, uint32_t c, int64_t start,
@@ -258,7 +264,7 @@ void SpectralSource::readRing(const LiveSource &ring, uint32_t c, int64_t start,
     // Window index i reads ring frame start + i; frames below oldest (before frame 0, or out of
     // the ring's window) read 0. The window ends 256 frames before the head, so none is newer.
     const int64_t lo = std::clamp<int64_t>(oldest - start, 0, n);
-    std::fill(frame, frame + lo, 0.0f);
+    clearOutside(lo, n);
     if (lo == n)
     {
         return;

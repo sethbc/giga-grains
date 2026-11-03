@@ -134,6 +134,8 @@ class SpectralSource
     // Computes frame k (hop boundary kH) and adds it into the accumulation.
     void computeFrame(const SpectralMaterial &m, double position, uint64_t seed, uint32_t layer,
                       int64_t k) noexcept SST_CPPUTILS_NONBLOCKING;
+    // Zero frame_ outside window indices [lo, hi), the reads' frames outside the material.
+    void clearOutside(int64_t lo, int64_t hi) noexcept SST_CPPUTILS_NONBLOCKING;
     // Fill frame_ with channel c of the window starting at material frame start, times the
     // analysis Hann.
     void readSample(const SpectralMaterial &m, uint32_t c,
