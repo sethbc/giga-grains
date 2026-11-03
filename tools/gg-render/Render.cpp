@@ -635,7 +635,7 @@ void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, u
 
 /// Instrument and FX mode: the plugin's Processor, fed as a host feeds it.
 gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::string> *eventLines,
-                                       const RenderOptions &options)
+                                       const RenderOptions &options, RenderReport *report)
 {
     const bool fx = spec.mode == RenderMode::Fx;
     const gg::core::Mode mode = fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
@@ -1179,6 +1179,10 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     {
         saveSession(processor, spec, capMiB, sampleEntries, captured, options);
     }
+    if (report != nullptr)
+    {
+        *report = processor.faultCounts();
+    }
     return out;
 }
 } // namespace
@@ -1197,8 +1201,12 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset)
 }
 
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines,
-                              const RenderOptions &options)
+                              const RenderOptions &options, RenderReport *report)
 {
+    if (report != nullptr)
+    {
+        *report = {};
+    }
     if (spec.mode == RenderMode::Sample)
     {
         if (!options.saveStatePath.empty())
@@ -1208,6 +1216,6 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
         }
         return renderSample(spec, eventLines);
     }
-    return renderProcessor(spec, eventLines, options);
+    return renderProcessor(spec, eventLines, options, report);
 }
 } // namespace gg::render

@@ -503,7 +503,12 @@ leg's *Build gg-all and gg-products* step means re-running the failed job.
 one - Hermite" (`tests/engine/kernel_tests.cpp`) fails now and then in *Test the x86_64 slice
 under Rosetta* (first seen in run 40920010135, on `main`), and passes on the same code's other
 runs. It is a CI-VM flake, not a regression: re-run the failed job once. A second failure is a
-real one.
+real one. The same slice's block-size tests ("render block size does not change output", "note
+and file renders do not depend on block size") fail the same way, an off layer logging one extra
+grain at blockSize 1 (carry-over row 234): re-run the failed job once too, and first copy the
+failure's counters into row 234. Its "When" column says what each means: an enable fault
+"disagreeing with its on ramp" (the machine), one "off the control grid" (a code fault), a grain
+spawned with an engine's gate off (the engine misread its gate), or neither.
 
 **A step needs a re-run.** `gh run rerun <run id> --failed --repo sethbc/giga-grains` re-runs
 the failed jobs of a tag's run; the `release` job then runs once they pass.

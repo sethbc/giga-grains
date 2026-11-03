@@ -445,17 +445,26 @@ int run(int argc, char **argv)
 
     gg::metrics::AudioData audio;
     std::vector<std::string> events;
+    gg::render::RenderReport report;
     try
     {
         audio = gg::render::render(*spec, &events,
                                    {.contentDir = contentDir,
                                     .capturesDir = capturesDir,
                                     .saveStatePath = saveStatePath,
-                                    .mediaDir = baseDir.empty() ? "." : baseDir});
+                                    .mediaDir = baseDir.empty() ? "." : baseDir},
+                                   &report);
     }
     catch (const gg::render::BadInput &e)
     {
         return fail(fmt::format("{}: {}", specPath, e.what()));
+    }
+    if (report.enableFaults > 0 || report.gateFaults > 0)
+    {
+        // Carry-over row 234's diagnostic (gg/core/EnableFault.h): never in a correct render, so a
+        // golden check that fails beside this line names the fault. The exit status is the
+        // comparisons'.
+        fmt::print("WARNING: {} (carry-over row 234)\n", gg::core::describeFaults(report));
     }
     const gg::metrics::Metrics metrics = gg::metrics::computeMetrics(audio);
 

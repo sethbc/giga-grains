@@ -1332,6 +1332,16 @@ uint64_t Processor::loweredGrains() const noexcept
     return lowered;
 }
 
+uint32_t Processor::engineGateFaults() const noexcept
+{
+    uint32_t faults = 0;
+    for (const auto &l : layers_)
+    {
+        faults += l->engine.gateFaults();
+    }
+    return faults;
+}
+
 uint64_t Processor::stolenGrains() const noexcept
 {
     uint64_t stolen = 0;
@@ -1865,6 +1875,23 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
     const bool renders = rendering_[L];
     if (renders != l.enabledGiven)
     {
+        // Row 234 (enableFaults()): a flip needs its on ramp's agreement (the expression
+        // rendering_[L] was computed from, re-evaluated from state no task writes), and lands off
+        // the control grid only where a ramp off reaches 0 (on.start + R) or after a jump
+        // (setBase, setBases, reset: start 0). Asserted in Debug, counted in every build; this
+        // branch runs only at a flip, so a render without one never reaches it.
+        const bool agrees = renders == (l.on.to != 0.0f || l.on.at(from, rampSamples_) != 0.0f);
+        const bool onGrid = from % static_cast<int64_t>(kControlGrid) == 0 || l.on.start == 0 ||
+                            (!renders && from == l.on.start + rampSamples_);
+        assert(agrees);
+        assert(onGrid);
+        if (!agrees || !onGrid) [[unlikely]]
+        {
+            if (enableFaults_.fetch_add(1, std::memory_order_relaxed) == 0)
+            {
+                firstEnableFault_ = {L, from, !agrees, !onGrid};
+            }
+        }
         // Spec §6.3: off, the engine spawns nothing and its grains end here; on again, the
         // pending onset is forced to this boundary, so the layer speaks at once.
         l.engine.setEnabled(renders);

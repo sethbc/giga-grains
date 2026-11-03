@@ -520,6 +520,8 @@ struct LayersRender
     uint64_t lowered{0};
     uint64_t stolen{0};
     std::array<uint64_t, 4> dropped{};
+    // Carry-over row 234's diagnostic after the render: Processor::faultCounts().
+    gg::core::FaultCounts faults{};
     // Every mod source's value on every layer after the render (Processor::sourceValue).
     std::array<std::array<float, static_cast<std::size_t>(gg::core::ModSource::Count)>, 4>
         sources{};
@@ -596,6 +598,7 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
            setup.controls);
     r.lowered = p.loweredGrains();
     r.stolen = p.stolenGrains();
+    r.faults = p.faultCounts();
     for (uint8_t L = 0; L < 4; ++L)
     {
         r.heads[L] = p.engine(L).liveWriteHead();

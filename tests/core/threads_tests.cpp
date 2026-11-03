@@ -19,6 +19,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "core/LayersFixture.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/engine/Engine.h"
@@ -127,6 +128,12 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
         INFO(nameOf(mode));
         LayersRender ref;
         renderLayers(input, events, 4096, {4096}, ref, poolSetup(mode, nullptr));
+        // Row 234: every render here checks its enable faults first, the serial runner's and
+        // each pool's (a recurrence then says whether a flip broke an invariant, and on which
+        // runner).
+        INFO("the reference: " << gg::core::describeFaults(ref.faults));
+        REQUIRE(ref.faults.enableFaults == 0);
+        REQUIRE(ref.faults.gateFaults == 0);
         REQUIRE(allFinite(ref.audio.left));
         REQUIRE(allFinite(ref.audio.right));
         REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -146,6 +153,11 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
             INFO("block size " << block);
             LayersRender serial;
             renderLayers(input, events, 4096, {block}, serial, poolSetup(mode, nullptr));
+            {
+                INFO("the serial runner: " << gg::core::describeFaults(serial.faults));
+                REQUIRE(serial.faults.enableFaults == 0);
+                REQUIRE(serial.faults.gateFaults == 0);
+            }
             REQUIRE_FALSE(serial.log.overflowed);
             REQUIRE(sameBits(ref.audio.left, serial.audio.left));
             REQUIRE(sameBits(ref.audio.right, serial.audio.right));
@@ -162,6 +174,11 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
                 StubPool pool(workers);
                 LayersRender r;
                 renderLayers(input, events, 4096, {block}, r, poolSetup(mode, &pool));
+                {
+                    INFO("the stub pool: " << gg::core::describeFaults(r.faults));
+                    REQUIRE(r.faults.enableFaults == 0);
+                    REQUIRE(r.faults.gateFaults == 0);
+                }
                 REQUIRE_FALSE(r.log.overflowed);
                 REQUIRE(sameBits(serial.audio.left, r.audio.left));
                 REQUIRE(sameBits(serial.audio.right, r.audio.right));

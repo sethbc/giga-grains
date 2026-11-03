@@ -20,6 +20,7 @@
 
 #include "gg/core/Delay.h"
 #include "gg/core/Diffuser.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/LivePeaks.h"
@@ -837,6 +838,33 @@ class Processor
     /// §6.5): since construction or the last reset().
     uint64_t loweredGrains() const noexcept;
     uint64_t stolenGrains() const noexcept;
+
+    /// Carry-over row 234's diagnostic (a fault seen only in CI's x86_64 slice under Rosetta): the
+    /// layer enable flips since construction (reset() keeps the count) that broke either of two
+    /// invariants. The flip's `renders` (rendering_, fixed before any task runs) must agree with
+    /// its on ramp re-evaluated from state no task writes: if not, one expression gave two answers
+    /// from unchanged state (the machine, or with a pool a missing happens-before). And a flip
+    /// falls on the control grid, where a ramp off reaches 0 (on.start + the ramp length) or after
+    /// a jump (setBase, setBases, reset: start 0): if not, the on ramp itself moved off the grid,
+    /// a code fault. 0 in every correct render. Debug builds also assert both; this counts them
+    /// in every build, Release included. A relaxed load: any thread may read it.
+    uint32_t enableFaults() const noexcept { return enableFaults_.load(std::memory_order_relaxed); }
+
+    /// The first flip enableFaults() counted (gg::core::EnableFault: its layer, its piece's first
+    /// frame, and which invariant it broke). All zero and false while enableFaults() is 0. Read it
+    /// on the audio thread, or on a thread that synchronizes with the process() call that wrote it
+    /// (tests read it after process() returns).
+    using EnableFault = gg::core::EnableFault;
+    EnableFault firstEnableFault() const noexcept { return firstEnableFault_; }
+    /// The four engines' Engine::gateFaults(), summed: row 234's other side, a grain an engine
+    /// spawned with its gate requested off (a path enableFaults() does not see). 0 in every
+    /// correct render. Read it on the audio thread or after process() returns.
+    uint32_t engineGateFaults() const noexcept;
+    /// The three above together, for describeFaults() (gg/core/EnableFault.h).
+    FaultCounts faultCounts() const noexcept
+    {
+        return {enableFaults(), firstEnableFault(), engineGateFaults()};
+    }
     /// Layer `layer`'s Engine::activeGrains() (`layer` below kLayers), for tests.
     uint32_t layerActiveGrains(uint8_t layer) const noexcept
     {
@@ -1197,6 +1225,13 @@ class Processor
     std::atomic<int64_t> publishedClock_{0};
     static_assert(std::atomic<bool>::is_always_lock_free);
     static_assert(std::atomic<int64_t>::is_always_lock_free);
+
+    // Row 234's diagnostic (enableFaults()): incremented in renderLayerPiece's flip branch alone,
+    // so a correct render never touches it. Layer tasks may run there at once, so the count is a
+    // fetch_add, and only the increment that finds 0 writes the first fault.
+    std::atomic<uint32_t> enableFaults_{0};
+    EnableFault firstEnableFault_{};
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
 
     // Space (sub-project 4's spec §6.1): the effective values in SpaceReverb's terms, and the
     // reverb (heap: about 14.5 MB, 16-byte aligned).

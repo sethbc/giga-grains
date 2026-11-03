@@ -106,6 +106,24 @@ bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
+// Where two renders first differ, for an INFO (carry-over row 234): the first sample whose bits
+// differ, or the sizes if they differ.
+std::string firstDifference(const std::vector<float> &a, const std::vector<float> &b)
+{
+    if (a.size() != b.size())
+    {
+        return "sizes " + std::to_string(a.size()) + " and " + std::to_string(b.size());
+    }
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0)
+        {
+            return "first differs at sample " + std::to_string(i);
+        }
+    }
+    return "the same bits";
+}
+
 // An event sink is called on the audio thread, so this one records into preallocated storage
 // and never allocates (the RTSan build checks that). The capacity holds a grain per sample, the
 // density ceiling, for the 12,000 frames of "extreme and non-finite params stay finite".
@@ -1190,6 +1208,7 @@ TEST_CASE("disabled, the engine spawns nothing but writes its ring", "[engine][l
     REQUIRE_FALSE(engine.enabled());
     REQUIRE(engine.sourceMode() == gg::SourceMode::Live);
     REQUIRE(log.grains.empty());
+    REQUIRE(engine.gateFaults() == 0);
     REQUIRE(engine.activeGrains() == 0);
     REQUIRE(engine.droppedGrains() == 0);
     REQUIRE(engine.sampleClock() == 48000);
@@ -1235,6 +1254,8 @@ TEST_CASE("enabling forces an onset at that frame", "[engine][layers]")
     CHECK(log.grains[1].onsetSample == 96000);
     CHECK(log.grains[1].onsetFrac == 0.0);
     CHECK(peak(on.left) > 0.05f);
+    // Carry-over row 234: two grains, both spawned with the gate requested on (gateFaults()).
+    REQUIRE(engine.gateFaults() == 0);
 
     // Not vacuous: never disabled, grain 1 waits for 4 s.
     gg::Engine always(gg::EngineConfig{});
@@ -2150,11 +2171,15 @@ void checkExitCase(const ExitCase &c)
     {
         INFO("blocks of " << blockSize);
         const ExitRender r = renderExit(c, source, blockSize);
+        // The counts first (carry-over row 234): counts that differ mean the ladder's decisions
+        // diverged (scheduling); the same counts with different samples mean the arithmetic did.
+        CHECK(r.dropped == ref.dropped);
+        CHECK(r.lowered == ref.lowered);
+        CHECK(r.stolen == ref.stolen);
+        INFO("left " << firstDifference(r.audio.left, ref.audio.left) << ", right "
+                     << firstDifference(r.audio.right, ref.audio.right));
         REQUIRE(sameBits(r.audio.left, ref.audio.left));
         REQUIRE(sameBits(r.audio.right, ref.audio.right));
-        REQUIRE(r.dropped == ref.dropped);
-        REQUIRE(r.lowered == ref.lowered);
-        REQUIRE(r.stolen == ref.stolen);
     }
 }
 

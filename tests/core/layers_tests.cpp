@@ -25,6 +25,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include "gg/core/EnableFault.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
@@ -1127,6 +1128,12 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
 
     LayersRender ref;
     renderLayers(input, events, 4096, {4096}, ref);
+    {
+        // Carry-over row 234: no enable flip broke its invariants, no engine spawned gated off.
+        INFO("the reference: " << gg::core::describeFaults(ref.faults));
+        REQUIRE(ref.faults.enableFaults == 0);
+        REQUIRE(ref.faults.gateFaults == 0);
+    }
     REQUIRE(allFinite(ref.audio.left));
     REQUIRE(allFinite(ref.audio.right));
     REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -1168,6 +1175,11 @@ TEST_CASE("four layers are block-size invariant", "[core][layers][determinism]")
                                << split.blockSizes.front() << " of " << split.blockSizes.size());
         LayersRender r;
         renderLayers(input, events, split.maxBlock, split.blockSizes, r);
+        {
+            INFO(gg::core::describeFaults(r.faults));
+            REQUIRE(r.faults.enableFaults == 0);
+            REQUIRE(r.faults.gateFaults == 0);
+        }
         REQUIRE_FALSE(r.log.overflowed);
         for (uint32_t L = 0; L < 4; ++L)
         {
