@@ -498,6 +498,36 @@ TEST_CASE("ring material reads only valid frames", "[engine][spectral]")
     }
 }
 
+TEST_CASE("an empty sample is silent, never the ring", "[engine][spectral]")
+{
+    // A sample, empty or not, is the material, as the Engine decides (D1): a sample with no
+    // frames is silence, even with a filled ring beside it.
+    const Stereo s = noiseSample(48000);
+    gg::LiveSource live;
+    live.prepare(kSampleRate, 1.0, kMaxBlock);
+    SpectralSource withRing(kSampleRate, kMaxBlock);
+    SpectralSource empty(kSampleRate, kMaxBlock);
+    withRing.setActive(true);
+    empty.setActive(true);
+    SpectralMaterial ringOnly;
+    ringOnly.ring = &live;
+    SpectralMaterial emptySample = ringOnly;
+    emptySample.sample[0] = s.left.data();
+    emptySample.sample[1] = s.right.data();
+    emptySample.sampleFrames = 0;
+    emptySample.sampleMono = false;
+    constexpr int64_t kTotal = 6 * 4096;
+    for (int64_t t = 0; t < kTotal; t += kMaxBlock)
+    {
+        const float *in[2] = {s.left.data(), s.right.data()};
+        live.write(in, 2, static_cast<uint32_t>(t), t, kMaxBlock);
+        withRing.process(ringOnly, 0.02, 3, 0, t, kMaxBlock);
+        empty.process(emptySample, 0.02, 3, 0, t, kMaxBlock);
+    }
+    REQUIRE(peak(ringFrames(withRing, kTotal)) > 0.01f); // the ring is there to fall to
+    REQUIRE(peak(ringFrames(empty, kTotal)) == 0.0f);
+}
+
 TEST_CASE("spectral source process does not allocate", "[engine][rt]")
 {
     using gg::test::AllocTripwire;

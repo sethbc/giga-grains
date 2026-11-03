@@ -17,8 +17,8 @@ struct PFFFT_Setup; // pffft's opaque setup (pffft.h); pffft stays private to gg
 
 namespace gg
 {
-/// What one frame of the Spectral Smear reads: the layer's sample when sample[0] != nullptr,
-/// otherwise its live ring.
+/// What one frame of the Spectral Smear reads: the layer's sample when sample[0] != nullptr (with
+/// sampleFrames 0 or less, silence: never the ring), otherwise its live ring.
 struct SpectralMaterial
 {
     /// The sample's channels (sample[1] is ignored when sampleMono, and a null sample[1] counts

@@ -186,9 +186,15 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
 {
     const auto n = static_cast<int64_t>(fftSize_);
     const int64_t hopTime = k * (n / 4);
-    if (m.sample[0] != nullptr && m.sampleFrames > 0)
+    if (m.sample[0] != nullptr)
     {
-        // A fraction of the sample, its window centred there; NaN reads as 0.
+        // A sample, empty or not, is the material, as the Engine decides (D1): one without frames
+        // is silence, never the ring.
+        if (m.sampleFrames <= 0)
+        {
+            return;
+        }
+        // A fraction of the sample, its window centered there; NaN reads as 0.
         const double p = position > 0.0 ? (position < 1.0 ? position : 1.0) : 0.0;
         const double centre = std::floor(p * static_cast<double>(m.sampleFrames - 1));
         const int64_t start = static_cast<int64_t>(centre) - n / 2;
