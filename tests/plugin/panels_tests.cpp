@@ -610,6 +610,44 @@ TEST_CASE("a spread pair's band is its spread either side of the base value", "[
     }
 }
 
+TEST_CASE("the instrument's Oscillator layer takes the Sample band", "[plugin]")
+{
+    // Row 388 (g): the unbuilt Oscillator falls back to the product's default kind, Sample in
+    // the instrument, so its Position band is two-sided there (the FX's, Live, is one-sided: the
+    // test above), and follows a switch to Live and back.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    const auto set = [&](ParamSlot slot, float v) {
+        recording.values[static_cast<std::size_t>(slot)] = v;
+    };
+    const auto band = [&] {
+        view.refresh();
+        auto *control = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(view, controlId(ParamSlot::Position).toRawUTF8()));
+        REQUIRE(control != nullptr);
+        return control->spreadBand();
+    };
+    const auto &meta = gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Instrument);
+    const auto to01 = [&](float v) { return (v - meta.minVal) / (meta.maxVal - meta.minVal); };
+    set(ParamSlot::Position, 0.5f);
+    set(ParamSlot::Spray, 0.25f);
+    const auto twoSided = std::pair{to01(0.25f), to01(0.75f)};
+    const auto oneSided = std::pair{to01(0.5f), to01(0.75f)};
+    for (const auto &[kind, expected] : {std::pair{gg::core::SourceKind::Oscillator, twoSided},
+                                         std::pair{gg::core::SourceKind::Live, oneSided},
+                                         std::pair{gg::core::SourceKind::Oscillator, twoSided},
+                                         std::pair{gg::core::SourceKind::Sample, twoSided}})
+    {
+        INFO("kind " << int(kind));
+        set(ParamSlot::Source, static_cast<float>(kind));
+        const auto shown = band();
+        REQUIRE(shown.has_value());
+        CHECK(*shown == expected);
+    }
+}
+
 TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
