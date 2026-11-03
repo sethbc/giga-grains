@@ -7,6 +7,10 @@
 #   cmake -DGG_RENDER=<gg-render> -DWORK=<scratch dir> -DMEDIA=<golden media dir> -P this-file
 # MEDIA holds the fixtures `gg-render --write-media` writes.
 
+# A -P script sets no policies of its own: the project's minimum, so CMake 3.x reads it as 4.x
+# does (CMP0012's TRUE in a condition among them).
+cmake_minimum_required(VERSION 3.22)
+
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 
