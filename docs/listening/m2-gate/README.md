@@ -57,9 +57,13 @@ alone in `01`, A dips about 4 dB when B joins in `05`, and `14` sits about 6 dB 
 louder than M1 was. Answer: `keep` (amplitude sharing) or `power` (the pad should keep power, a
 change for M3).
 
+> *Director, 2026-11-03:* **keep** (amplitude sharing).
+
 **2. Is Env's release too quiet to hear?** Play [08-envelope-notes](../../../build/release/listening/m2-layers/08-envelope-notes.wav). The instrument
 spawns no grain after a note-off, so Env 1's release is heard only in the last grains and the
 reverb's tail. Answer: `accept` or `change` (a grain stream through the release, after M2).
+
+> *Director, 2026-11-03:* **change**: a grain stream that continues through the release, built in M3 with the Voice scheduler (carry-over row 404; INTENT §23 #92). No change in M2.
 
 ## Engine
 
@@ -72,17 +76,23 @@ as many. Play [01-three-tiers](../../../build/release/listening/m2-engine/01-thr
 Listen for the cleaner top, the missing fold-back at each step and the missing image whistle.
 Answer: `yes` or `no`.
 
+> *Director, 2026-11-03:* **yes**, HQ earns its weight. The director also asked why `01` has clicks and pops. They are layer B's material, not the tiers: `loop-48k.wav` is 30 ms noise bursts every 250 ms with an instant attack, and layer B's 80 ms grains at Spray 100% and +7 replay those onsets. Measured on `release`, layer B alone scores clickScore 14.2 (Eco), 14.2 (Normal) and 13.7 (HQ); layer A alone 2.5 at every tier; the old mix 6.8 to 7.6. `01` is re-rendered with layer B over `sine-330.wav` (no hard attack), so it now compares the tiers alone: clickScore 2.51 over the whole file (2.54, 2.51 and 2.55 with one tier throughout), peak -10.7 dBFS.
+
 **4. Does the steal threshold sound right under sustained overload?** A grain may be stolen
 once it has sounded half its window (D4). Play [04-overload-ladder](../../../build/release/listening/m2-engine/04-overload-ladder.wav) (four HQ layers,
 Budget 4,096, 1,024, 256, 4,096) and [05-steal-tails](../../../build/release/listening/m2-engine/05-steal-tails.wav) (one layer, Budget 256): the cloud
 renews in waves about twice a second, and nothing clicks (the new fade is a raised cosine).
 Answer: `keep`, `earlier` (renew faster) or `later` (hold grains longer, drop more).
 
+> *Director, 2026-11-03:* **keep**.
+
 **5. Is HQ's weak spot acceptable?** Its anti-aliasing is weakest just under an octave or two
 up (39 to 41 dB less fold-back than Normal at +11 and +23, against 82 at exactly +12 and +24), and
 its broadband floor at stretch 0.67 is about -99.5 dB. Play [02-hq-transposition-ladder](../../../build/release/listening/m2-engine/02-hq-transposition-ladder.wav)
 (the +19 step at 8 to 12 s against +12 and +24) and [07-live-hq](../../../build/release/listening/m2-engine/07-live-hq.wav) (47 dB less fold-back
 than Normal over 7.7 to 8.2 s). Answer: `accept` or `no`.
+
+> *Director, 2026-11-03:* **accept** (closes row 308).
 
 ## Sources
 
@@ -100,25 +110,35 @@ Pack: [m2-extremes](../m2-extremes/README.md). Re-rendered at `df1c3ae`: the Spe
 instant gain steps (zero lookahead, D5b kept the law, 2026-10-31). Play [12-limiter-modes](../../../build/release/listening/m2-extremes/12-limiter-modes.wav)
 from 8 s (Mode Peak). Answer: `keep` or `revisit` (after M2).
 
+> *Director, 2026-11-03:* **keep**.
+
 **7. Is the Spectral kind's width wanted?** Each channel's phases are keyed apart, so centered
 content comes out wide. Play [03-spectral-scan](../../../build/release/listening/m2-extremes/03-spectral-scan.wav), [04-spectral-freeze-fx](../../../build/release/listening/m2-extremes/04-spectral-freeze-fx.wav)
 and [05-spectral-vs-grains](../../../build/release/listening/m2-extremes/05-spectral-vs-grains.wav). Answer: `keep` or `narrower` (a mono source stays nearer
 the center).
+
+> *Director, 2026-11-03:* **keep**.
 
 **8. Is the gap on a switch to Spectral acceptable?** A layer switched to Spectral is near
 silent for about 0.1 s, and longer with Spray, before the smear fades in. No render has it: in a
 host, switch a layer's Source from Live (or Sample) to Spectral while it plays. Answer: `accept` or
 `shorten`.
 
+> *Director, 2026-11-03:* **keep** (the gap is accepted as it is).
+
 **9. Is the squash of a loud repeat at Feedback 100% musical?** The delay loop's soft
 limiter pulls a loud repeat toward 0.5 over the first passes, then holds it (D7). Play
 [11-delay-hold](../../../build/release/listening/m2-extremes/11-delay-hold.wav) (a tone, held 20 s within 0.1 dB), then in a host send a loud burst
 through the delay at Feedback 100%, Damping 0. Answer: `accept` or `no`.
 
+> *Director, 2026-11-03:* **keep** (the squash is accepted).
+
 **10. Is the bend from Reverb Modulation's glide acceptable?** Modulation now glides 0 to 1 in
 30 ms, so a held tail bends about 3 semitones for those 30 ms when Modulation jumps. No render has
 it: in a host, Decay infinite, Damping 0, a held pad, Modulation 100% to 0% at once. Answer:
 `accept` or `no`.
+
+> *Director, 2026-11-03:* **keep** (the bend is accepted).
 
 ## Presets
 
@@ -130,18 +150,26 @@ section below.
 **11. Is there a preset you would cut or redo?** Play any of the 48; the table in the pack gives
 each one's character. Answer: `none`, or the numbers (for example `fx-22, inst-15`).
 
+> *Director, 2026-11-03:* **none**: no preset to cut or redo.
+
 **12. Should INIT start the instrument further into its sample?** Play [init-inst](../../../build/release/listening/m2-presets/init-inst.wav)
 (peak -20.3 dBFS, RMS -39 dBFS: Position 0 is the violin's quiet bow start; the same spec at
 Position 0.5 peaks at -4.9) and [init-fx](../../../build/release/listening/m2-presets/init-fx.wav). Answer: `keep` or `further` (D8's change).
 
+> *Director, 2026-11-03:* **keep**: INIT stays at Position 0.
+
 **13. Does Infinite Regress stay bounded?** Play [fx-19-infinite-regress](../../../build/release/listening/m2-presets/fx-19-infinite-regress.wav) (Feedback
 0.93; it builds over 8 s to -12 dBFS RMS). Answer: `bounded` or `runaway`.
+
+> *Director, 2026-11-03:* **bounded**: Infinite Regress (fx-19) stays bounded.
 
 **14. Does the Mutate ladder stay in the family at 10% and leave it by 60%?** Play
 [mutate-ladder](../../../build/release/listening/m2-presets/mutate-ladder.wav) (FX 01 Soft Focus, then Mutate at 10%, 30% and 60%, 4 s each). Each
 bus filter's type is a stepped slot, so about 73% of 15% presses flip at least one of the eight
 types with four layers on. Answer: `fine` or `lock` (lock the two filter types per layer); a
 note is optional.
+
+> *Director, 2026-11-03:* **fine**: the ladder's family behavior is accepted; no filter-type lock.
 
 ## Views
 
