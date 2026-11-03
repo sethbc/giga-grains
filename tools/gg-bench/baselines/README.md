@@ -9,9 +9,11 @@ Sub-project 6 makes it blocking, with the published §16 headline.
 **Baselines are per CPU model.** GitHub runs a leg on whichever CPU model it assigns. So far
 Linux has landed on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C, and Windows on EPYC 7763,
 9V45, 9V74 and Intel Xeon 8370C. The files have entries for the mac leg's Apple M1 VM, Windows'
-EPYC 7763, 9V45, 9V74 and Xeon 8370C, and Linux's EPYC 7763 and 9V45; the other models get no
-verdict yet. Windows' EPYC 9V74 entry is older than the rest: it was made from the SSE-era
-engine code (12 ratios) and is stale until a run lands on that model and remakes it. The ratio
+EPYC 7763, 9V45 and Xeon 8370C, and Linux's EPYC 7763 and 9V45; the other models get no
+verdict yet. Windows' EPYC 9V74 entry was deleted in the M2 close (carry-over row 304): it was
+made from the SSE-era engine code (12 ratios) and gave false verdicts against the AVX2 code, while
+a missing entry honestly prints "no verdict". It comes back with three full-length runs on that
+model (`--merge`), or under the "unseen models" work at 1.0.0. The ratio
 cancels a machine's speed but not its microarchitecture: for unchanged code, ratios differ by up
 to ~20% between models and by up to ~6% on one model. So each leg's file has one entry per CPU
 model, keyed by gg-bench's `machine` string (for example `AMD EPYC 7763 64-Core Processor
@@ -28,8 +30,8 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
 The report-only cases are timed and print ratios, and stay report-only (the whole gate is, until
 1.0.0). Since the AVX2 task of M2 sub-project 3 (INTENT §23 #66) the x86 entries made from three
 full-length runs have them too, 30 ratios an entry (ten cases at three blocks), so those legs
-report a verdict for them; the `mac-universal` entry (the M1 VM) and Windows' older EPYC 9V74 one
-have none, and a ratio a file lacks is only `not in the baseline`. They are:
+report a verdict for them; the `mac-universal` entry (the M1 VM)
+has none, and a ratio a file lacks is only `not in the baseline`. They are:
 - `engine-live-long` (`engine-live`'s stream over a 300 s ring, its reads spanning it; M2
   sub-project 2), which no entry has yet: it gets entries once three full runs are merged in
   (`--merge`, below). A `--quick` run caps its 300 s warm-up at 16 s, so its quick ratios read a
