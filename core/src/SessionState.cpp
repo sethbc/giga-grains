@@ -678,8 +678,11 @@ std::string encodeState(const SessionState &state)
             anyEntry = true;
             const bool writable =
                 isValidMediaEntry(*e) && e->layer == k && (!e->embed || hasId(ids, e->audioId));
-            // One decodeState loaded without its payload is left out in every build.
-            assert(writable || state.sampleAudioMissing[k]);
+            // The flag excuses exactly the case it records: a valid embedded entry of this layer
+            // whose payload is missing, and one decodeState loaded without it is left out in every
+            // build. An entry replaced since (invalid, another layer's, or a file's) is no excuse.
+            assert(writable || (state.sampleAudioMissing[k] && isValidMediaEntry(*e) &&
+                                e->layer == k && e->embed));
             samples[k] = writable ? &*e : nullptr;
         }
         if (const auto &r = state.rings[k])
@@ -687,7 +690,8 @@ std::string encodeState(const SessionState &state)
             anyEntry = true;
             const bool writable =
                 isValidRingEntry(*r) && r->layer == k && (!r->embed || hasId(ids, r->audioId));
-            assert(writable || state.ringAudioMissing[k]);
+            assert(writable || (state.ringAudioMissing[k] && isValidRingEntry(*r) &&
+                                r->layer == k && r->embed));
             rings[k] = writable ? &*r : nullptr;
         }
     }
