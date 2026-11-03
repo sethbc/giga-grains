@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright 2026, the Giga Grains authors (see git history)
 #
-# The required checks (INTENT §19):
+# The checks (INTENT §19). main's ruleset requires two: ci-ok, which passes only when plan, every
+# build leg and every sanitizer job passed (or, for a pull request that changes only documents,
+# were skipped; INTENT §23 #77), and clang-format (format.yml).
 #
 #   build       macOS (universal), Windows (ClangCL) and Linux (gcc-13): gg-all and gg-products,
 #               then ctest. ctest includes the golden event-log comparison, so this job is the
@@ -115,12 +117,36 @@ jobs:
       prerelease_suffix: ${{ steps.plan.outputs.prerelease_suffix }}
       tag: ${{ steps.plan.outputs.tag }}
       sign: ${{ steps.plan.outputs.sign }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # A pull request that changes only documents (INTENT §23 #77): every changed file under docs/,
+      # or INTENT.md or CLAUDE.md, which nothing builds or tests. Every other Markdown file is an
+      # input: THIRD_PARTY_NOTICES.md is embedded in the editor and compared byte for byte, content/
+      # and installer/ READMEs and PROVENANCE.md are staged into the products, the root README.md
+      # is checked by a scripts test. A docs-only pull request skips the build legs and the
+      # sanitizers; clang-format (format.yml) still runs, and ci-ok passes on the skip. The checkout
+      # of a pull request is its merge commit, so HEAD^1 is the base it would merge into. Every
+      # other run (a push, the nightly, a dispatch, a tag) is never docs only.
+      - name: Is the change documents only?
+        id: docs
+        run: |
+          docs_only=false
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            files="$(git diff --name-only HEAD^1 HEAD)"
+            echo "Changed files:"
+            sed 's/^/  /' <<<"$files"
+            if [[ -n "$files" ]] && ! grep -qvE '^(docs/.+|INTENT\.md|CLAUDE\.md)$' <<<"$files"; then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "### Documents only: $docs_only" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Plan the run
         id: plan
@@ -232,6 +258,7 @@ jobs:
   build:
     name: build (${{ matrix.preset }})
     needs: plan
+    if: ${{ needs.plan.outputs.docs_only != 'true' }}
     runs-on: ${{ matrix.os }}
     # 120, not 90 (INTENT §23 #73): a full-length benchmark (the nightly, a dispatch, a tag) now
     # takes more than 30 minutes a leg, after up to 22 minutes of build and tests.
@@ -991,6 +1018,8 @@ jobs:
   # below is the one the ruleset requires and the release job needs.
   sanitizer:
     name: sanitizer (${{ matrix.sanitizer }}${{ matrix.shard && format(' {0}/6', matrix.shard) || '' }})
+    needs: plan
+    if: ${{ needs.plan.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     # 90, not 60 (INTENT §23 #68, 2026-10-31), from when one job ran both sanitizers; a shard
     # takes a fraction of it.
@@ -1145,8 +1174,8 @@ jobs:
   # needs: it passes only when all seven sanitizer jobs passed.
   sanitizers:
     name: sanitizers (asan, rtsan)
-    needs: sanitizer
-    if: ${{ always() }}
+    needs: [plan, sanitizer]
+    if: ${{ always() && needs.plan.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1154,6 +1183,31 @@ jobs:
         run: |
           echo "sanitizer jobs: ${{ needs.sanitizer.result }}"
           [[ "${{ needs.sanitizer.result }}" == success ]]
+
+  # The one check main's ruleset requires beside clang-format (INTENT §23 #77): it passes when the
+  # plan passed and either every build leg and sanitizer job passed, or the pull request is
+  # documents only and they were skipped. A skipped matrix job never reports its per-leg names, so
+  # the ruleset can't require those.
+  ci-ok:
+    name: ci-ok
+    needs: [plan, build, sanitizer]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: The run passed, or skipped what a documents-only change needs
+        run: |
+          plan="${{ needs.plan.result }}"
+          build="${{ needs.build.result }}"
+          sanitizer="${{ needs.sanitizer.result }}"
+          docs_only="${{ needs.plan.outputs.docs_only }}"
+          echo "plan: $plan; build: $build; sanitizer: $sanitizer; documents only: $docs_only"
+          [[ $plan == success ]] || exit 1
+          if [[ $docs_only == true ]]; then
+            [[ $build == skipped && $sanitizer == skipped ]]
+          else
+            [[ $build == success && $sanitizer == success ]]
+          fi
 
   # When the kind isn't none, and only after plan, every build leg and the sanitizers passed (a
   # red sanitizer run blocks a release). The only job that may write to the repository
