@@ -145,7 +145,10 @@ class MediaSession
     /// host's main thread: the next save() makes the WAV bytes, cached while inactive), restored
     /// there with no decode and converted if its rate differs, as a restore's are; once a save
     /// has made the bytes, they replace the frames, which are dropped (one copy held against the
-    /// cap), and the activation restores from them. The loaders deactivate. Never throws: a ring
+    /// cap), and the activation restores from them (a frozen window a save has just encoded is
+    /// kept as those bytes, never copied). That activation decodes under the cap's decode bound,
+    /// so near a tight cap it may refuse a ring the frames' move would have restored: the price
+    /// of holding the ring once. The loaders deactivate. Never throws: a ring
     /// that can't be kept is lost with its Processor, as before.
     void deactivate(const core::Processor *processor, const core::ParamValues &values) noexcept;
     /// clap_plugin.on_main_thread, after the plugin has collected its exchanges: the loaders'
@@ -247,6 +250,11 @@ class MediaSession
         return loaders_[layer]->hasSample() ? SourceMode::Sample : SourceMode::Live;
     }
     void refreshBudget() noexcept;
+    /// Whether `slot`'s save cache holds the frozen window of storage epoch `epoch` and head
+    /// `head` starting at `oldest` (the class comment's cache): save() and deactivate() then take
+    /// its bytes and copy nothing.
+    static bool cacheHolds(const RingSlot &slot, bool frozen, uint32_t epoch, int64_t head,
+                           int64_t oldest) noexcept;
     /// Restores the held ring of `layer` into `processor` (activate()).
     void restoreHeld(core::Processor &processor, uint8_t layer);
 

@@ -2230,6 +2230,45 @@ TEST_CASE("an inactive save keeps one copy of a ring", "[plugin]")
     CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
 }
 
+namespace
+{
+int deactivateCopies = 0;
+
+void countCopies(uint8_t /*layer*/, int /*attempt*/) { ++deactivateCopies; }
+} // namespace
+
+TEST_CASE("a deactivation keeps a frozen ring a save has just encoded as its bytes", "[plugin]")
+{
+    // Carry-over row 354, the deactivation's branch: a frozen ring saved while active is cached
+    // as its WAV bytes; the deactivation that follows probes that cache as the save does and
+    // copies nothing (the ring-read hook, called after each try's copy, is never called), keeps
+    // the bytes alone against the cap and encodes nothing, and the activation restores the ring
+    // from them, frame for frame.
+    gg::test::useMediaScratch("ring-deactivate-cached");
+    PluginUnderTest fx(kFxId);
+    frozenFx(fx);
+    const std::vector<float> window = gg::test::ringWindow(*fx.impl().processor(), 0);
+    const auto &media = fx.impl().media();
+    const gg::core::SessionState active = decoded(fx.save(), gg::core::Mode::Fx);
+    REQUIRE(active.rings[0].has_value());
+    REQUIRE(active.audio.size() == 1);
+    const uint32_t encoded = media.ringsEncoded();
+    deactivateCopies = 0;
+    gg::plugin::detail::setRingReadHook(countCopies);
+    fx.deactivate();
+    gg::plugin::detail::setRingReadHook(nullptr);
+    CHECK(deactivateCopies == 0); // the cache answered: no copy taken
+    CHECK(media.ringsEncoded() == encoded);
+    CHECK(media.memoryUsedBytes() == active.audio[0].bytes.size());
+    const gg::core::SessionState inactive = decoded(fx.save(), gg::core::Mode::Fx);
+    CHECK(media.ringsEncoded() == encoded); // the bytes kept, not encoded again
+    REQUIRE(inactive.audio.size() == 1);
+    const bool sameBytes = inactive.audio[0].bytes == active.audio[0].bytes;
+    CHECK(sameBytes);
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
+}
+
 TEST_CASE("a deactivation with four 60 s rings copies them and encodes none", "[plugin][serial]")
 {
     // The final review's I3, at its size: four frozen 60 s rings (23 MB of WAV each). Encoding

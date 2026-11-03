@@ -190,6 +190,13 @@ bool MediaSession::restoreInFlight(const core::Processor &processor, uint8_t lay
 
 void MediaSession::refreshBudget() noexcept { budget_.usedBytes = memoryUsedBytes(); }
 
+bool MediaSession::cacheHolds(const RingSlot &slot, bool frozen, uint32_t epoch, int64_t head,
+                              int64_t oldest) noexcept
+{
+    return frozen && slot.cached && slot.encoded != nullptr && slot.cacheEpoch == epoch &&
+           slot.cacheHead == head && slot.cacheOldest == oldest;
+}
+
 fs::path MediaSession::capturesFolder() const
 {
     const core::MachineSettings settings =
@@ -232,8 +239,7 @@ std::optional<MediaSession::SavedRing> MediaSession::readForSave(const core::Pro
     std::shared_ptr<SampleBuffer> buffer;
     const auto probe = [&slot](const core::RingMeta &meta, uint32_t e0, int64_t r0,
                                const Span &span) {
-        return meta.frozen && slot.cached && slot.encoded != nullptr && slot.cacheEpoch == e0 &&
-               slot.cacheHead == r0 && slot.cacheOldest == span.from;
+        return cacheHolds(slot, meta.frozen, e0, r0, span.from);
     };
     const auto done = readWith(
         processor, layer, request, 0, probe,
@@ -765,36 +771,40 @@ void MediaSession::deactivate(const core::Processor *processor,
             // The audio thread is stopped: the read passes at once. The frames are copied, not
             // encoded: the host's main thread waits for this, and four 300 s rings took seconds
             // to encode and hash. The next save() does that, or the next activation restores the
-            // frames as they are.
+            // frames as they are. A frozen window a save has just encoded (its cache, probed as
+            // the save probes it) isn't copied at all: its bytes are kept instead (carry-over
+            // row 354: the ring held once).
             std::shared_ptr<SampleBuffer> window;
-            const auto done =
-                readWith(*processor, l, windowOf(values, l, 0), 0,
-                         [&](const RingStorage &storage, int64_t from, int64_t to) {
-                             window = media::ringToBuffer(storage.slots(), storage.capacity(), from,
-                                                          to - from, rate_);
-                         });
+            const auto done = readWith(
+                *processor, l, windowOf(values, l, 0), 0,
+                [&slot](const core::RingMeta &meta, uint32_t e0, int64_t r0, const Span &span) {
+                    return cacheHolds(slot, meta.frozen, e0, r0, span.from);
+                },
+                [&](const RingStorage &storage, int64_t from, int64_t to) {
+                    window = media::ringToBuffer(storage.slots(), storage.capacity(), from,
+                                                 to - from, rate_);
+                });
             if (done.has_value())
             {
-                const auto lapped = static_cast<std::size_t>(done->valid - done->from);
-                for (uint32_t c = 0; c < 2; ++c)
-                {
-                    std::fill_n(window->channel(c), lapped, 0.0f); // none: nothing writes
-                }
                 core::RingEntry entry = windowEntry(*done, l, rate_);
                 std::shared_ptr<const std::string> bytes;
-                if (done->frozen && slot.cached && slot.encoded != nullptr &&
-                    slot.cacheEpoch == done->epoch && slot.cacheHead == done->head &&
-                    slot.cacheOldest == done->from)
+                if (done->cached)
                 {
-                    // A save encoded this very window: its bytes are kept with it.
                     entry.sha256Hex = slot.encoded->sha256Hex;
                     entry.fileSize = slot.encoded->size;
                     bytes =
                         std::shared_ptr<const std::string>(slot.encoded, &slot.encoded->wavBytes);
                 }
+                else
+                {
+                    const auto lapped = static_cast<std::size_t>(done->valid - done->from);
+                    for (uint32_t c = 0; c < 2; ++c)
+                    {
+                        std::fill_n(window->channel(c), lapped, 0.0f); // none: nothing writes
+                    }
+                }
                 slot.pendingEntry = std::move(entry);
-                // One copy kept (carry-over row 354): with the bytes, the frames go.
-                slot.pendingWindow = bytes == nullptr ? std::move(window) : nullptr;
+                slot.pendingWindow = std::move(window); // null when the bytes were kept
                 slot.pendingBytes = std::move(bytes);
             }
         }

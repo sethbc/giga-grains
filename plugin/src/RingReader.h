@@ -55,10 +55,11 @@ struct RingSpanRequest
 /// kept with its lapped front trimmed (a capture's; a save keeps the window's length and writes
 /// silence over that front instead, MediaSession::save) when it is the last, or when its span is
 /// longer than N − (R1 − R0), so that at that write rate every try would lap it (a whole window of
-/// a running ring: its first try). nullopt with no ring, an
-/// empty span, or the storage replaced under every try. Main thread only: the storage may be read
-/// only on the thread that frees it (Processor::ringRead). Consumes the layer's RingMeta
-/// (Processor::ringMeta, which has one consumer), for the marks.
+/// a running ring: its first try); a try the head lapped whole is never kept. nullopt with no
+/// ring, an empty span, the storage replaced under every try, or the copy lapped whole on every
+/// try. Main thread only: the storage may be read only on the thread that frees it
+/// (Processor::ringRead). Consumes the layer's RingMeta (Processor::ringMeta, which has one
+/// consumer), for the marks.
 std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer,
                                  const RingSpanRequest &request, double rate);
 

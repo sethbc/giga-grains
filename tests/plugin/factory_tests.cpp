@@ -589,8 +589,8 @@ TEST_CASE("the instrument's editor context outlines its sample", "[plugin]")
 
 TEST_CASE("the editor's captures folder is the session's", "[plugin]")
 {
-    // Carry-over row 384: the editor asks the media session for the captures folder, which keeps
-    // no copy of its rule: the settings file's folder, else the default.
+    // Carry-over row 384: the editor has no rule of its own for the captures folder; it asks the
+    // media session, whose rule is the settings file's folder, else the default.
     const juce::ScopedJuceInitialiser_GUI juceGui;
     const std::filesystem::path dir = gg::test::useMediaScratch("gui-captures-folder");
     gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
