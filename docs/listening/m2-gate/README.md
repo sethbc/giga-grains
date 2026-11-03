@@ -1,7 +1,7 @@
 # The M2 listening gate
 
 **Status: Complete: every item answered, 2026-11-03.** The director's verdicts are in each item's
-answer field and in INTENT §23 #92. Thirty-six items were keep, accept, yes, ok, pass or fine. The
+answer field and in INTENT §23 #92. Thirty-five items were keep, accept, yes, ok, pass or fine. The
 five that were not, and where each went:
 
 - **2** (Env's release): change. A grain stream through the release, for M3's Voice scheduler
