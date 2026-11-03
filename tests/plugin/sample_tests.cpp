@@ -1760,8 +1760,8 @@ TEST_CASE("the material set before a spectral kind decides its units", "[plugin]
     s.samples[0] = gg::test::entryOf(file);
     s.samples[0]->layer = 0;
     REQUIRE(plugin.load(gg::core::encodeState(s)));
-    block();          // the audio thread takes the loaded state at this call
-    block();          // and the main thread's rescan lands one call later
+    block();          // process takes the loaded state and onMainThread rescans, in one call
+    block();          // a settling call
     CHECK(percent()); // the kind is Sample: a percentage
     const uint32_t beforeKind = host.textRescans();
     setKind(3.0);
@@ -1773,7 +1773,7 @@ TEST_CASE("the material set before a spectral kind decides its units", "[plugin]
 
     // The sample is cleared while the kind is Sample; the kind then becomes Spectral.
     REQUIRE(plugin.load(empty));
-    block(); // as above: the state is taken, then the rescan lands
+    block(); // as above, a settling call
     block();
     const uint32_t beforeSecond = host.textRescans();
     setKind(3.0);
