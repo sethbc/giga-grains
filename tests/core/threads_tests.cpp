@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -109,6 +110,21 @@ LayersSetup poolSetup(Mode mode, gg::TaskRunner *runner)
 }
 
 const char *nameOf(Mode mode) { return mode == Mode::Fx ? "FX" : "instrument"; }
+
+// Carry-over row 234's diagnostic, for an INFO: a render's enable faults, and the first one's
+// layer, frame and kind.
+std::string describeFaults(const LayersRender &r)
+{
+    if (r.enableFaults == 0)
+    {
+        return "no enable faults";
+    }
+    const auto &f = r.firstEnableFault;
+    return std::to_string(r.enableFaults) + " enable faults, the first on layer " +
+           std::to_string(f.layer) + " at frame " + std::to_string(f.frame) +
+           (f.disagrees ? ", disagreeing with its on ramp" : "") +
+           (f.offGrid ? ", off the grid" : "");
+}
 } // namespace
 
 TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
@@ -127,6 +143,11 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
         INFO(nameOf(mode));
         LayersRender ref;
         renderLayers(input, events, 4096, {4096}, ref, poolSetup(mode, nullptr));
+        // Row 234: every render here checks its enable faults first, the serial runner's and
+        // each pool's (a recurrence then says whether a flip broke an invariant, and on which
+        // runner).
+        INFO("the reference: " << describeFaults(ref));
+        REQUIRE(ref.enableFaults == 0);
         REQUIRE(allFinite(ref.audio.left));
         REQUIRE(allFinite(ref.audio.right));
         REQUIRE(peak(ref.audio.left) > 0.05f);
@@ -146,6 +167,10 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
             INFO("block size " << block);
             LayersRender serial;
             renderLayers(input, events, 4096, {block}, serial, poolSetup(mode, nullptr));
+            {
+                INFO("the serial runner: " << describeFaults(serial));
+                REQUIRE(serial.enableFaults == 0);
+            }
             REQUIRE_FALSE(serial.log.overflowed);
             REQUIRE(sameBits(ref.audio.left, serial.audio.left));
             REQUIRE(sameBits(ref.audio.right, serial.audio.right));
@@ -162,6 +187,10 @@ TEST_CASE("renders are identical with no pool and pools of 1, 2 and 8 workers",
                 StubPool pool(workers);
                 LayersRender r;
                 renderLayers(input, events, 4096, {block}, r, poolSetup(mode, &pool));
+                {
+                    INFO("the stub pool: " << describeFaults(r));
+                    REQUIRE(r.enableFaults == 0);
+                }
                 REQUIRE_FALSE(r.log.overflowed);
                 REQUIRE(sameBits(serial.audio.left, r.audio.left));
                 REQUIRE(sameBits(serial.audio.right, r.audio.right));
