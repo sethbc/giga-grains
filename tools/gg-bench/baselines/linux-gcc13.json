@@ -189,191 +189,522 @@
       "runs": 1
     },
     {
-      "commit": "630d740b151ff61b32bdd214d548a3c5e94591c3",
+      "commit": "ca60f54b8a5bd60fd6a4ccf44a19b157b7e0a563",
       "machine": "AMD EPYC 7763 64-Core Processor (x86_64)",
       "ratios": [
         {
           "blockSize": 32,
           "case": "engine-sample",
-          "ratio": 1.0408420850069784,
+          "ratio": 0.9713475222324675,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-sample",
-          "ratio": 0.9260561434904415,
+          "ratio": 0.8810616729209293,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-sample",
-          "ratio": 0.82872168152889,
+          "ratio": 0.7828021826096374,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-sample-eco",
-          "ratio": 0.8758832350262425,
+          "ratio": 0.7756934104819315,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-sample-eco",
-          "ratio": 0.7701274076142595,
+          "ratio": 0.6956641029832553,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-sample-eco",
-          "ratio": 0.677826171937514,
+          "ratio": 0.6195743827333738,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-live",
-          "ratio": 1.0761911439190797,
+          "ratio": 1.060458226643554,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-live",
-          "ratio": 0.9859121321092266,
+          "ratio": 0.9219818359283445,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-live",
-          "ratio": 0.8979640659526534,
+          "ratio": 0.8075316142250433,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live-long",
+          "ratio": 1.0580894670747,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live-long",
+          "ratio": 0.9228319827305793,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live-long",
+          "ratio": 0.8134308616453494,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-full-pool",
-          "ratio": 0.9888838025408796,
+          "ratio": 0.9357222878852819,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-full-pool",
-          "ratio": 0.9289290632296257,
+          "ratio": 0.8762458601980425,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-full-pool",
-          "ratio": 0.8320628390295753,
+          "ratio": 0.790721411651371,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-layers",
-          "ratio": 1.078486824415811,
+          "ratio": 1.0363302706173743,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-layers",
-          "ratio": 0.9528413144643029,
+          "ratio": 0.9044223368916724,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-layers",
-          "ratio": 0.8705334797946076,
+          "ratio": 0.8146289599729291,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-layers-full",
-          "ratio": 1.2215505473540968,
-          "tolerance": 0.33671018832181226
+          "ratio": 1.0753805890328008,
+          "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-layers-full",
-          "ratio": 1.1171454604447617,
-          "tolerance": 0.37709799634517993
+          "ratio": 0.9942655493022491,
+          "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-layers-full",
-          "ratio": 0.9029033119784428,
+          "ratio": 0.8640556904419476,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-sample-hq",
-          "ratio": 6.756988292503536,
+          "ratio": 6.677165099441437,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-sample-hq",
-          "ratio": 7.064979651057501,
+          "ratio": 6.958388943363927,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-sample-hq",
-          "ratio": 7.1769827184896915,
+          "ratio": 7.191810321972792,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-sample-hq-up",
-          "ratio": 6.723737835183872,
+          "ratio": 6.745648626626133,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-sample-hq-up",
-          "ratio": 7.014677017644209,
+          "ratio": 6.993530849098569,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-sample-hq-up",
-          "ratio": 7.159783011139435,
+          "ratio": 7.260769929234844,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-overload",
-          "ratio": 1.0230639986757626,
+          "ratio": 0.9760095181551172,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-overload",
-          "ratio": 0.9239304680530278,
+          "ratio": 0.8870698293632024,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-overload",
-          "ratio": 0.8349396486573817,
+          "ratio": 0.789113468096942,
           "tolerance": 0.1
         },
         {
           "blockSize": 32,
           "case": "engine-sample-sse",
-          "ratio": 1.2042115691168842,
+          "ratio": 1.1238400482743698,
           "tolerance": 0.1
         },
         {
           "blockSize": 64,
           "case": "engine-sample-sse",
-          "ratio": 1.130545681019171,
+          "ratio": 1.0548089433204775,
           "tolerance": 0.1
         },
         {
           "blockSize": 256,
           "case": "engine-sample-sse",
-          "ratio": 1.0512173837390977,
+          "ratio": 0.9880161535842422,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-smear",
+          "ratio": 0.9877833858975145,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-smear",
+          "ratio": 0.8771704775520417,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-smear",
+          "ratio": 0.7754428908340165,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-buses",
+          "ratio": 0.9702519618346995,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-buses",
+          "ratio": 0.878144072454708,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-buses",
+          "ratio": 0.7822050741638642,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-spectral",
+          "ratio": 1.0307945950472406,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-spectral",
+          "ratio": 0.9038588008591012,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-spectral",
+          "ratio": 0.8166400464073473,
           "tolerance": 0.1
         }
       ],
       "runs": 2
+    },
+    {
+      "commit": "ca60f54b8a5bd60fd6a4ccf44a19b157b7e0a563",
+      "machine": "AMD EPYC 9V74 80-Core Processor (x86_64)",
+      "ratios": [
+        {
+          "blockSize": 32,
+          "case": "engine-sample",
+          "ratio": 0.9204546299883568,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample",
+          "ratio": 0.8411387763708219,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample",
+          "ratio": 0.7617855569012032,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-eco",
+          "ratio": 0.7366568961052071,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-eco",
+          "ratio": 0.6690412517121728,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-eco",
+          "ratio": 0.6032974584951561,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live",
+          "ratio": 1.0349274832310853,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live",
+          "ratio": 0.9056256399342094,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live",
+          "ratio": 0.7834470053376046,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-live-long",
+          "ratio": 1.0237117683341102,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-live-long",
+          "ratio": 0.9234995561288329,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-live-long",
+          "ratio": 0.7977085000912825,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-full-pool",
+          "ratio": 0.9154124599378887,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-full-pool",
+          "ratio": 0.8446041524033706,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-full-pool",
+          "ratio": 0.8064351099524714,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-layers",
+          "ratio": 0.9882480138845737,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-layers",
+          "ratio": 0.8945644880496176,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-layers",
+          "ratio": 0.8150297908577541,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-layers-full",
+          "ratio": 1.082132527871677,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-layers-full",
+          "ratio": 1.0191871813697018,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-layers-full",
+          "ratio": 0.8919906111993822,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-hq",
+          "ratio": 6.877034458218595,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-hq",
+          "ratio": 7.16966700334949,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-hq",
+          "ratio": 7.3152935390562055,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-hq-up",
+          "ratio": 6.954438854950553,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-hq-up",
+          "ratio": 7.237034446273495,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-hq-up",
+          "ratio": 7.373869810486314,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-overload",
+          "ratio": 0.9761756166513378,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-overload",
+          "ratio": 0.8665138823457267,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-overload",
+          "ratio": 0.7748334922852451,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-sse",
+          "ratio": 1.049893224435769,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-sse",
+          "ratio": 0.9982150672415266,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-sse",
+          "ratio": 0.9356366162889709,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-sample-smear",
+          "ratio": 0.9158896024607371,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-sample-smear",
+          "ratio": 0.8408669926250146,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-sample-smear",
+          "ratio": 0.7601884232508551,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-buses",
+          "ratio": 0.9224552261770753,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-buses",
+          "ratio": 0.8408949855944363,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-buses",
+          "ratio": 0.763272130766007,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 32,
+          "case": "engine-spectral",
+          "ratio": 0.9830801988275906,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 64,
+          "case": "engine-spectral",
+          "ratio": 0.887585925592148,
+          "tolerance": 0.1
+        },
+        {
+          "blockSize": 256,
+          "case": "engine-spectral",
+          "ratio": 0.7823502526263884,
+          "tolerance": 0.1
+        }
+      ],
+      "runs": 1
     }
   ],
   "schemaVersion": 2
