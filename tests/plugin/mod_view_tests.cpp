@@ -452,11 +452,45 @@ TEST_CASE("a route to a hidden target shows its name", "[plugin]")
     auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
     REQUIRE(target != nullptr);
     CHECK(target->getText() == "Mix");
-    // Dimmed: the hidden name reads in the palette's dim text color, not the target boxes'.
+    // Dimmed: the hidden name reads in the palette's dim text color, the other targets in its
+    // text color (row 388 (a)).
     auto *other = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.14.target"));
     REQUIRE(other != nullptr);
-    CHECK(target->findColour(juce::ComboBox::textColourId) !=
-          other->findColour(juce::ComboBox::textColourId));
+    CHECK(target->findColour(juce::ComboBox::textColourId) == gg::ui::Palette::dark().dimText);
+    CHECK(other->findColour(juce::ComboBox::textColourId) == gg::ui::Palette::dark().text);
+}
+
+TEST_CASE("a hidden target stays dimmed across a theme switch", "[plugin]")
+{
+    // Row 388 (a): in an editor, through the theme switch and a refresh, in both themes.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Instrument);
+    h.routes[12] = {.source = gg::core::ModSource::Lfo1,
+                    .target = ParamSlot::Mix,
+                    .depth = 0.25f,
+                    .curve = gg::core::ModCurve::Bipolar};
+    const auto editor = gg::ui::makeEditor(h.recording.context);
+    REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Mod));
+    auto *routes = dynamic_cast<gg::ui::RouteList *>(findDeep(*editor, "routes"));
+    REQUIRE(routes != nullptr);
+    routes->refresh();
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(*editor, "route.13.target"));
+    auto *other = dynamic_cast<juce::ComboBox *>(findDeep(*editor, "route.14.target"));
+    REQUIRE(target != nullptr);
+    REQUIRE(other != nullptr);
+    for (const gg::ui::ThemeChoice theme :
+         {gg::ui::ThemeChoice::Light, gg::ui::ThemeChoice::Dark, gg::ui::ThemeChoice::Light})
+    {
+        const bool light = theme == gg::ui::ThemeChoice::Light;
+        INFO((light ? "light" : "dark"));
+        const gg::ui::Palette &pal = light ? gg::ui::Palette::light() : gg::ui::Palette::dark();
+        REQUIRE(gg::ui::setTheme(*editor, theme));
+        CHECK(target->findColour(juce::ComboBox::textColourId) == pal.dimText);
+        CHECK(other->findColour(juce::ComboBox::textColourId) == pal.text);
+        routes->refresh();
+        CHECK(target->findColour(juce::ComboBox::textColourId) == pal.dimText);
+        CHECK(other->findColour(juce::ComboBox::textColourId) == pal.text);
+    }
 }
 
 TEST_CASE("a loaded depth past the target's range is kept until moved", "[plugin]")
