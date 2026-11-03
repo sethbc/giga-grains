@@ -1157,6 +1157,10 @@ bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
         l.engine.ringResized(); // Position and Spray reach the new length
     }
     publishStorage(l);
+    if (adoptRingHook_)
+    {
+        adoptRingHook_(); // a test's (setAdoptRingHook): between the publication and the retirement
+    }
     // Only now, with the new storage published, may the main thread free the old one: a reader
     // that took the old pointer before the publication copies from it until it sees the epoch
     // change, and collect() runs on the reader's thread, between reads (core::RingRead).

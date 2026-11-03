@@ -1610,6 +1610,49 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
     // audio thread renders (each piece polls the offer), however long this thread is descheduled
     // or polls; the audio thread's kMaxTotal is a safety bound, and reaching it fails.
     constexpr uint32_t kPiece = 64;
+    {
+        // First deterministically (carry-over row 351), on one thread: the adoption's hook
+        // (Processor::setAdoptRingHook) reads the published storage and collects between the
+        // publication and the retirement, where the threaded run below collects only by chance.
+        // The new storage must be published there already, and the old one not yet retired, so
+        // that collect() frees nothing. With the two in the other order, the hook sees the old
+        // storage still published and its collect() frees it: both checks fail on every run.
+        gg::core::Processor q({kRate, kPiece, 7, gg::core::Mode::Fx});
+        REQUIRE(q.setRingNow(0, std::make_unique<gg::RingStorage>(4800, kPiece),
+                             gg::core::RingOffer{}));
+        std::vector<float> left(kPiece, 0.25f), right(kPiece, -0.25f), outL(kPiece), outR(kPiece);
+        const float *in[2] = {left.data(), right.data()};
+        float *out[2] = {outL.data(), outR.data()};
+        q.process(in, 2, out, 2, kPiece, {});
+        const gg::RingStorage *old = q.ringRead(0).storage;
+        const gg::RingStorage *publishedInHook = nullptr;
+        std::size_t freedInHook = 0;
+        int hooked = 0;
+        q.setAdoptRingHook([&] {
+            SST_CPPUTILS_RTSAN_DISABLE; // the main thread's role, taken here on the audio side
+            ++hooked;
+            publishedInHook = q.ringRead(0).storage;
+            const std::size_t before = q.sources(0).ringsHeld();
+            q.sources(0).collect();
+            freedInHook += before - q.sources(0).ringsHeld();
+        });
+        gg::core::RingOffer how;
+        how.copiedTo = q.ringRead(0).head->load(std::memory_order_acquire);
+        auto next = std::make_unique<gg::RingStorage>(9600, kPiece);
+        const gg::RingStorage *offered = next.get();
+        q.sources(0).offerRing(std::move(next), how);
+        q.process(in, 2, out, 2, kPiece, {}); // adopts it
+        q.setAdoptRingHook({});
+        REQUIRE(hooked == 1);
+        // Compares pointers only: a storage freed is never dereferenced here.
+        CHECK(publishedInHook == offered);
+        CHECK(publishedInHook != old);
+        CHECK(freedInHook == 0);
+        CHECK(q.sources(0).ringsHeld() == 2); // the old one, retired, awaits collect()
+        q.sources(0).collect();
+        CHECK(q.sources(0).ringsHeld() == 1);
+        CHECK(q.ringRead(0).storage == offered);
+    }
     constexpr int kSwaps = 200;
     constexpr int64_t kMaxTotal = int64_t{48000} * 600;
     constexpr int64_t kFramesPerSwap = int64_t{48000} * 5;
