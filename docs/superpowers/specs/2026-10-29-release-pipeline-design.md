@@ -490,7 +490,7 @@ learns: the `gg-installer` command, the switch's name, `docs/releasing.md`'s pat
   the director agrees to tag one, a rehearsal draft release from a throwaway tag
   (`v0.1.99-rc.1`, say, deleted afterwards with its tag), so the whole path has run once before
   M2 needs it.
-- **No behaviour change:** `scripts/update-goldens.sh` before and after, every WAV SHA-256
+- **No behavior change:** `scripts/update-goldens.sh` before and after, every WAV SHA-256
   matching; `scripts/check.sh` green on `dev`, `asan`, `rtsan`; the format check; the carry-over
   open-row count not higher at the end than at the start (13).
 

@@ -1,6 +1,6 @@
 # Listening pack: M2 sub-project 2 (Sources and persistence)
 
-This pack is rendered for the record now and heard at M2's close (sub-project 7; the programme
+This pack is rendered for the record now and heard at M2's close (sub-project 7; the program
 design's decision 1). It has two parts:
 
 - renders from `gg-render`, to hear offline, one per item of the spec's table (§11);
@@ -56,7 +56,7 @@ file peaks above -0.7 dBFS.
 | `07-capture-to-layer.wav` | 20.0 s | `06` with splice 2 captured into layer B at 8.2 s (B Source Sample, Pitch +7, Position 0.2 s) while layer A steps through the splices as in `06`. Peak -4.5 dBFS. RMS -19.6 dBFS. | The capture plays as a sample under the ring: the second span of the sweep, a fifth up, beside whatever span A is on. |
 | `08a-ring-restore-a.wav`, `08b-ring-restore-b.wav` | 6.0 s each | `a`: `frozen-ring.ggst` (a generated 20 s sweep ring, frozen, with two splices) restored with Freeze on and scanned for 6 s (Position 0.5 stepped to 1.1 each second); the state at the end of the render goes to `08-saved.ggst`. (A deviation from spec §11, which saves it at 0 s of the scan; harmless, because the ring is frozen.) `b`: that saved state restored and the same 6 s rendered. Peak -4.0 dBFS. RMS -13.8 dBFS. SHA-256 of both: `c60c0a190f28f73c0eb264551b1c97dc94646fad7be78ef051ecb81376848e2e`. | Identical files: the reopened pad is the saved one, from its first sample. The check is the hash, not the ear. |
 | `09-resize-live.wav` | 20.0 s | The FX with a 60 s ring over a 19.5 s sweep, scanning 3 s behind. Peak -4.3 dBFS. RMS -13.9 dBFS. `gg-render` sets a ring's length before the render and can't resize one mid-render, so this file is the 60 s ring's steady state, not the resize. | A steady scan from a ring that holds the whole file. The resize itself (16 s to 60 s to 8 s while scanning) is heard only in a host: see the checklist. |
-| `10-fx-sample-layer.wav` | 8.0 s | The FX over a stereo sweep, layer B on with Source Sample, loaded with `loop-48k.wav` (Position 0.25, Density 16 Hz, Size 125 ms), the pad at the centre. Peak -5.9 dBFS. RMS -19.5 dBFS. | A sample layer inside the effect: the loop's bursts re-grained by layer B beside layer A's grains of the input. |
+| `10-fx-sample-layer.wav` | 8.0 s | The FX over a stereo sweep, layer B on with Source Sample, loaded with `loop-48k.wav` (Position 0.25, Density 16 Hz, Size 125 ms), the pad at the center. Peak -5.9 dBFS. RMS -19.5 dBFS. | A sample layer inside the effect: the loop's bursts re-grained by layer B beside layer A's grains of the input. |
 
 ## Host checklist
 

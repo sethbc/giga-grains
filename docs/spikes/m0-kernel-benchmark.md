@@ -371,7 +371,7 @@ review B-I2):
   back to back and wall-clock, and only their median is kept. The M1 VM swings by up to 1.63×
   between adjacent configurations, so a threshold on absolute ns would flap.
 - **The Linux slope finding is confounded by run order.** The kernels and block sizes always run
-  in the same order, so anything that drifts during a run (thermal state, a noisy neighbour on
+  in the same order, so anything that drifts during a run (thermal state, a noisy neighbor on
   the VM) lands on the same configurations every time. "It reproduces across both runs" doesn't
   rule that out.
 - **This document is the durable record.** CI artifacts expire, and the JSON keeps no per-run

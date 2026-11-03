@@ -61,7 +61,7 @@ $b --canvas --json canvas.json
 
 One session on the director's Apple M5 Max (arm64), the `release` preset, AppleClang
 21.0.0.21000401, 4-wide kernels, at commit `cc68e3d` (the engine and tools sources are
-`66b58f5`'s; only docs and a test comment changed since). An idle window the programme manager
+`66b58f5`'s; only docs and a test comment changed since). An idle window the program manager
 granted: nothing else was built or benchmarked. The one-minute load average was 1.60 before the
 published run and 4.04 after, with no process above 12.5% CPU at the start.
 

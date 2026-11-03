@@ -187,8 +187,8 @@ director's decision names?
 ### K-8. Carry-over rows 118 and 119 moved on the program manager's word (C-10)
 **Question:** ratify moving rows 118 and 119 from sub-project 2 to sub-project 1?
 - Plan A3 l.65: a move "is a design amendment, which needs the PM's and the director's word".
-- §23 #65: "**The programme manager's acceptance** (2026-10-29): carry-over rows 118 and 119 move
-  from sub-project 2 to this one"; "Decided … by the director (D1–D5) and the programme manager (rows
+- §23 #65: "**The program manager's acceptance** (2026-10-29): carry-over rows 118 and 119 move
+  from sub-project 2 to this one"; "Decided … by the director (D1–D5) and the program manager (rows
   118 and 119)". No director word is recorded.
 
 **Options:**
@@ -512,7 +512,7 @@ Fix: "six". Resolution: fixed in `13199cd`.
 
 ### The program design and plan
 
-**R-48** (seed). "programme" in the design and plan (file names and text) and elsewhere in
+**R-48** (seed). The British "programme" in the design and plan (file names and text) and elsewhere in
 first-party text, against US spelling (the director, 2026-10-30).
 Fix: the close's item 6, the US-spelling sweep (PR #22 taken over), renames the two files and fixes
 every use. Resolution: fixed in the close.

@@ -222,7 +222,7 @@ Totals: 3 CONFLICT, 20 DRIFT, 3 UNSURE.
   - Strike the "pending" tails in #48 and #49.
   - Add "(amended by #60, #61, #62)" to #47's and #57 (1)'s "sub-project 6" clauses, and "(reversed by #76)" to #57 (2).
   - Point #73's "(§19)" at CLAUDE.md's "CI caches", or drop it.
-  - Give #69 its "Decided 2026-10-30 to 2026-11-01 by the director (D1–D8, D7a, D-bound, D5b, D-glide, D1-rest, D-specsave, D-specwindow, D-corners), the programme manager and Claude; written by ..." line.
+  - Give #69 its "Decided 2026-10-30 to 2026-11-01 by the director (D1–D8, D7a, D-bound, D5b, D-glide, D1-rest, D-specsave, D-specwindow, D-corners), the program manager and Claude; written by ..." line.
   - Retitle #70 to "groups 1 and 2".
   - Add "`--rounds 1`, #75" at §16 l.1797, and "the CC0 text (§15)" at §19 l.3099.
 
@@ -233,13 +233,13 @@ Totals: 3 CONFLICT, 20 DRIFT, 3 UNSURE.
 ### A-24. Seed (b): model-tier text is not in INTENT.md
 - **Class:** UNSURE (not found)
 - **Sources:** a grep of INTENT.md for Fable, Opus, Sonnet, Haiku, "implementer", "model tier" and "subagent" finds no tier rule. The only model mention is #66 l.3250: "The fix's review (opus) approved it", which agrees with the rule (NO FABLE; opus at the top).
-- **Resolution:** nothing to fix in INTENT.md. If the seed's text exists, it is in another file (the programme design, plans, CLAUDE.md or the memory files), which belong to the other reviewers' families.
+- **Resolution:** nothing to fix in INTENT.md. If the seed's text exists, it is in another file (the program design, plans, CLAUDE.md or the memory files), which belong to the other reviewers' families.
 
 ### A-25. M3's working process isn't recorded; §19's M2 process reads as standing
 - **Class:** UNSURE
 - **Sources:**
-  - §19 l.3081–3085: "**From M2 the sub-projects are run by agent sessions** (§23 #64): a programme-manager session launches one worker session per sub-project ...".
-  - The director's 2026-10-31 decision that M3 returns to M1's way (one session, serial sub-projects, parallel tasks inside each; no workers, waves or programme manager) is in the session memory (`memory/m3-process.md`), not in any repository document. That note says to record it in §23 when M3's plan is approved.
+  - §19 l.3081–3085: "**From M2 the sub-projects are run by agent sessions** (§23 #64): a program-manager session launches one worker session per sub-project ...".
+  - The director's 2026-10-31 decision that M3 returns to M1's way (one session, serial sub-projects, parallel tasks inside each; no workers, waves or program manager) is in the session memory (`memory/m3-process.md`), not in any repository document. That note says to record it in §23 when M3's plan is approved.
 - **Resolution:** UNSURE whether it should be recorded now. At minimum, change l.3081's "From M2" to "In M2", so the text doesn't contradict a decision the director has already made. Alternatively, add a §23 row now: "M3 is built as M1 was (the director, 2026-10-31)".
 
 ### A-26. #68's SP-M8 "sign-off pending"

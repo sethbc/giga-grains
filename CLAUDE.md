@@ -361,8 +361,8 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
 area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and repeated `-L`
-options must all match: `-L core -L rt` runs only the tests labelled both, and `-L 'core|rt'`
-runs the tests labelled either. The labels are:
+options must all match: `-L core -L rt` runs only the tests labeled both, and `-L 'core|rt'`
+runs the tests labeled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`, and since M2 sub-project 3 `budget` (the
   weights, the ledger, the quotas, the ladder's three rungs, the steal fade, the exit case and the
@@ -456,7 +456,7 @@ runs the tests labelled either. The labels are:
   the 4-wide table alone. Set `GG_FORCE_SSE` (set and not empty) to make a process, or a ctest,
   use the 4-wide table; `kernel_force_sse_env` checks it;
 - `determinism`: block-size invariance;
-- `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
+- `rt`: the allocation tripwire. In the `rtsan` build, two tests labeled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
 - tools: `render` (gg-render's CLI, `render_write_media_alone`, `render_spectrogram_utf8_path`,
@@ -505,7 +505,7 @@ runs the tests labelled either. The labels are:
   LICENSE, byte for byte) sits outside the editor guard, so it runs without the editor too;
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
-- `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
+- `plugin`: the plugins, driven through their CLAP factory. Tests labeled both `plugin` and
   `rt` put the allocation tripwire on `process` and `params.flush`. `routes_tests.cpp` checks
   the editor's route path (`uiSetRoutes`: the render, the saved state, a load and an edit in one
   block in both orders, an inactive edit, the tripwire). Since M2 sub-project 2,
@@ -814,7 +814,7 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     - layers: `fx-layers` (stereo noise, four Live layers, B Pitch +7, C Size 40 ms, D Pitch
       -12, the pad at rest), `inst-layers-morph` (four Sample layers, a sweep, a 330 Hz sine,
       noise and a lower sweep, one held note, Morph X and Y stepped around the square and back
-      to the centre), `inst-pitch-spread` (one note over a sine, A Pitch Spread 0, 2, 7, 12, 24
+      to the center), `inst-pitch-spread` (one note over a sine, A Pitch Spread 0, 2, 7, 12, 24
       at 1 s intervals), `inst-size-spread` (one note over noise, Size 100 ms, A Size Spread 0,
       0.5, 1, 2 octaves), `fx-layer-switch` (Layer B On at 1 s, off at 2.5 s, on at 3 s, over a
       330 Hz sine), `fx-source-switch` (layer A Live, Sample over `loop-48k.wav` from 1 s, Live

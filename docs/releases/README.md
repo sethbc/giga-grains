@@ -17,7 +17,7 @@ each release says that sessions saved with it open in every later release.
 - **The version and the milestone:** the title line names both (`Giga Grains 0.2.0 (M2, Giga)`),
   and says whether the release is a beta.
 - **What changed** since the previous release, for a musician: what you can now do, hear or
-  load, not the commits. Name a changed behaviour that affects existing sessions.
+  load, not the commits. Name a changed behavior that affects existing sessions.
 - **Known issues:** the open carry-over rows a user could meet, and the hosts or platforms with a
   known problem. Say "None known." rather than leave the section out.
 - **The installers:** which file is for which platform, and that the Windows installer is

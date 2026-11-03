@@ -68,7 +68,7 @@ So relinking a factory preset's missing sample, even to a byte-identical copy, l
 2. **"The stray check is a substring match": not so at HEAD.**
    - `make-samples.sh:149`–`:154` builds `listed` as newline-terminated lines.
    - `:275`–`:277` matches `"$file"$'\n'*` or `*$'\n'"$file"$'\n'*`, which is an exact whole-line match.
-3. **"The keep match is an exact heading".** `recorded_section` (`:80`–`:86`) matches `$0 == "### Samples/<output>"` exactly. That is the intended behaviour: a missed heading makes the row be re-made, and the SHA and stray checks catch any divergence. The row itself says "the stray check covers both".
+3. **"The keep match is an exact heading".** `recorded_section` (`:80`–`:86`) matches `$0 == "### Samples/<output>"` exactly. That is the intended behavior: a missed heading makes the row be re-made, and the SHA and stray checks catch any divergence. The row itself says "the stray check covers both".
 4. **"The README's file and byte counts are hard-coded".**
    - The content README's counts are the `## Changes` log ("v2 … 51 files", line 85), a per-release record that is correct for v2. Its step list (lines 50–77) has every release add its own entry, so nothing is stale.
    - The byte count is in giga-grains' own `content/README.md:11` (48,200,259 bytes), and it matches the v2 asset (`gh api …/releases/tags/v2`: 48200259).
@@ -209,7 +209,7 @@ A 50 ms gap (Δ > 2400 samples, so E > 5.4) covers an instant with probability o
 - Spec §6.4 (lines 349–354) says the content roots come "after the absolute path and **before the same-name search**". Its "`gg-render` never searches" is gg-render's rule, not the plugin loader's.
 - INTENT §18 D5 (`INTENT.md:2310`–`:2325`) lists step 5, "a file of the same name … then anywhere under the sample folder", for every entry.
 
-**At HEAD, `media::findSample` takes the name only from `absolutePath`** (`media/src/Search.cpp:419`–`:424`). A factory preset's entry has no absolute path (`core/include/gg/core/Preset.h:26`; `PresetSource.cpp:223`), so `name` is empty and step 5 (b, the last load folder; c, the sample-folder scan) is skipped. Step 3 needs a `relativePath`, which such an entry also lacks. The row's description of the behaviour is accurate; its claim that the spec requires it is not.
+**At HEAD, `media::findSample` takes the name only from `absolutePath`** (`media/src/Search.cpp:419`–`:424`). A factory preset's entry has no absolute path (`core/include/gg/core/Preset.h:26`; `PresetSource.cpp:223`), so `name` is empty and step 5 (b, the last load folder; c, the sample-folder scan) is skipped. Step 3 needs a `relativePath`, which such an entry also lacks. The row's description of the behavior is accurate; its claim that the spec requires it is not.
 
 **Plan.**
 - In `findSample`, when `entry.absolutePath` is empty and `isContentRelativePath(entry.contentPath)`, take `name` as the reference's last component.

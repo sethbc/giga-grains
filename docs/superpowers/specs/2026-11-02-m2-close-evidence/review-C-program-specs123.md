@@ -24,7 +24,7 @@ order), C-4 (count rules) and C-5 (model tiers).
 **Class:** CONFLICT (a Claude ruling against a criterion recorded in the director's #64)
 
 **Sources:**
-- Program design §7.5, l.484–487: the codec is sub-project 2's choice under "the programme's
+- Program design §7.5, l.484–487: the codec is sub-project 2's choice under "the program's
   criterion ... every machine that restores a session renders it identically, **and the restore
   matches the saved session's own render within the goldens' metric tolerances**".
 - INTENT §23 #64 (l.3248), in the director's decisions: "under a criterion that every restore
@@ -86,10 +86,10 @@ claims). The mechanism the director's decision names was not used.
 **Sources:**
 - Plan A3, l.65: a move of an inventory item "is a design amendment, which **needs the PM's and
   the director's word**".
-- INTENT §23 #65 (l.3249): "**The programme manager's acceptance** (2026-10-29): carry-over rows 118
+- INTENT §23 #65 (l.3249): "**The program manager's acceptance** (2026-10-29): carry-over rows 118
   and 119 move from sub-project 2 to this one". Its closing line: "Decided ... by the director
-  (D1–D5) and the programme manager (rows 118 and 119)".
-- Layers spec §12 l.966–967: "the programme manager accepted the move on 2026-10-29".
+  (D1–D5) and the program manager (rows 118 and 119)".
+- Layers spec §12 l.966–967: "the program manager accepted the move on 2026-10-29".
 
 No record shows the director's word on the move. (The text drift that follows is C-9.)
 
@@ -110,8 +110,8 @@ No record shows the director's word on the move. (The text drift that follows is
   whose base Source builds to Live**".
 - INTENT §23 #68's final fix wave (l.3252): "(the controller's ruling; the cost, **a Sample layer
   switched back to Live after a reopen starts with an empty ring**)".
-- Design §12 l.617: a worker "escalates behaviour and sound questions as forced choices". Brief
-  template l.157: "the director decides behaviour and sound by forced choice".
+- Design §12 l.617: a worker "escalates behavior and sound questions as forced choices". Brief
+  template l.157: "the director decides behavior and sound by forced choice".
 - The director's later D-specsave (extremes spec l.718–723; #69) extends saving to Spectral layers
   with no sample. It does not rule on Sample layers, so it doesn't ratify the narrowing.
 
@@ -165,7 +165,7 @@ No record shows the director's word on the move. (The text drift that follows is
 
 **Sources:** INTENT §23 #67 (l.3251): "with no 'no net growth', 'touch it, close it' or count rule
 ... #60's and #64's carry-over targets are history. CLAUDE.md's 'Working style', the M2 carry-over
-file's header and the programme design's §8 say so." (Done: design §2 l.64–65, §8 l.549–565; the
+file's header and the program design's §8 say so." (Done: design §2 l.64–65, §8 l.549–565; the
 carry-over header l.3–8.) Still stating the old rules:
 - Design §6.7 exit, l.381–382: "**the carry-over count is at or below its §8 target**". §6.7
   l.377: "the carry-over burned down (§8)". I37, l.178: "the carry-over burn-down".
@@ -239,7 +239,7 @@ carry-over header l.3–8.) Still stating the old rules:
   nothing' no longer hold[s]".
 - Unamended: design §7.2 l.424–425 ("The tap costs nothing, and adds no latency, while no
   layer's source is Resample"). INTENT §14 l.269–271, whose parent bullet still says "it costs
-  nothing, and adds no latency, while no layer's source is Resample (M2 programme design §7.2;
+  nothing, and adds no latency, while no layer's source is Resample (M2 program design §7.2;
   §23 #64)" while its own sub-bullet (l.276–278) says the opposite. Sources spec §10 l.894: the tap
   is "written only while a Resample layer exists".
 

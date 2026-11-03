@@ -29,7 +29,7 @@ them). Their licenses are recorded in INTENT §15 and sit in `libs/`.
 ### JUCE (editor, both products)
 
 JUCE 9 (`libs/JUCE`), the GUI modules only, used under the **AGPLv3** option of its dual
-license; its commercial licence is not used. Copyright (c) Raw Material Software Limited.
+license; its commercial license is not used. Copyright (c) Raw Material Software Limited.
 License text: `libs/JUCE/LICENSE.md` (which points to the AGPLv3) and the AGPLv3 in `LICENSE`.
 Both products' source, which the AGPL requires us to offer, includes JUCE as a pinned submodule.
 

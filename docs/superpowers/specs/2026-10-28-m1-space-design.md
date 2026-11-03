@@ -74,7 +74,7 @@ row.
 | S5 | Decay's top | **Infinite:** the top of Decay's travel holds the tail forever, with the input still added |
 | S6 | How the reverb is built | **Approach A:** Surge's Reverb 2 from sst-effects, plus an in-house diffuser |
 | S7 | What ∞ holds (Reverb 2 damps inside its loop, so a loop gain of 1 alone still drains lows and highs) | **At ∞, the LF damping is switched off;** highs still fade by Damping, and at Damping 0 nothing fades. A small pinned fork, changing only the ∞ setting |
-| S8 | Automating Size and Pre-delay (Reverb 2 jumps to new delay lengths) | **Smooth Pre-delay now** (it glides like tape), in the same fork; **accept Size's artefact** and log it |
+| S8 | Automating Size and Pre-delay (Reverb 2 jumps to new delay lengths) | **Smooth Pre-delay now** (it glides like tape), in the same fork; **accept Size's artifact** and log it |
 
 S7 and S8 came from the builder check, which read the draft as the planner would.
 
@@ -261,7 +261,7 @@ return is added after.
   > the loop is Surge's exactly. The DC blocker costs about 0.6 dB in the lowest band over 30 s
   > at ∞.
 - Reverb 2's damping coefficients don't scale with the sample rate, so how fast the highs fade at
-  a given Damping depends on the host's rate. That is Surge's behaviour, and it is kept.
+  a given Damping depends on the host's rate. That is Surge's behavior, and it is kept.
 
 ### 6.5 Parameters
 
@@ -393,7 +393,7 @@ Space takes the next free IDs in each scope.
     changes off, the patched Reverb 2 renders bit-identically to Surge's;
   - Pre-delay automation: a swept Pre-delay produces no step larger than the signal's own (no
     click), at block sizes 1 and 4096 alike;
-  - the hour-long boundedness renders at ∞ (§6.4), labelled `slow`;
+  - the hour-long boundedness renders at ∞ (§6.4), labeled `slow`;
   - Dry to Reverb: at Mix 0 and send > 0 the output is the dry input plus a reverb of it; the
     instrument ignores the send;
   - the parameter IDs and metadata pinned; an old state loads at the defaults and renders

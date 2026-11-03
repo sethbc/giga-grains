@@ -69,7 +69,7 @@ gg-installer`, or the `gg-products` folder), both products, all formats.
 Pack: [m2-layers](../m2-layers/README.md). The files are 4 to 13 s.
 
 **1. Does the layers' sum sound too quiet?** Play [01-four-layers](../../../build/release/listening/m2-layers/01-four-layers.wav),
-[05-layer-on-off](../../../build/release/listening/m2-layers/05-layer-on-off.wav) and [14-macro-size-all-layers](../../../build/release/listening/m2-layers/14-macro-size-all-layers.wav). With the pad at its centre
+[05-layer-on-off](../../../build/release/listening/m2-layers/05-layer-on-off.wav) and [14-macro-size-all-layers](../../../build/release/listening/m2-layers/14-macro-size-all-layers.wav). With the pad at its center
 the layers on share 1 between them (D1): four uncorrelated layers measure about 7 dB below layer A
 alone in `01`, A dips about 4 dB when B joins in `05`, and `14` sits about 6 dB under. Nothing is
 louder than M1 was. Answer: `keep` (amplitude sharing) or `power` (the pad should keep power, a
@@ -211,10 +211,10 @@ picture and what's wrong (optional).
 
 **16. Do the three moves sound like what the views show?** Play [01-window-drag](../../../build/release/listening/m2-views/01-window-drag.wav)
 (the rectangle's four drags), [02-lane-freeze](../../../build/release/listening/m2-views/02-lane-freeze.wav) (a lane frozen, then thawed) and
-[03-pad-path](../../../build/release/listening/m2-views/03-pad-path.wav) (the pad around the corners). No click at any step; the centre sits about
+[03-pad-path](../../../build/release/listening/m2-views/03-pad-path.wav) (the pad around the corners). No click at any step; the center sits about
 5 dB under a corner (D1). Answer: `yes` or `no`.
 
-> *Director, 2026-11-03:* "the pad path has a bunch of static in it." The static was `03-pad-path`'s own layer C, white noise at amplitude 0.5, which the pad's law weights in everywhere but corners A, B and D (as played, clickScore 3.63; with layer C off 0.00 and no broadband left). `03` is re-rendered with layer C a 550 Hz sine (clickScore 2.02; peak -5.3 dBFS; RMS -20.9 at the centre, -16.1 at corner B, -16.0 at D, -13.8 at C, -20.2 over 9.5-10.5 s). **yes**, on the re-render ("16 sounds fine now", 2026-11-03).
+> *Director, 2026-11-03:* "the pad path has a bunch of static in it." The static was `03-pad-path`'s own layer C, white noise at amplitude 0.5, which the pad's law weights in everywhere but corners A, B and D (as played, clickScore 3.63; with layer C off 0.00 and no broadband left). `03` is re-rendered with layer C a 550 Hz sine (clickScore 2.02; peak -5.3 dBFS; RMS -20.9 at the center, -16.1 at corner B, -16.0 at D, -13.8 at C, -20.2 over 9.5-10.5 s). **yes**, on the re-render ("16 sounds fine now", 2026-11-03).
 
 **17. Is the pad's double-click as two undo entries acceptable?** A real double-click is two
 presses, the first an ordinary click (VW-T10a), so one double-click needs two undos. In any editor,

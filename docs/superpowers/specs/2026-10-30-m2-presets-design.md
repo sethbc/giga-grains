@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Milestone** | M2 Giga (INTENT §20), sub-project 5 of 7, wave 3 (merged first in its wave) |
-| **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters; INIT keeps Ring Length alone, amended 2026-11-02) is in the §6.2 bullet on what a load keeps |
-| **Spec authority** | `INTENT.md`; the programme design (`docs/superpowers/specs/2026-10-29-m2-program-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
+| **Status** | **Built** (group 1 2026-10-31, PR #17; **group 2 2026-11-01, PR #25, Tasks C2 and 14 to 18: content v2, content-relative preset samples, the 48 factory presets and their goldens, `gg-render --mutate-preset`, the themed panels; INTENT §23 #70**). Earlier: **Approved by the program manager 2026-10-30** against the program design and INTENT, with two notes applied in place: this sub-project's INTENT §23 row takes the next free number at merge (sub-project 3 merges first), and under `media/` it adds the new header `gg/media/ContentPaths.h` alone, header-only, editing nothing else there until sub-project 2 merges and this branch rebases (§6.4). **The director's decisions D1–D9, 2026-10-30, by forced choice, relayed by the program manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Coordination with sub-project 6 (§6.8): it keeps the header label's component ID `header.preset` and its bounds slot for this sub-project, which replaces that label's contents and moves nothing else in the header. **Group 1 built 2026-10-31** (Tasks 1–13 and 10b; INTENT §23 #70). Amended in place, each marked **Amended**: §6.2, §6.3, §6.4, §6.5, §6.7 (`brass`, 2026-11-01), §6.8, §6.9 (the 62 locks and the ring parameters, 2026-11-01), §6.11, §10 and §12; group 2's §6.2 amendment (a load keeps the ring parameters; INIT keeps Ring Length alone, amended 2026-11-02) is in the §6.2 bullet on what a load keeps |
+| **Spec authority** | `INTENT.md`; the program design (`docs/superpowers/specs/2026-10-29-m2-program-design.md`), whose §6.5, §7.5 and §7.8 this document realizes and does not reopen |
 | **Builds on** | Sub-project 1 (layers, the mod matrix, the patch at version 2, `gg-render`'s layer keys; INTENT §23 #65); the release pipeline's reserved Content component (release-pipeline spec §6.9); M1's state container (INTENT §18) and Perform view (§17) |
 | **Starts from** | `main` at `ab9f4e2` (PR #15 merged) on branch `m2-presets` (group 2: `m2-presets-g2`); `docs/m2-carry-over.md` with **11 open rows** at the start |
 | **Waits on** | Nothing: wave 2 is merged (`MEDI` version 2's content-relative reference, sub-project 2, and wave 2's parameters, which the factory presets are voiced with; §6.12) |
@@ -17,10 +17,10 @@ instrument is silent until the user finds a file. INTENT promises presets throug
 CLAP preset discovery (§18), about 100 curated presets by v1.0 across the four focuses (§12),
 MIDI-driven FX presets as a headline feature (§23 #25, #32), a small curated CC0 sample set kept
 out of git history (§12), a browser with tags, favorites and INIT, and Mutate (§17). The
-programme design places all of it here (§6.5, items I24 to I29), with the content pipeline (§7.8)
+program design places all of it here (§6.5, items I24 to I29), with the content pipeline (§7.8)
 and the preset container (§7.5).
 
-The sub-project delivers, in the programme design's words: the preset file format and CLAP preset
+The sub-project delivers, in the program design's words: the preset file format and CLAP preset
 discovery and `preset-load`, with the VST3 and AU bridges checked and the identity tests extended to
 the selector parameter; the factory presets, a floor of 40 across INTENT §3's focuses and at least 8
 MIDI-driven FX presets, each voiced with the mod matrix and tagged; the CC0 sample set, its
@@ -28,7 +28,7 @@ repository and release asset, the fetch script, the installers' Content componen
 plugins' content search path; `gg-render --preset`; Mutate with locks and an amount, on the main
 thread; and the browser (tags, favorites, search, INIT) replacing the header's "Init".
 
-**Its exit** (programme design §6.5): every factory preset loads in all four formats in Live and
+**Its exit** (program design §6.5): every factory preset loads in all four formats in Live and
 Bitwig (met here by machine-checkable stand-ins, §10, and at the close's sitting, §11); each preset
 has a golden render; the installers install the content and the plugins find it on all three
 platforms; `gg-render --preset` renders a factory preset bit-identically to the plugin's state load;
@@ -65,12 +65,12 @@ the license set carries the content's CC0 notice.
 - Per-layer media in the plugin's loader, `MEDI` version 2 and `AUDI` (sub-project 2). This
   sub-project adopts sub-project 2's content-relative reference once it merges (§6.12) and defines
   nothing of the manifest itself.
-- New parameters. Wave 3 adds none (programme design §7.1).
+- New parameters. Wave 3 adds none (program design §7.1).
 - A preset "pack" format, downloadable soundpacks, user tags editing beyond save-time tags, preset
   ratings, cloud anything (INTENT §9).
 - Host-side preset browsers' extras (CLAP preset discovery's extra-info, images, soundpack art).
 - The About box (row 221, sub-project 6).
-- Recordings of the director's (programme design decision 8).
+- Recordings of the director's (program design decision 8).
 
 **Anti-goals** (a failure even if everything works).
 - Any byte of CC0 sample audio in this repository's history, or any sample without a CC0 statement
@@ -88,7 +88,7 @@ the license set carries the content's CC0 notice.
 - CLAUDE.md's non-negotiables and INTENT §18's frozen set: no CLAP parameter is added, so nothing
   frozen moves; the VST3 selector parameter is clap-wrapper's, at `0xC00000` or the first free ID
   above it, and our IDs stay below `0xB00000`.
-- The state rules (programme design §7.5): the container stays at version 1; no new chunk and no
+- The state rules (program design §7.5): the container stays at version 1; no new chunk and no
   patch version bump are this sub-project's (sub-project 2 alone adds chunks; sub-project 1 made
   M2's one bump). Preset metadata therefore lives inside `PTCH` (§6.1), where every reader back to
   M1 ignores it.
@@ -98,11 +98,11 @@ the license set carries the content's CC0 notice.
   `THIRD_PARTY_NOTICES.md` a factory-content section. Every dependency stays pinned; this
   sub-project adds none (no `flac` library: FLAC is encoded by hand when the content release is
   made, and decoded by dr_flac, already in gg-media).
-- The programme's process (CLAUDE.md, "Working style"; programme design §9, §12): a draft PR,
+- The program's process (CLAUDE.md, "Working style"; program design §9, §12): a draft PR,
   `scripts/check.sh` over `dev,asan,rtsan`, CI green, `scripts/update-goldens.sh` before and after
   with the hash list in the commit, the carry-over counted at start and end, the listening pack for
   the record only.
-- Ownership (programme design §6.5): the preset system in `plugin/` and `core/` (discovery,
+- Ownership (program design §6.5): the preset system in `plugin/` and `core/` (discovery,
   `preset-load`, the container's reading), `scripts/fetch-content.sh` and the installers' Content
   component, the content repository, the browser's UI files, Mutate. Shared files
   (`GigaGrainsPlugin`, `Editor.cpp`, `tests/CMakeLists.txt`, INTENT) only by addition; the loader's
@@ -133,7 +133,7 @@ the license set carries the content's CC0 notice.
   version separately, a preset golden needs the network for its preset as well as its sample, and
   a parameter renamed here silently breaks a preset there.
 
-**Where the samples live and how they reach a machine.** Fixed by the programme design (§7.8): the
+**Where the samples live and how they reach a machine.** Fixed by the program design (§7.8): the
 public content repository, a tagged release zip, `scripts/fetch-content.sh`, the installers'
 Content component. The spec's choices are the layout (§6.5), the pin's form and the fixture that
 gives the tests the content (§10).
@@ -149,7 +149,7 @@ to the wrapper and bumps nothing.
 
 ## 6. Design
 
-### 6.1 The preset file (programme design §7.5)
+### 6.1 The preset file (program design §7.5)
 
 A preset is a **`GGST` container**, exactly what `encodeState` writes (INTENT §18): `PTCH` and
 `MEDI`, in that order, no `AUDI`, container version 1. The extension is **`.ggpreset`**. What makes
@@ -315,9 +315,9 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   `kIsProgramChange`, `stepCount` the factory count minus one, and nothing else above the
   `0xB00000` block.
 
-### 6.4 The content search path (programme design §7.8)
+### 6.4 The content search path (program design §7.8)
 
-`gg/media/ContentPaths.h` (gg-media, JUCE-free, so `gg-render` and the plugins share it; **header-only and the one new file under `media/`,** by the programme manager's note: nothing existing there, `media/CMakeLists.txt` included, is edited before sub-project 2 merges):
+`gg/media/ContentPaths.h` (gg-media, JUCE-free, so `gg-render` and the plugins share it; **header-only and the one new file under `media/`,** by the program manager's note: nothing existing there, `media/CMakeLists.txt` included, is edited before sub-project 2 merges):
 - **The content roots,** in order; a content-relative reference resolves to the first root where
   the file exists:
   1. `GG_CONTENT_DIR`, when set and not empty (tests, `gg-render`, a developer tree);
@@ -356,7 +356,7 @@ Both plugins implement `clap.preset-load/2`. `from_location(kind, location, load
   others do. `gg-render` never searches; it resolves content references against `--content-dir`
   alone and refuses a preset that names content it can't find (exit 2).
 
-### 6.5 The content repository, its release and the fetch (programme design §7.8)
+### 6.5 The content repository, its release and the fetch (program design §7.8)
 
 **The repository** `https://github.com/sethbc/giga-grains-content` (public, empty today; the
 director's local clone is `~/src/giga-grains-content`), populated by this sub-project:
@@ -369,7 +369,7 @@ Samples/<Category>/<name>.flac
 tools/                      the gg-render specs and the shell script that make the generated signals
 ```
 
-- **Two sources** (programme design decision 8; D2 recommended): downloads under CC0, with the URL,
+- **Two sources** (program design decision 8; D2 recommended): downloads under CC0, with the URL,
   the author, the license statement's location, the downloaded file's SHA-256 and the conversion
   command recorded before a file is admitted; and signals our own tools generate, recorded as the
   `gg-render` spec and command line that made them. **The download source proposed is the
@@ -421,7 +421,7 @@ tools/                      the gg-render specs and the shell script that make t
 - **This repository's `content/`:** `pin.txt`, `presets/Giga Grains/*.json` and
   `presets/Giga Grains FX/*.json` (the preset sources, §6.6), and `README.md`. No audio.
 
-### 6.6 The factory presets and their build (programme design §6.5; D1, D7)
+### 6.6 The factory presets and their build (program design §6.5; D1, D7)
 
 - **A preset source** is JSON in `gg-render`'s vocabulary:
 
@@ -462,7 +462,7 @@ tools/                      the gg-render specs and the shell script that make t
   group ships INIT and two test presets per product under `tests/fixtures/presets/`, which the
   tests and the browser's scratch folders use.
 
-### 6.7 Tags (programme design §11: "the tag vocabulary")
+### 6.7 Tags (program design §11: "the tag vocabulary")
 
 **Amended 2026-11-03 (the M2 gate, item 29):** the director struck `live-input` from the
 vocabulary and from all 24 FX presets; the use tags are now `midi`, `sample` and `sidechain`, and
@@ -486,7 +486,7 @@ outside it fails the build.
 ### 6.8 The browser (INTENT §17, "Presets and editing"; I25, I29)
 
 Replaces the header's "Init" label in both products' editors. **Coordination with sub-project 6
-(the programme manager, 2026-10-30):** the views sub-project keeps the label's component ID
+(the program manager, 2026-10-30):** the views sub-project keeps the label's component ID
 `header.preset` and its bounds slot; this sub-project replaces that label's contents with the preset
 strip and the browser's button, under the same ID and in the same slot, and moves nothing else in
 the header. The slot is 90 px today; the strip fits it (the name elided in the middle) and grows
@@ -693,7 +693,7 @@ only if sub-project 6 widens the slot.
 > the `.iss`, so it runs on every OS), beside the extended PKG, zip and tarball tests and
 > `installer_license_set`.
 
-### 6.12 The two groups of work and the boundary with wave 2 (the brief; programme design §6)
+### 6.12 The two groups of work and the boundary with wave 2 (the brief; program design §6)
 
 **Group 1, now (needs wave 1 alone):** §6.1 (the element, reading and writing, `MEDI` empty),
 §6.2, §6.3, §6.4 (without the loader's candidate), §6.5 (the repository, the release `v1`, the
@@ -702,7 +702,7 @@ pin, the fetch, the CI cache, `gg-content`), §6.6's packer and INIT, §6.7, §6
 its floor of 0 until group 2), the tests of §10 that need no wave-2 code, the pack's README
 skeleton, INTENT and CLAUDE.md for what is built.
 
-**Group 2, after the programme manager says wave 2 has merged and this branch is rebased:**
+**Group 2, after the program manager says wave 2 has merged and this branch is rebased:**
 - adopt sub-project 2's `MEDI` version 2 content-relative reference in `encodePreset`, the packer
   and `readPreset` (one attribute name; nothing of 2's is copied), and add the content roots to the
   loader's candidate list (§6.4);
@@ -734,7 +734,7 @@ content root), this sub-project stops at that boundary and says so in its report
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**The director's answers, 2026-10-30, relayed by the programme manager: every recommended option.**
+**The director's answers, 2026-10-30, relayed by the program manager: every recommended option.**
 D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1, D6 option 1, D7 option 1, D8
 option 1, D9 option 1. Each is marked below and applied in §6.
 
@@ -748,7 +748,7 @@ FX presets.
 3. *64: 32 per product, 12 MIDI-driven; 20 / 16 / 12 / 16.* *Cost:* a week's more voicing and
    listening for the close; a longer host list.
 
-**D2. Where the CC0 samples come from** (§6.5; programme design decision 8 fixed "downloads with
+**D2. Where the CC0 samples come from** (§6.5; program design decision 8 fixed "downloads with
 recorded provenance and our own tools"). **Decided: option 1.**
 1. **The Versilian Community Sample Library (CC0-1.0, GitHub, pinned by commit) for the recorded
    material, plus signals our tools generate.** *Cost:* one library's character across the
@@ -774,7 +774,7 @@ recorded provenance and our own tools"). **Decided: option 1.**
 **D4. Mutate's law** (§6.9). **Decided: option 1.**
 1. **Relative jitter:** each unlocked value moves by up to `amount × range` either way, in its CLAP
    domain. *Cost:* repeated presses random-walk; a large amount is needed to leave a preset's
-   neighbourhood.
+   neighborhood.
 2. *Blend toward a fresh random point:* `v + amount × (random − v)`. *Cost:* small amounts drift
    every parameter toward the range's middle on average; at 100% the preset is forgotten.
 
@@ -866,7 +866,7 @@ Engineering choices, each with its reason.
   idempotent and offline once fetched; the sanitizer presets keep downloading nothing at configure.
 - **The settings file gains one attribute** (`contentFolder`), additive: an older build ignores it,
   a newer one reads an empty one as unset.
-- **No new `gg-bench` case** (programme design §7.6 asks each spec to name its cases): nothing here
+- **No new `gg-bench` case** (program design §7.6 asks each spec to name its cases): nothing here
   runs on the audio thread that didn't; the preset scan and Mutate are main-thread and bounded by
   tests (a 48-file scan under 50 ms in the `dev` build), not benchmarked. `engine-sample` is run
   from `release` at the end for the regression check the brief asks for. (*Amended 2026-10-30:*
@@ -956,7 +956,7 @@ through the draft PR, with the content cache step added to `ci.yml` beside the S
 
 ## 11. The listening pack: `docs/listening/m2-presets/`
 
-Rendered for the record in the second group, heard at sub-project 7 (programme design decision 1).
+Rendered for the record in the second group, heard at sub-project 7 (program design decision 1).
 A `README.md` in the M2 packs' form (how to render, with `--content-dir`; a table of files with
 length, what it is and what to listen for; the host checklist) and `specs/`:
 
@@ -980,7 +980,7 @@ unchanged with its name "Init".
 **11 open rows at this sub-project's start** (`docs/m2-carry-over.md`: 51, 85, 87, 88, 144, 148,
 184, 217, 218, 221, 232).
 
-**Closed here:** none planned. The programme design's §8 places none in sub-project 5; its
+**Closed here:** none planned. The program design's §8 places none in sub-project 5; its
 upstream rows (85, 87, 88, 218, 232) close only with a bump, and this sub-project bumps nothing
 (§6.3).
 

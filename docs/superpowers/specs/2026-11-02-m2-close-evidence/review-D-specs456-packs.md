@@ -100,7 +100,7 @@ D-glide appears only in spec §6.4 `:418` and §23 #69, not in INTENT §14's bod
 **Sources:**
 - Views status `:5`: "The header's split into its own component (row 331) and the preset strip's palette (row 313's rest) wait on sub-project 5's group 2."
 - Views §6.9 `:608–611`: "`ui/src/Theme.h` is back as a shim … until PR 2's palette pass (carry-over row 313)."
-- What changed: row 313 (`:68`) is **Closed** in full; "`ui/src/Theme.h` is gone, replaced by `PresetColours.h`" (checked: the file is absent). Row 331 (`:86`) now falls to the M2 close, since PR 2 finished first. The carry-over header `:36` still says "closed 313 and 330 in part".
+- What changed: row 313 (`:68`) is **Closed** in full; "`ui/src/Theme.h` is gone, replaced by `PresetColors.h`" (checked: the file is absent). Row 331 (`:86`) now falls to the M2 close, since PR 2 finished first. The carry-over header `:36` still says "closed 313 and 330 in part".
 - #72 (`:3256`) brings back D8's declined option 2 (a System choice) for M5. Views §8 D8 (`:862–868`) doesn't point to it.
 **Resolution:**
 - Status `:5`: row 313 closed by presets group 2; row 331 is the close's.
