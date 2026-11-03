@@ -1,5 +1,23 @@
 # The M2 listening gate
 
+**Status: Complete: every item answered, 2026-11-03.** The director's verdicts are in each item's
+answer field and in INTENT §23 #92. Thirty-five items were keep, accept, yes, ok, pass or fine. The
+five that were not, and where each went:
+
+- **2** (Env's release): change. A grain stream through the release, for M3's Voice scheduler
+  (carry-over row 404); not built now.
+- **3** (HQ's weight): yes, with a question about clicks in `01-three-tiers`. They were layer B's
+  noise bursts, not the tiers; `01` is re-rendered over a sine, with the note under item 3 here
+  and in the engine pack.
+- **16** (the pad path): static in `03-pad-path`. Its layer C, white noise, is now a 550 Hz sine,
+  re-rendered, with the note in the views pack and under item 16; "sounds fine now."
+- **18** (Ring Length drag): not understood as written. Rewritten in plain steps as item 40i, and
+  answered there: no click.
+- **29** (tag words): strike `live-input`. A code task, Task 17b; carry-over row 396 closes when
+  it lands.
+
+Items 32 to 39's S7 frame-time numbers and S8 thread-pool notes were not given.
+
 One sitting, one numbered checklist. It holds every open question from the six M2 listening
 packs, the carry-over's gate rows, the views' 16 snapshots and the host checks for Ableton Live 12
 and Bitwig Studio. The packs keep their tables and figures; this file only asks.
@@ -57,9 +75,13 @@ alone in `01`, A dips about 4 dB when B joins in `05`, and `14` sits about 6 dB 
 louder than M1 was. Answer: `keep` (amplitude sharing) or `power` (the pad should keep power, a
 change for M3).
 
+> *Director, 2026-11-03:* **keep** (amplitude sharing).
+
 **2. Is Env's release too quiet to hear?** Play [08-envelope-notes](../../../build/release/listening/m2-layers/08-envelope-notes.wav). The instrument
 spawns no grain after a note-off, so Env 1's release is heard only in the last grains and the
 reverb's tail. Answer: `accept` or `change` (a grain stream through the release, after M2).
+
+> *Director, 2026-11-03:* **change**: a grain stream that continues through the release, built in M3 with the Voice scheduler (carry-over row 404; INTENT §23 #92). No change in M2.
 
 ## Engine
 
@@ -72,17 +94,23 @@ as many. Play [01-three-tiers](../../../build/release/listening/m2-engine/01-thr
 Listen for the cleaner top, the missing fold-back at each step and the missing image whistle.
 Answer: `yes` or `no`.
 
+> *Director, 2026-11-03:* **yes**, HQ earns its weight. The director also asked why `01` has clicks and pops. They are layer B's material, not the tiers: `loop-48k.wav` is 30 ms noise bursts every 250 ms with an instant attack, and layer B's 80 ms grains at Spray 100% and +7 replay those onsets. Measured on `release`, layer B alone scores clickScore 14.2 (Eco), 14.2 (Normal) and 13.7 (HQ); layer A alone 2.5 at every tier; the old mix 6.8 to 7.6. `01` is re-rendered with layer B over `sine-330.wav` (no hard attack), so it now compares the tiers alone: clickScore 2.51 over the whole file (2.54, 2.51 and 2.55 with one tier throughout), peak -10.7 dBFS.
+
 **4. Does the steal threshold sound right under sustained overload?** A grain may be stolen
 once it has sounded half its window (D4). Play [04-overload-ladder](../../../build/release/listening/m2-engine/04-overload-ladder.wav) (four HQ layers,
 Budget 4,096, 1,024, 256, 4,096) and [05-steal-tails](../../../build/release/listening/m2-engine/05-steal-tails.wav) (one layer, Budget 256): the cloud
 renews in waves about twice a second, and nothing clicks (the new fade is a raised cosine).
 Answer: `keep`, `earlier` (renew faster) or `later` (hold grains longer, drop more).
 
+> *Director, 2026-11-03:* **keep**.
+
 **5. Is HQ's weak spot acceptable?** Its anti-aliasing is weakest just under an octave or two
 up (39 to 41 dB less fold-back than Normal at +11 and +23, against 82 at exactly +12 and +24), and
 its broadband floor at stretch 0.67 is about -99.5 dB. Play [02-hq-transposition-ladder](../../../build/release/listening/m2-engine/02-hq-transposition-ladder.wav)
 (the +19 step at 8 to 12 s against +12 and +24) and [07-live-hq](../../../build/release/listening/m2-engine/07-live-hq.wav) (47 dB less fold-back
 than Normal over 7.7 to 8.2 s). Answer: `accept` or `no`.
+
+> *Director, 2026-11-03:* **accept** (closes row 308).
 
 ## Sources
 
@@ -100,25 +128,35 @@ Pack: [m2-extremes](../m2-extremes/README.md). Re-rendered at `df1c3ae`: the Spe
 instant gain steps (zero lookahead, D5b kept the law, 2026-10-31). Play [12-limiter-modes](../../../build/release/listening/m2-extremes/12-limiter-modes.wav)
 from 8 s (Mode Peak). Answer: `keep` or `revisit` (after M2).
 
+> *Director, 2026-11-03:* **keep**.
+
 **7. Is the Spectral kind's width wanted?** Each channel's phases are keyed apart, so centered
 content comes out wide. Play [03-spectral-scan](../../../build/release/listening/m2-extremes/03-spectral-scan.wav), [04-spectral-freeze-fx](../../../build/release/listening/m2-extremes/04-spectral-freeze-fx.wav)
 and [05-spectral-vs-grains](../../../build/release/listening/m2-extremes/05-spectral-vs-grains.wav). Answer: `keep` or `narrower` (a mono source stays nearer
 the center).
+
+> *Director, 2026-11-03:* **keep**.
 
 **8. Is the gap on a switch to Spectral acceptable?** A layer switched to Spectral is near
 silent for about 0.1 s, and longer with Spray, before the smear fades in. No render has it: in a
 host, switch a layer's Source from Live (or Sample) to Spectral while it plays. Answer: `accept` or
 `shorten`.
 
+> *Director, 2026-11-03:* **keep** (the gap is accepted as it is).
+
 **9. Is the squash of a loud repeat at Feedback 100% musical?** The delay loop's soft
 limiter pulls a loud repeat toward 0.5 over the first passes, then holds it (D7). Play
 [11-delay-hold](../../../build/release/listening/m2-extremes/11-delay-hold.wav) (a tone, held 20 s within 0.1 dB), then in a host send a loud burst
 through the delay at Feedback 100%, Damping 0. Answer: `accept` or `no`.
 
+> *Director, 2026-11-03:* **keep** (the squash is accepted).
+
 **10. Is the bend from Reverb Modulation's glide acceptable?** Modulation now glides 0 to 1 in
 30 ms, so a held tail bends about 3 semitones for those 30 ms when Modulation jumps. No render has
 it: in a host, Decay infinite, Damping 0, a held pad, Modulation 100% to 0% at once. Answer:
 `accept` or `no`.
+
+> *Director, 2026-11-03:* **keep** (the bend is accepted).
 
 ## Presets
 
@@ -130,18 +168,26 @@ section below.
 **11. Is there a preset you would cut or redo?** Play any of the 48; the table in the pack gives
 each one's character. Answer: `none`, or the numbers (for example `fx-22, inst-15`).
 
+> *Director, 2026-11-03:* **none**: no preset to cut or redo.
+
 **12. Should INIT start the instrument further into its sample?** Play [init-inst](../../../build/release/listening/m2-presets/init-inst.wav)
 (peak -20.3 dBFS, RMS -39 dBFS: Position 0 is the violin's quiet bow start; the same spec at
 Position 0.5 peaks at -4.9) and [init-fx](../../../build/release/listening/m2-presets/init-fx.wav). Answer: `keep` or `further` (D8's change).
 
+> *Director, 2026-11-03:* **keep**: INIT stays at Position 0.
+
 **13. Does Infinite Regress stay bounded?** Play [fx-19-infinite-regress](../../../build/release/listening/m2-presets/fx-19-infinite-regress.wav) (Feedback
 0.93; it builds over 8 s to -12 dBFS RMS). Answer: `bounded` or `runaway`.
+
+> *Director, 2026-11-03:* **bounded**: Infinite Regress (fx-19) stays bounded.
 
 **14. Does the Mutate ladder stay in the family at 10% and leave it by 60%?** Play
 [mutate-ladder](../../../build/release/listening/m2-presets/mutate-ladder.wav) (FX 01 Soft Focus, then Mutate at 10%, 30% and 60%, 4 s each). Each
 bus filter's type is a stepped slot, so about 73% of 15% presses flip at least one of the eight
 types with four layers on. Answer: `fine` or `lock` (lock the two filter types per layer); a
 note is optional.
+
+> *Director, 2026-11-03:* **fine**: the ladder's family behavior is accepted; no filter-type lock.
 
 ## Views
 
@@ -153,6 +199,8 @@ macro row, undo and redo and the theme switch in the header, and in the light th
 dark by design (the lanes, D9) and whether everything else reads. In the Mod view the two
 vertical scrollbars are the panel's and the route list's. Answer: `yes` or `no`; if no, name the
 picture and what's wrong (optional).
+
+> *Director, 2026-11-03:* **yes**: the snapshots look right.
 
 | | Perform | Edit | Mod | FX |
 |---|---|---|---|---|
@@ -166,18 +214,19 @@ picture and what's wrong (optional).
 [03-pad-path](../../../build/release/listening/m2-views/03-pad-path.wav) (the pad around the corners). No click at any step; the centre sits about
 5 dB under a corner (D1). Answer: `yes` or `no`.
 
+> *Director, 2026-11-03:* "the pad path has a bunch of static in it." The static was `03-pad-path`'s own layer C, white noise at amplitude 0.5, which the pad's law weights in everywhere but corners A, B and D (as played, clickScore 3.63; with layer C off 0.00 and no broadband left). `03` is re-rendered with layer C a 550 Hz sine (clickScore 2.02; peak -5.3 dBFS; RMS -20.9 at the centre, -16.1 at corner B, -16.0 at D, -13.8 at C, -20.2 over 9.5-10.5 s). **yes**, on the re-render ("16 sounds fine now", 2026-11-03).
+
 **17. Is the pad's double-click as two undo entries acceptable?** A real double-click is two
 presses, the first an ordinary click (VW-T10a), so one double-click needs two undos. In any editor,
 double-click the pad, then undo. Answer: `accept` or `no`.
 
+> *Director, 2026-11-03:* **accept**.
+
 ## Carry-over
 
-**18. Row 352: does a Ring Length drag click?** A drag at about 120 Hz clicks on the ring (its
-click score is 12.7 against 15; the output's is 0). In any cell of the matrix, play audio through
-the FX with a running ring (a Live layer, Freeze off) and drag Ring Length in the Edit view's Ring
-panel (or the host's generic editor, where it shows the parameter) up and down for ten seconds;
-check that a long ring's lane still draws its peaks (rows 385 and 386). Answer: `no click` or
-`click` (fix it).
+**18. Row 352: does a Ring Length drag click?** *Moved to the host matrix as item 40i, in plain
+steps: the director didn't follow it as first written (2026-11-03).* Answer: **no click**
+(*Director, 2026-11-03*: "18 is fine", in a host; see 40i).
 
 Row 387, the new strings. Each is a text the views added; answer `ok` or give the replacement.
 
@@ -186,23 +235,37 @@ cover all nine, the strip's three short forms being one item.
 
 **19. "Load a sample"** (a lane menu's file chooser). Answer: `ok` or edit.
 
+> *Director, 2026-11-03:* **ok**.
+
 **20. "Save the capture as"** (the capture's file chooser: the lane's right-click menu, Save
 capture as…). Answer: `ok` or edit.
 
+> *Director, 2026-11-03:* **ok**.
+
 **21. "can't save the capture"**, in a notice, with ": the file can't be written" or ": not
 enough memory". Answer: `ok` or edit.
+
+> *Director, 2026-11-03:* **ok**.
 
 **22. The strip's short forms "Osc", "Resamp" and "Spec"** (Oscillator, Resample, Spectral),
 drawn where a narrow strip's Source button can't fit the name. Answer: `ok` or edit, naming the
 word.
 
+> *Director, 2026-11-03:* **ok**.
+
 **23. "<L>'s sample is loading: set <L> Source to Sample to play it"** (a drop, or a capture,
 onto a Live layer: drop a file on a Live lane). Answer: `ok` or edit.
 
+> *Director, 2026-11-03:* **ok**.
+
 **24. "Captured into <L>"** (a capture into a Sample layer). Answer: `ok` or edit.
+
+> *Director, 2026-11-03:* **ok**.
 
 **25. "can't capture the ring: not enough memory"** (set a low memory cap and capture). Answer:
 `ok` or edit.
+
+> *Director, 2026-11-03:* **ok**.
 
 Rows 394 to 397 (the presets):
 
@@ -218,15 +281,21 @@ so quiet), [inst-10-felt-mallets](../../../build/release/listening/m2-presets/in
 [fx-04-undertow](../../../build/release/listening/m2-presets/fx-04-undertow.wav) and [fx-23-splinter-keys](../../../build/release/listening/m2-presets/fx-23-splinter-keys.wav) (cymbal roll +38.5). Answer:
 `accept` or `fix`; if fix, list the preset numbers (optional).
 
+> *Director, 2026-11-03:* **ok**: accepted as it is.
+
 **27. Row 395: are Shard Storm's ticks on drums acceptable?** Short pitched-up grains on sharp
 onsets tick at drum transients (its golden uses a sweep because its click score swung 8.5 to 22.7
 by seed on `loop-48k.wav`). Play [fx-22-shard-storm](../../../build/release/listening/m2-presets/fx-22-shard-storm.wav), then put it on a drum loop in a
 host. Answer: `accept` or `no`.
 
+> *Director, 2026-11-03:* **accept**.
+
 **28. Row 395: do 17 and 18 need to say more about the transport?** They sound like plain
 clouds without a playing transport (their descriptions say so; the renders run at 120 BPM). Play
 [fx-17-bar-climber](../../../build/release/listening/m2-presets/fx-17-bar-climber.wav) and [fx-18-dotted-echoes](../../../build/release/listening/m2-presets/fx-18-dotted-echoes.wav); 18 and 21 are quiet over
 the sparse loop. Answer: `accept` or `reword`.
+
+> *Director, 2026-11-03:* **accept**, no reword.
 
 **29. Row 396: any tag word to strike or add?** The 29 words: focus `texture` `playable`
 `rhythmic` `extreme`; character `pad` `drone` `freeze` `smear` `stretch` `glitch` `keys` `pluck`
@@ -237,14 +306,20 @@ it: the content has no voice) and `dry` (none uses it either; the browser hides 
 (one preset), `mono` (two) and `live-input` (all 24 FX presets). The other 24 words stand as
 `keep`. Answer: for example `voice strike, dry strike, others keep`; to add a word, name it.
 
+> *Director, 2026-11-03:* **strike `live-input`** (confirmed); every other word stays (`voice`, `dry`, `sidechain`, `mono` and the rest). The strike itself is Task 17b's.
+
 **30. Row 396: any name or tag to change?** "Horizon" is in both products' names (Event
 Horizon, Bowed Horizon); 18 Dotted Echoes' fixed 375 ms is a dotted eighth only at 120 BPM (its
 description says so); all 24 FX presets are tagged `live-input` though only 04 reads a content
 sample. Answer: `none`, or the change.
 
+> *Director, 2026-11-03:* **none**: no rename.
+
 **31. Row 397: does the dark browser's list ground look right?** It changed slightly with
 row 313: the lane's dark became the header's ground. Open the preset browser in the dark theme in
 any host, over the strip. Answer: `ok` or `no`.
+
+> *Director, 2026-11-03:* **yes**.
 
 ## The host matrix
 
@@ -283,19 +358,35 @@ grains); the variable changes nothing else.
 
 **32. Live 12, VST3, Giga Grains FX.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **33. Live 12, VST3, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **34. Live 12, AU, Giga Grains FX.** Steps S1 to S10. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S10 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **35. Live 12, AU, Giga Grains.** Steps S1 to S10. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S10 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **36. Bitwig, CLAP, Giga Grains FX.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **37. Bitwig, CLAP, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **38. Bitwig, VST3, Giga Grains FX.** Steps S1 to S9. Answer: `pass` or `fail ...`.
 
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
+
 **39. Bitwig, VST3, Giga Grains.** Steps S1 to S9. Answer: `pass` or `fail ...`.
+
+> *Director, 2026-11-03:* **pass**, every step S1 to S9 ("32-39 all passed s1-s10"). S7's frame-time number and S8's thread-pool note: not given (asked).
 
 **40. Once-only host checks.** The packs' longer host checklists stay in the packs as their
 record; these are the ones worth a sitting, each in the host named. Answer each bullet `pass` or
@@ -324,3 +415,18 @@ record; these are the ones worth a sitting, each in the host named. Answer each 
   ([layers](../m2-layers/README.md#host-checklist), [presets](../m2-presets/README.md#host-checklist)).
 - **40h. Both:** the installer's content status line reads "Factory content v2 in ..."
   ([presets](../m2-presets/README.md#host-checklist)).
+- **40i. Both: does dragging Ring Length click?** (Item 18, row 352.) *What it is:* each layer
+  keeps a ring, a rolling recording of what the plugin has heard, and Ring Length is how many
+  seconds it holds. Changing it while the ring plays resizes the ring. A test measures a small
+  kink in the ring's signal when it is dragged fast (about 120 times a second) but none in the
+  output; the question is whether you hear a click. *Steps:* (1) Put the FX on a track with audio
+  playing through it (any loop), with layer A's Source on Live and Freeze off. (2) Open the Edit
+  view, layer A, the Ring panel; if the host hides it, use the host's generic parameter view and
+  find "A Ring Length". (3) While the audio plays, drag Ring Length slowly up and down for ten
+  seconds, then again quickly. (4) Pick a long length, such as two minutes, and check that layer
+  A's lane still draws its peaks along the whole ring. *Listen for:* a click or pop at the moment
+  the value changes. A slight change in the texture is expected. Answer `no click` or `click`
+  (say whether the slow or the fast drag) in the matrix.
+  *Director, 2026-11-03:* **no click** ("18 is fine", in a host).
+
+> *Director, 2026-11-03:* "all of 40a-h pass": **40a to 40h pass**; 40i is item 18, no click.
