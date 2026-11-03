@@ -151,6 +151,7 @@ void LiveSource::reset() noexcept
     frozen_ = false;
     ramp_ = rampLength_;
     head_ = 0;
+    heldFloor_ = 0;
     writeSlot_ = 0;
     blockStart_ = 0;
     blockHead_ = 0;
@@ -251,6 +252,10 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
     float *const dst = next->slots();
     const int64_t nextCapacity = next->capacity();
     const int64_t from = std::max({copiedTo, head_ - next->frames(), head_ - frames_, int64_t{0}});
+    // What the new storage holds whole: the frames both windows reached, no older than what the
+    // old one held (the main thread's copy reaches no further back than the old window either).
+    const int64_t heldFloor =
+        std::max({heldFloor_, head_ - std::min(frames_, next->frames()), int64_t{0}});
     if (from < head_)
     {
         int64_t s = from % capacity_;
@@ -275,6 +280,7 @@ bool LiveSource::adoptStorage(RingStorage *next, int64_t copiedTo, RingStorage *
     mirrorGuards(*next);
     release(previous);
     attach(next);
+    heldFloor_ = heldFloor;
     writeSlot_ = head_ % capacity_;
     window_ = loopWindow();
     if (std::min(window_, periodFrom_) > frames_)
@@ -302,6 +308,7 @@ bool LiveSource::restoreStorage(RingStorage *next, int64_t frames, std::span<con
     frozen_ = frozen;
     ramp_ = frozen ? 0 : rampLength_;
     head_ = frames;
+    heldFloor_ = 0; // the restored frames are ring time 0 .. frames, all held
     writeSlot_ = head_ % capacity_;
     // Until the next write(), R(t) is the head at every sample: with no frame written, headAt(t)
     // is blockHead_ for every t >= blockStart_ − 1, so a block start of 0 covers any t >= 0, as

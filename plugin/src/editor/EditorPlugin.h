@@ -13,7 +13,9 @@
 #include <sst/clap_juce_shim/clap_juce_shim.h>
 
 #include "GigaGrainsPlugin.h"
-#include "gg/ui/EditLayout.h" // gg::ui::View, JUCE-free
+#include "gg/core/Processor.h" // gg::core::CommandKind
+#include "gg/ui/EditLayout.h"  // gg::ui::View, JUCE-free
+#include "gg/ui/MediaViews.h"  // gg::ui::RingCommand, JUCE-free
 
 namespace gg::ui
 {
@@ -23,6 +25,17 @@ class UndoStack;      // gg/ui/UndoStack.h
 
 namespace gg::plugin
 {
+/// The format clap-wrapper loaded the plugin as, from `host`'s host-information extension
+/// (CLAP_WRAPPER_HOST_INFORMATION), as the About box shows it: "VST3", "AU" (v2 or v3) or
+/// "Standalone". A host that doesn't offer the extension, or no flavor, has loaded the CLAP
+/// itself, so "CLAP"; a null host, or a flavor not named here (AAX isn't a format of ours),
+/// gives "".
+std::string formatOf(const clap_host *host);
+
+/// The Processor's command for the editor's ring command (EditorContext::ringCommand): AddSplice,
+/// ClearSplices and AddSpliceAt, one for one.
+gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept;
+
 /// A GigaGrainsPlugin with its editor. The editor (gg::ui) is a JUCE component, attached
 /// through sst-clap-helpers' clap_juce_shim the way Shortcircuit XT attaches its own. Built only
 /// with GG_BUILD_EDITOR. The audio side is GigaGrainsPlugin's, unchanged.
@@ -45,8 +58,10 @@ namespace gg::plugin
 ///
 /// **Publishing** is on while any editor createEditor() made is open: each turns it on when
 /// created and off, through its own `publishing`, when destroyed (the shim has no destroy hook
-/// of its own). gui.destroy closes the shim's editor too, even when the shim keeps it (it
-/// destroys its editor only once a parent was attached), so publishing follows guiDestroy.
+/// of its own). gui.destroy closes the shim's editor too, even when the shim would keep it (it
+/// destroys its editor only once a parent was attached): guiDestroy then replaces the shim,
+/// keeping its scale, which destroys the kept editor, so publishing follows guiDestroy and the
+/// next guiCreate starts from an empty shim (carry-over row 232).
 class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::EditorProvider
 {
   public:
@@ -73,7 +88,8 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     {
         return clapJuceShim->guiSetParent(window);
     }
-    bool guiSetScale(double scale) noexcept override { return clapJuceShim->guiSetScale(scale); }
+    /// The shim's, and the scale it took is kept (guiScale), so a shim guiDestroy replaces gets it.
+    bool guiSetScale(double scale) noexcept override;
     bool guiAdjustSize(uint32_t *width, uint32_t *height) noexcept override;
     bool guiSetSize(uint32_t width, uint32_t height) noexcept override
     {
@@ -90,6 +106,12 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     std::unique_ptr<juce::Component> createEditor() override;
     /// The context the editors are given (see the class comment). Main thread.
     const gg::ui::EditorContext &editorContext() const noexcept { return *editorContext_; }
+    /// The editors createEditor() made that are still alive (their destructors haven't run), for
+    /// the tests. Main thread.
+    uint32_t liveEditors() const noexcept { return liveEditors_; }
+    /// The last scale the host set that the shim took (1 until one is; the shim takes none on
+    /// Linux): what a shim guiDestroy replaces is given (row 232). Main thread.
+    double guiScale() const noexcept { return guiScale_; }
     /// For the shim on Linux, which runs JUCE's event loop from host timers and file
     /// descriptors.
     bool registerOrUnregisterTimer(clap_id &id, int ms, bool reg) override;
@@ -118,6 +140,10 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
                         const gg::core::ModRoutes &rBefore) noexcept;
     /// An editor was created (true) or destroyed (false): publishing is on while any is alive.
     void editorOpened(bool open) noexcept;
+    /// A new shim in clapJuceShim, resizable, at `scale` (1 is the shim's own default); the old
+    /// one, and any editor it holds, is destroyed. If the new one can't be made, it throws and
+    /// leaves the old one. Main thread.
+    void replaceShim(double scale);
 
     // Before clapJuceShim, so destroyed after it: an editor the shim still holds reads the
     // context, and its destructor calls editorOpened(false), which reads the rest. The undo
@@ -126,6 +152,8 @@ class EditorPlugin : public GigaGrainsPlugin, public sst::clap_juce_shim::Editor
     std::unique_ptr<gg::ui::UndoStack> undo_;
     std::unique_ptr<gg::ui::EditorContext> editorContext_;
     uint32_t openEditors_{0}; // main thread
+    uint32_t liveEditors_{0}; // main thread: liveEditors()
+    double guiScale_{1.0};    // main thread: guiScale()
     // The view the editor last showed, which the next one opens on (spec §6.2): the instance's,
     // not its state's. Main thread.
     gg::ui::View lastView_{gg::ui::View::Perform};

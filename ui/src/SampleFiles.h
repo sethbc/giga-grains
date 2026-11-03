@@ -25,8 +25,14 @@ inline constexpr const char *kSampleFileChooserPatterns = "*.wav;*.aif;*.aiff;*.
 inline juce::String notSampleFileNotice(const juce::String &path)
 {
     // The name after either separator: juce::File splits on the native one alone, so on Windows a
-    // path with "/" would keep its folders in the message.
-    return "can't load " + path.substring(path.lastIndexOfAnyOf("/\\") + 1) +
+    // path with "/" would keep its folders in the message. Trailing separators go first, so a
+    // folder dropped as "dir/" is named "dir", not "" (row 388 (q)).
+    juce::String trimmed = path;
+    while (trimmed.length() > 1 && (trimmed.endsWithChar('/') || trimmed.endsWithChar('\\')))
+    {
+        trimmed = trimmed.dropLastCharacters(1);
+    }
+    return "can't load " + trimmed.substring(trimmed.lastIndexOfAnyOf("/\\") + 1) +
            ": not a WAV, AIFF, FLAC or MP3 file";
 }
 } // namespace gg::ui

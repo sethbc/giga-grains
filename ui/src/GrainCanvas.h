@@ -44,11 +44,13 @@ namespace gg::ui
 ///
 /// **A Live lane spans its layer's ring** (ruling VW-P2d, amended): ringView's ringFrames /
 /// sampleRate seconds, 16 s while there is none (inactive). Its peaks draw over the frames the
-/// peak strip holds, its newest LivePeaks::frames(); older columns have none (the grains still
-/// draw there). Over the peaks it draws, in order, the loop window while the layer's Loop is on
-/// (spliceSpan's window, shaded), the selected splice (Splice's base value, rounded, when it is 1
-/// or more: its span outlined), and each mark: a 1 px rule, numbered from the oldest inside the
-/// window (D6) at its top when the lane is at least 40 px high.
+/// peak strip holds (the longest ring's) back to the oldest frame the ring's storage holds
+/// (RingView::oldestHeld: after a Ring Length grow, no older than the old ring reached). Over the
+/// peaks it draws, in order, the loop window while the layer's Loop is on (spliceSpan's window,
+/// shaded), the splice the engine plays (playedSplice for Splice's base value, rounded, when it is
+/// 1 or more and a mark is in storage: its span outlined), and each mark: a 1 px rule, numbered as
+/// the engine numbers the splices, from the oldest still in storage, Loop ignored (ruling SP-T1a/b;
+/// carry-over row 386), at its top when the lane is at least 40 px high.
 ///
 /// **The lane menu** (ruling VW-P2a) opens on a right-click on any lane, which selects its layer
 /// and begins no drag, or on Shift+F10 on the keyboard's lane (laneMenu). A Live lane's: "Add
@@ -148,6 +150,17 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// The head (ring frames) the last paint drew layer `layer`'s marks against; 0 before. For
     /// the tests.
     int64_t headDrawn(uint8_t layer) const noexcept;
+    /// The splice the last paint outlined on layer `layer`'s lane, in ring frames; none when it
+    /// outlined none, or for a lane out of range. For the tests.
+    std::optional<RingSpan> spliceOutlined(uint8_t layer) const;
+    /// The ring frame the last right-click on layer `layer`'s lane landed on, which its menu's
+    /// "Add splice mark here" marks (AddSpliceAt); none from the keyboard or another lane. For
+    /// the tests.
+    std::optional<int64_t> menuFrame(uint8_t layer) const noexcept;
+    /// The bounds of the peak bars the last paint built for layer `layer`'s lane, x in columns
+    /// from the lane's left edge; empty when it drew none, or for a lane out of range. For the
+    /// tests.
+    juce::Rectangle<float> peaksDrawn(uint8_t layer) const;
 
     /// Layer `layer`'s lane menu (the class comment), for the place last right-clicked on it, or
     /// for the keyboard (no place) when the menu was opened by Shift+F10 or not at all. Its
@@ -229,9 +242,6 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     int64_t loopFramesOf(const gg::core::RingParams &ring, double sampleRate) const noexcept;
     /// The head the lane draws at: the snapshot's, run on to now, or the ring view's without one.
     int64_t laneHead(uint8_t layer, const RingView &ring) const noexcept;
-    /// The value of an AddSplice that marks `frame` (the anchor, the head or the selected
-    /// splice's end, when nullopt).
-    float spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const;
     void drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane, const Palette &pal);
     /// Builds layer `layer`'s menu for `frame` (nullopt: the keyboard's) and shows it.
     void openLaneMenu(uint8_t layer, std::optional<int64_t> frame);
@@ -306,6 +316,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     // The marks the last paint drew, per lane (marksDrawn).
     std::array<std::vector<float>, kLaneCount> marks_;
     std::array<int64_t, kLaneCount> headDrawn_{};
+    std::array<std::optional<RingSpan>, kLaneCount> outlined_{};
     // The lane menu's place: the ring frame right-clicked on its layer's lane, or none (the
     // keyboard's, or a Sample lane's).
     uint8_t menuLayer_{0};

@@ -109,24 +109,32 @@ enum class CommandKind : uint8_t
 {
     AddSplice,    ///< Marks the ring `value` seconds behind the window's end.
     ClearSplices, ///< Removes every mark.
+    AddSpliceAt,  ///< Marks ring frame `value` itself (the editor's click; carry-over row 388 (m)).
 };
 
 /// A ring command inside one process() call (spec §6.4): what a parameter can't carry. It joins
 /// the control grid as a parameter event does, and applies at its boundary b: AddSplice marks
 /// ring time anchorAt(b) − value × sampleRate (LiveSource::anchorAt: the head, or a selected
 /// splice's end), clamped into the window [max(0, its oldest frame), anchorAt(b)]; a mark on an
-/// existing one, or a 33rd, is ignored (LiveSource::addSplice). ClearSplices empties the layer's
-/// marks. A command on a layer whose ring nothing reads (readsRing: a Sample layer, or a Spectral
-/// one with a sample; a Spectral layer smearing its ring takes them), on a layer past kLayers, of
-/// an unknown kind, or an AddSplice whose value isn't finite is ignored, and takes no place in its
-/// group; every command after a group's Processor::kMaxGroupCommands-th valid one is ignored too
-/// (the cap counts the valid commands alone).
+/// existing one, or a 33rd, is ignored (LiveSource::addSplice). AddSpliceAt marks ring frame
+/// llround(value) itself, whatever the head has done since the editor chose it: it is ignored
+/// outside the storage [max(0, R − N), R] at its boundary, on an existing mark or as a 33rd
+/// (LiveSource::addSplice), and its value must be finite and in [0, 2^53], where a double holds
+/// every frame exactly. ClearSplices empties the layer's marks. A command on a layer whose ring
+/// nothing reads (readsRing: a Sample layer, or a Spectral one with a sample; a Spectral layer
+/// smearing its ring takes them), on a layer past kLayers, of an unknown kind, an AddSplice whose
+/// value isn't finite or an AddSpliceAt whose value is out of its range is ignored, and takes no
+/// place in its group; every command after a group's Processor::kMaxGroupCommands-th valid one is
+/// ignored too (the cap counts the valid commands alone).
 struct CommandEvent
 {
     uint32_t offset; ///< Frames from the start of the call. A call's commands are sorted by it.
     CommandKind kind;
     uint8_t layer; ///< 0..3, A to D.
-    float value;   ///< AddSplice: seconds behind the anchor (negative counts as 0).
+    /// AddSplice: seconds behind the anchor (negative counts as 0). AddSpliceAt: the ring frame.
+    /// A double, so a frame is exact to 2^53; gg-render's and the tests' float seconds widen to it
+    /// exactly, as Processor::applyCommands took them before.
+    double value;
 };
 
 /// What the main thread needs to read a layer's ring without stopping the audio thread (spec
@@ -169,6 +177,9 @@ struct RingMeta
     std::array<int64_t, kMaxSplices> splices{};
     bool frozen{false};
     int64_t framesInUse{0};
+    /// The oldest ring frame the storage holds (LiveSource::oldestHeld): after a grow, frames
+    /// between it and head − N are in the window but were never copied (carry-over row 385).
+    int64_t oldestHeld{0};
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2
@@ -786,8 +797,9 @@ class Processor
     GrainQueue &grainQueue() noexcept { return *grainQueue_; }
     /// The latest UiSnapshot, for the editor (the buffer's consumer).
     SnapshotBuffer &snapshot() noexcept { return snapshot_; }
-    /// The peak strip of layer `layer`'s live ring (`layer` below kLayers), kLiveSeconds long
-    /// (ceil(kLiveSeconds × sampleRate) frames), written on every call whether or not publishing
+    /// The peak strip of layer `layer`'s live ring (`layer` below kLayers), as long as the longest
+    /// ring (ringFramesFor(kRingMaxSeconds, sampleRate) frames: about 0.9 MB a layer at 48 kHz),
+    /// so it holds a whole ring of any Ring Length; written on every call whether or not publishing
     /// is on, and whether or not the layer is on (the class comment), in both products. Any
     /// thread may read it. livePeaks() is layer A's.
     const LivePeaks &livePeaks(uint8_t layer) const noexcept { return layerAt(layer).peaks; }

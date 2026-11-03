@@ -35,6 +35,7 @@ target_link_libraries(gg-ui-core PUBLIC gg::core PRIVATE gg::engine gg::compiler
 if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     add_library(gg-ui STATIC
             src/Editor.cpp
+            src/views/Header.cpp
             src/GrainCanvas.cpp
             src/LoaderStrip.cpp
             src/MacroRow.cpp

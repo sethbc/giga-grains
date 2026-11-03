@@ -149,6 +149,9 @@ LoaderStrip::LoaderStrip(const EditorContext &context, uint8_t layer, Compact co
             done(chooser.getResult());
         });
     };
+    showMenu = [this](juce::PopupMenu menu) {
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(moreButton_));
+    };
     pollMemory();
     refresh();
 }
@@ -369,22 +372,32 @@ bool LoaderStrip::shownInEditor() const
     return true;
 }
 
+juce::PopupMenu LoaderStrip::moreMenu()
+{
+    // Each item acts through a SafePointer: the strip may go while the menu is open.
+    const juce::Component::SafePointer<LoaderStrip> safe(this);
+    juce::PopupMenu menu;
+    menu.addItem(withEllipsis("Sample folder"), [safe] {
+        if (safe != nullptr)
+        {
+            safe->chooseSampleFolder();
+        }
+    });
+    menu.addItem(withEllipsis("Collect"), [safe] {
+        if (safe != nullptr)
+        {
+            safe->chooseCollectFolder();
+        }
+    });
+    return menu;
+}
+
 void LoaderStrip::showMore()
 {
-    juce::PopupMenu menu;
-    menu.addItem(1, withEllipsis("Sample folder"));
-    menu.addItem(2, withEllipsis("Collect"));
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(moreButton_),
-                       [this](int choice) {
-                           if (choice == 1)
-                           {
-                               chooseSampleFolder();
-                           }
-                           else if (choice == 2)
-                           {
-                               chooseCollectFolder();
-                           }
-                       });
+    if (showMenu)
+    {
+        showMenu(moreMenu());
+    }
 }
 
 int LoaderStrip::memoryTextWidth() const

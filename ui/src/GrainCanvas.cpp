@@ -287,19 +287,9 @@ int64_t GrainCanvas::laneHead(uint8_t layer, const RingView &ring) const noexcep
     return haveSnapshot_ && context_.clock != nullptr ? head_[layer] : ring.head;
 }
 
-float GrainCanvas::spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const
+std::optional<int64_t> GrainCanvas::menuFrame(uint8_t layer) const noexcept
 {
-    if (!frame)
-    {
-        return 0.0f; // the keyboard's: at the anchor
-    }
-    RingView ring = ringOf(layer);
-    ring.head = laneHead(layer, ring);
-    const LaneGeometry lane = geometry(layer, 1.0f);
-    // The anchor as the engine takes it (Processor.h's CommandEvent, LiveSource::anchorAt): the
-    // head, or the selected splice's end, numbered from the first mark in storage, Loop ignored.
-    const int64_t anchor = spliceAnchor(ring, ringParamsOf(layer).splice);
-    return spliceSeconds(anchor, *frame, lane.sampleRate);
+    return menuLayer_ == layer ? menuFrame_ : std::nullopt;
 }
 
 LaneGeometry GrainCanvas::geometry(uint8_t layer, float scale) const
@@ -566,6 +556,7 @@ void GrainCanvas::paint(juce::Graphics &g)
 void GrainCanvas::drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal)
 {
     marks_[layer].clear(); // what this paint draws, even when it draws nothing
+    outlined_[layer].reset();
     const juce::Rectangle<int> b = laneBounds(layer);
     if (b.isEmpty())
     {
@@ -722,9 +713,7 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         // Frames head − span .. head across the lane (peakColumnFrames), but none past the last
         // published block (written) and none older than the strip's oldest whole bucket. That
         // is measured from head, at least written and nearer the writer, which may since have
-        // overwritten the buckets just older than written − frames(). Those columns stay empty,
-        // as do those of a ring longer than the strip holds (its newest frames(); the grains
-        // still draw there).
+        // overwritten the buckets just older than written − frames(). Those columns stay empty.
         const double framesPerColumn = lane.ringSeconds * lane.sampleRate / columns;
         const int64_t head = head_[layer];
         if (stale(peaks,
@@ -732,7 +721,19 @@ void GrainCanvas::drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry
         {
             strip.bars.clear(); // keeps its storage
             strip.outline.reset();
-            const int64_t oldest = head - peaks->frames() + gg::core::LivePeaks::kBucket;
+            // The strip spans the longest ring (Processor::livePeaks); the lane reads no older
+            // than its own ring holds (row 385): its length, and after a grow the oldest frame
+            // its storage got (RingView::oldestHeld), whose bucket is drawn only once whole.
+            const RingView ring = ringOf(layer);
+            const int64_t held = ring.valid && ring.ringFrames > 0
+                                     ? std::min(peaks->frames(), ring.ringFrames)
+                                     : peaks->frames();
+            int64_t oldest = head - held + gg::core::LivePeaks::kBucket;
+            if (ring.valid)
+            {
+                constexpr int64_t kBucket = gg::core::LivePeaks::kBucket;
+                oldest = std::max(oldest, (ring.oldestHeld + kBucket - 1) / kBucket * kBucket);
+            }
             for (int x = 0; x < columns; ++x)
             {
                 const FrameSpan span =
@@ -814,26 +815,28 @@ void GrainCanvas::drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry 
         g.setColour(pal.window.withAlpha(kLoopAlpha));
         g.fillRect(juce::Rectangle<float>(x0, top, std::max(xOf(window.to) - x0, 1.0f), height));
     }
-    // 2. The selected splice, while marks inside the window make it one: outlined, as a capture
-    // of it takes it (MediaSession::spanOf, Loop included).
+    // 2. The splice the engine plays, while a mark in storage makes one: outlined. The engine
+    // numbers the splices from the first mark in storage and ignores Loop (ruling SP-T1a/b), so
+    // the lane does too (carry-over row 386).
     const uint32_t count = std::min<uint32_t>(ring.spliceCount, gg::core::kMaxSplices);
-    if (params.splice >= 1 && anyMarkIn(ring, window.from, window.to))
+    outlined_[layer] = playedSplice(ring, params.splice);
+    if (const std::optional<RingSpan> &selected = outlined_[layer])
     {
-        const RingSpan selected = spliceSpan(ring, params.loop, loopFrames, params.splice);
-        const float x0 = xOf(selected.from);
+        const float x0 = xOf(selected->from);
         g.setColour(pal.window.withAlpha(kSpliceAlpha));
-        g.drawRect(juce::Rectangle<float>(x0, top + 1.0f, std::max(xOf(selected.to) - x0, 1.0f),
+        g.drawRect(juce::Rectangle<float>(x0, top + 1.0f, std::max(xOf(selected->to) - x0, 1.0f),
                                           std::max(height - 2.0f, 1.0f)),
                    1.5f);
     }
-    // 3. Each mark on the lane: a 1 px rule, numbered from the oldest inside the window (D6).
+    // 3. Each mark on the lane: a 1 px rule, numbered from the oldest still in storage, as the
+    // Splice parameter counts them.
     const bool numbered = height >= kMarkNumberMinHeight;
     g.setFont(juce::FontOptions(10.0f));
     uint32_t number = 0;
     for (uint32_t k = 0; k < count; ++k)
     {
         const int64_t mark = ring.splices[k];
-        const bool inside = mark >= window.from && mark < window.to;
+        const bool inside = mark >= ring.head - ring.ringFrames && mark < ring.head;
         number += inside ? 1u : 0u;
         const std::optional<float> x = ringFrameX(lane, head, mark, rate);
         if (!x)
@@ -861,6 +864,17 @@ std::vector<float> GrainCanvas::marksDrawn(uint8_t layer) const
 int64_t GrainCanvas::headDrawn(uint8_t layer) const noexcept
 {
     return layer < kLaneCount ? headDrawn_[layer] : 0;
+}
+
+std::optional<RingSpan> GrainCanvas::spliceOutlined(uint8_t layer) const
+{
+    return layer < kLaneCount ? outlined_[layer] : std::nullopt;
+}
+
+juce::Rectangle<float> GrainCanvas::peaksDrawn(uint8_t layer) const
+{
+    return layer < kLaneCount && strips_[layer].valid ? strips_[layer].bars.getBounds()
+                                                      : juce::Rectangle<float>();
 }
 
 void GrainCanvas::drawRect(juce::Graphics &g, const WindowRect &r, bool ghost, bool oneSided,

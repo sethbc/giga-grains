@@ -14,9 +14,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <sst/jucegui/accessibility/KeyboardTraverser.h>
 #include <sst/jucegui/components/BaseStyles.h>
-#include <sst/jucegui/components/ButtonPainter.h>
-#include <sst/jucegui/components/GlyphButton.h>
-#include <sst/jucegui/components/TextPushButton.h>
 #include <sst/jucegui/style/JUCELookAndFeelAdapter.h>
 #include <sst/jucegui/style/StyleAndSettingsConsumer.h>
 #include <sst/jucegui/style/StyleSheet.h>
@@ -28,11 +25,10 @@
 #include "NoticeSink.h"
 #include "Palette.h"
 #include "PresetBrowser.h"
-#include "PresetStrip.h"
-#include "gg/core/Version.h"
 #include "gg/ui/UndoStack.h"
 #include "views/EditView.h"
 #include "views/FxView.h"
+#include "views/Header.h"
 #include "views/ModView.h"
 #include "views/PerformView.h"
 #include "views/ViewStack.h"
@@ -41,8 +37,6 @@ namespace gg::ui
 {
 namespace
 {
-namespace jcmp = sst::jucegui::components;
-
 /// sst-jucegui's built-in sheet for `theme`, for its controls (spec §6.9).
 sst::jucegui::style::StyleSheet::ptr_t styleSheetFor(ThemeChoice theme)
 {
@@ -59,61 +53,6 @@ juce::String fromUtf8(const std::string &text)
 {
     return juce::String::fromUTF8(text.data(), static_cast<int>(text.size()));
 }
-
-/// The product's name: a click opens the About box.
-struct ProductLabel final : juce::Label
-{
-    std::function<void()> onClick;
-    void mouseUp(const juce::MouseEvent &e) override
-    {
-        if (onClick && !e.mouseWasDraggedSinceMouseDown())
-        {
-            onClick();
-        }
-    }
-};
-
-/// Undo or redo: sst-jucegui's glyph button with a curved arrow (sst-jucegui has no undo glyph),
-/// and a tooltip naming what it would apply.
-struct HistoryButton final : jcmp::GlyphButton, juce::SettableTooltipClient
-{
-    explicit HistoryButton(bool redo)
-        : jcmp::GlyphButton(redo ? jcmp::GlyphPainter::JOG_RIGHT : jcmp::GlyphPainter::JOG_LEFT),
-          redo_(redo)
-    {
-    }
-
-    void paint(juce::Graphics &g) override
-    {
-        jcmp::paintButtonBG(this, g);
-        const float alpha = isEnabled() ? (isHovered ? 1.0f : 0.85f) : 0.35f;
-        const auto box = getLocalBounds().toFloat().reduced(6.0f);
-        const float side = std::min(box.getWidth(), box.getHeight());
-        const auto c = box.getCentre().translated(0.0f, side * 0.12f);
-        // An arc over the top from the right to the left, its arrowhead at the left end pointing
-        // down (undo); mirrored for redo.
-        const float r = side * 0.36f;
-        const float sweep = juce::MathConstants<float>::halfPi * 1.3f;
-        juce::Path arc;
-        arc.addCentredArc(c.x, c.y, r, r, 0.0f, sweep, -sweep, true);
-        const auto tip = arc.getCurrentPosition();
-        const float h = side * 0.18f;
-        juce::Path head;
-        head.addTriangle(tip.x - h, tip.y - h * 0.2f, tip.x + h, tip.y - h * 0.2f, tip.x,
-                         tip.y + h * 0.9f);
-        if (redo_)
-        {
-            const auto flip = juce::AffineTransform::scale(-1.0f, 1.0f, c.x, c.y);
-            arc.applyTransform(flip);
-            head.applyTransform(flip);
-        }
-        g.setColour(getColour(Styles::labelcolor).withAlpha(alpha));
-        g.strokePath(arc, juce::PathStrokeType(1.6f));
-        g.fillPath(head);
-    }
-
-    const bool redo_;
-};
 
 /// The editor's Tab order: sst-jucegui's traverser over the reading order of what is shown now.
 /// sst-jucegui's knobs number themselves per parent, and the rest of the editor's components not
@@ -171,18 +110,16 @@ struct EditorTraverser final : sst::jucegui::accessibility::KeyboardTraverser
     juce::Component &modal_;
 };
 
-constexpr std::array<const char *, 4> kViewNames{"Perform", "Edit", "Mod", "FX"};
-constexpr std::array<const char *, 4> kViewIds{"header.perform", "header.edit", "header.mod",
-                                               "header.fx"};
 } // namespace
 
 /// The editor (M2 sub-project 6's spec §6.2): the header over the four views, one shown at a
 /// time. It starts at kEditorWidth x kEditorHeight and lays out at any size, kEditorMinWidth x
 /// kEditorMinHeight being the smallest the plugin asks a host for.
 ///
-/// **The header** (40 px): the product's name (a click opens the About box), the preset, the
-/// view buttons (a radio group), the notice (a refused drop, a setting not saved: 4 s), the frame
-/// time, and at the right undo and redo (tooltips naming the entry) and the theme switch.
+/// **The header** (Header, 40 px): the product's name (a click opens the About box), the preset,
+/// the view buttons (a radio group), the frame time, and at the right undo and redo (tooltips
+/// naming the entry) and the theme switch. The notice (a refused drop, a setting not saved: 4 s)
+/// is the editor's own label, in the header's middle or, where that is too narrow, under it.
 ///
 /// **Its state** is the view shown (opened on, and kept in, the context's view: the plugin
 /// instance's), the selected layer (one value, pushed to the canvas, the strips and the Edit and
@@ -215,7 +152,7 @@ class Editor final : public juce::Component,
               sst::jucegui::components::base_styles::Base::styleClass),
           context_(context), publishing_(context.publishing), lookAndFeel_(this), perform_(context),
           edit_(context, true), mod_(context), fx_(context), views_(perform_, edit_, mod_, fx_),
-          preset_(context), browser_(context), mutatePanel_(context), undo_(false), redo_(true),
+          header_(context), browser_(context), mutatePanel_(context),
           about_(context.productName, context.formatName)
     {
         setOpaque(true);
@@ -224,59 +161,32 @@ class Editor final : public juce::Component,
         const juce::String product = fromUtf8(context.productName);
         setTitle(product);
 
-        setUpLabel(product_, "header.product", product, juce::FontOptions(18.0f, juce::Font::bold));
-        product_.setTooltip("version " + fromUtf8(std::string(gg::kVersion)) +
-                            ": click for About (Command I)");
-        product_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
-        product_.onClick = [this] { openAbout(); };
-        // The preset strip (M2 sub-project 5's) in the header's preset slot, "header.preset".
-        addAndMakeVisible(preset_);
-        preset_.onName = [this] {
+        addAndMakeVisible(header_);
+        header_.onAbout = [this] { openAbout(); };
+        header_.onSelectView = [this](View view) { selectView(view); };
+        header_.onUndoRedo = [this](bool redo) { undoOrRedo(redo); };
+        header_.onTheme = [this] {
+            setTheme(themeChoice_ == ThemeChoice::Dark ? ThemeChoice::Light : ThemeChoice::Dark);
+        };
+        header_.onPresetName = [this] {
             mutatePanel_.setVisible(false);
             browser_.setVisible(!browser_.isVisible());
         };
+        header_.onPresetPrev = [this] { browser_.step(-1); };
+        header_.onPresetNext = [this] { browser_.step(1); };
         // The browser's Mutate button: the browser closes and the panel opens in its place.
         browser_.onMutate = [this] {
             browser_.setVisible(false);
             mutatePanel_.setVisible(true);
         };
         // The browser closed: the keyboard focus goes back to the strip (T5).
-        browser_.onClosed = [this] { preset_.focusName(); };
-        preset_.onPrev = [this] { browser_.step(-1); };
-        preset_.onNext = [this] { browser_.step(1); };
-        setUpLabel(frameMs_, "header.frameMs", {}, juce::FontOptions(12.0f));
-        frameMs_.setJustificationType(juce::Justification::centredRight);
-        frameMs_.setTooltip("The canvas's frame time, the mean of the last 60 frames");
-        setUpLabel(notice_, "header.notice", {}, juce::FontOptions(12.0f));
+        browser_.onClosed = [this] { header_.focusPresetName(); };
+        // The notice is the editor's, not the header's: where the header's middle is too narrow
+        // it shows in a band under the header, over the view (layoutNotice).
+        notice_.setComponentID("header.notice");
+        notice_.setFont(juce::Font(juce::FontOptions(12.0f)));
         notice_.setMinimumHorizontalScale(0.7f);
-        notice_.setVisible(false);
-
-        for (std::size_t i = 0; i < viewButtons_.size(); ++i)
-        {
-            juce::TextButton &button = viewButtons_[i];
-            button.setComponentID(kViewIds[i]);
-            button.setButtonText(kViewNames[i]);
-            button.setRadioGroupId(1);
-            button.setClickingTogglesState(true);
-            button.setTooltip(juce::String(kViewNames[i]) + " (Command " +
-                              juce::String(static_cast<int>(i) + 1) + ")");
-            button.onClick = [this, i] { selectView(static_cast<View>(i)); };
-            addAndMakeVisible(button);
-        }
-
-        undo_.setComponentID("header.undo");
-        undo_.setTitle("Undo");
-        undo_.setOnCallback([this] { undoOrRedo(false); });
-        addAndMakeVisible(undo_);
-        redo_.setComponentID("header.redo");
-        redo_.setTitle("Redo");
-        redo_.setOnCallback([this] { undoOrRedo(true); });
-        addAndMakeVisible(redo_);
-        theme_.setComponentID("header.theme");
-        theme_.setOnCallback([this] {
-            setTheme(themeChoice_ == ThemeChoice::Dark ? ThemeChoice::Light : ThemeChoice::Dark);
-        });
-        addAndMakeVisible(theme_);
+        addChildComponent(notice_);
 
         perform_.onSelectLayer = [this](uint8_t layer) { selectLayer(layer); };
         edit_.onSelectLayer = [this](uint8_t layer) { selectLayer(layer); };
@@ -321,11 +231,7 @@ class Editor final : public juce::Component,
     void selectView(View view)
     {
         views_.show(view);
-        for (std::size_t i = 0; i < viewButtons_.size(); ++i)
-        {
-            viewButtons_[i].setToggleState(i == static_cast<std::size_t>(view),
-                                           juce::dontSendNotification);
-        }
+        header_.setView(view);
         refreshShownView();
         if (context_.setView)
         {
@@ -393,37 +299,13 @@ class Editor final : public juce::Component,
     void paint(juce::Graphics &g) override
     {
         const Palette &pal = palette();
-        g.fillAll(pal.background);
-        g.setColour(pal.header);
-        g.fillRect(getLocalBounds().removeFromTop(kHeaderHeight));
+        g.fillAll(pal.background); // the header paints its own band
     }
 
     void resized() override
     {
         auto area = getLocalBounds();
-        auto header = area.removeFromTop(kHeaderHeight).reduced(kMargin, 6);
-        // The left group is M1's: the product's name and the preset's slot.
-        product_.setBounds(header.removeFromLeft(150));
-        preset_.setBounds(header.removeFromLeft(90));
-        header.removeFromLeft(12);
-        // Narrow (the smallest sizes), the buttons are too.
-        const bool compact = header.getWidth() < 560;
-        const std::array<int, 4> widths =
-            compact ? std::array<int, 4>{64, 44, 44, 36} : std::array<int, 4>{76, 56, 56, 48};
-        for (std::size_t i = 0; i < viewButtons_.size(); ++i)
-        {
-            viewButtons_[i].setBounds(header.removeFromLeft(widths[i]));
-            header.removeFromLeft(compact ? 2 : 4);
-        }
-        theme_.setBounds(header.removeFromRight(compact ? 48 : 56));
-        header.removeFromRight(compact ? 4 : 8);
-        redo_.setBounds(header.removeFromRight(28));
-        header.removeFromRight(2);
-        undo_.setBounds(header.removeFromRight(28));
-        header.removeFromRight(compact ? 4 : 8);
-        middle_ = header;
-        frameMs_.setBounds(
-            middle_.withTrimmedLeft(middle_.getWidth() - std::min(170, middle_.getWidth())));
+        header_.setBounds(area.removeFromTop(Header::kHeight));
         layoutNotice();
 
         area = area.reduced(kMargin, kGap);
@@ -525,8 +407,7 @@ class Editor final : public juce::Component,
         {
             refreshShownView();
         }
-        preset_.refresh();
-        preset_.setBrowserOpen(browser_.isVisible());
+        header_.refreshPreset(browser_.isVisible());
         browser_.refresh();
         mutatePanel_.refresh();
         refreshHistory();
@@ -544,44 +425,31 @@ class Editor final : public juce::Component,
                 applyTheme(setting);
             }
         }
-        const double ms = perform_.canvas().averageFrameMs();
-        frameMs_.setText(frameMs_.getWidth() >= 150 ? "frame ms (avg 60): " + juce::String(ms, 2)
-                                                    : juce::String(ms, 2) + " ms",
-                         juce::dontSendNotification);
+        header_.setFrameMs(perform_.canvas().averageFrameMs());
     }
 
   private:
-    static constexpr int kHeaderHeight = 40;
     static constexpr int kMargin = 12;
     static constexpr int kGap = 6;
     static constexpr int kNoticeTicks = 4 * 30; // 4 s at 30 Hz
     static constexpr int kThemePollTicks = 30;  // once a second
     static constexpr int kNoticeMinWidth = 220; // narrower, it shows under the header
 
-    void setUpLabel(juce::Label &label, const char *id, const juce::String &text,
-                    const juce::FontOptions &font)
-    {
-        label.setComponentID(id);
-        label.setText(text, juce::dontSendNotification);
-        label.setFont(juce::Font(font));
-        label.setMinimumHorizontalScale(1.0f);
-        addAndMakeVisible(label);
-    }
-
     /// The notice takes the header's middle, the frame time hidden while it shows, or, where
     /// that is too narrow, a band under the header's right end, over the view.
     void layoutNotice()
     {
         const bool shown = notice_.isVisible();
-        frameMs_.setVisible(!shown || middle_.getWidth() < kNoticeMinWidth);
-        if (middle_.getWidth() >= kNoticeMinWidth)
+        const juce::Rectangle<int> middle = header_.middle() + header_.getPosition();
+        header_.showFrameMs(!shown || middle.getWidth() < kNoticeMinWidth);
+        if (middle.getWidth() >= kNoticeMinWidth)
         {
-            notice_.setBounds(middle_);
+            notice_.setBounds(middle);
         }
         else
         {
             const int width = std::max(0, std::min(420, getWidth() - 2 * kMargin));
-            notice_.setBounds(getWidth() - kMargin - width, kHeaderHeight, width, 22);
+            notice_.setBounds(getWidth() - kMargin - width, header_.getBottom(), width, 22);
         }
         if (shown)
         {
@@ -625,19 +493,7 @@ class Editor final : public juce::Component,
     }
 
     /// The buttons' state and tooltips from the history.
-    void refreshHistory()
-    {
-        const UndoStack *stack = context_.undo;
-        // Mid-gesture they wait (UndoStack::busy), so the buttons are off then.
-        const bool canUndo = stack != nullptr && stack->canUndo() && !stack->busy();
-        const bool canRedo = stack != nullptr && stack->canRedo() && !stack->busy();
-        undo_.setEnabled(canUndo);
-        redo_.setEnabled(canRedo);
-        undo_.setTooltip(canUndo ? "Undo " + fromUtf8(stack->undoLabel())
-                                 : juce::String("Nothing to undo"));
-        redo_.setTooltip(canRedo ? "Redo " + fromUtf8(stack->redoLabel())
-                                 : juce::String("Nothing to redo"));
-    }
+    void refreshHistory() { header_.setHistory(context_.undo); }
 
     void openAbout()
     {
@@ -663,27 +519,13 @@ class Editor final : public juce::Component,
         repaint();
     }
 
-    /// The header's own colors.
+    /// The header's colors and the notice's.
     void applyPalette()
     {
         const Palette &pal = palette();
-        product_.setColour(juce::Label::textColourId, pal.text);
-        frameMs_.setColour(juce::Label::textColourId, pal.dimText);
+        header_.applyPalette(pal, themeChoice_);
         notice_.setColour(juce::Label::textColourId, pal.notice);
         notice_.setColour(juce::Label::backgroundColourId, pal.header);
-        for (juce::TextButton &button : viewButtons_)
-        {
-            button.setColour(juce::TextButton::buttonColourId, pal.background);
-            button.setColour(juce::TextButton::buttonOnColourId, pal.accent.withAlpha(0.35f));
-            button.setColour(juce::TextButton::textColourOffId, pal.dimText);
-            button.setColour(juce::TextButton::textColourOnId, pal.text);
-            button.setColour(juce::ComboBox::outlineColourId, pal.outline);
-        }
-        const bool light = themeChoice_ == ThemeChoice::Light;
-        theme_.setLabel(light ? "Light" : "Dark");
-        theme_.setTitle("Theme");
-        theme_.setTooltip(light ? "The light theme: click for the dark"
-                                : "The dark theme: click for the light");
     }
 
     const EditorContext &context_;
@@ -697,20 +539,13 @@ class Editor final : public juce::Component,
     FxView fx_;
     ViewStack views_;
 
-    ProductLabel product_;
-    PresetStrip preset_;
+    Header header_;
     PresetBrowser browser_;
     MutatePanel mutatePanel_;
-    juce::Label notice_, frameMs_;
-    std::array<juce::TextButton, 4> viewButtons_;
-    HistoryButton undo_, redo_;
-    struct ThemeButton final : jcmp::TextPushButton, juce::SettableTooltipClient
-    {
-    } theme_;
+    juce::Label notice_;
     AboutBox about_;
     juce::TooltipWindow tooltips_{this, 600};
 
-    juce::Rectangle<int> middle_; // the header between the view buttons and undo
     uint8_t layer_{0};
     ThemeChoice themeChoice_{ThemeChoice::Dark};
     ThemeChoice lastSetting_{ThemeChoice::Dark}; // the setting as last read or written here

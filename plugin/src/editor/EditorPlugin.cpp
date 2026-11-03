@@ -73,9 +73,31 @@ gg::ui::SampleStatusView viewOf(const SampleStatus &status)
             status.channels, status.fileRate, status.relinkable};
 }
 
-/// The format clap-wrapper loaded the plugin as, from its host-information extension: "VST3",
-/// "AU" (v2 or v3) or "Standalone". A host that doesn't offer it has loaded the CLAP itself, so
-/// "CLAP"; a flavor not named here (AAX isn't a format of ours) gives "".
+gg::ui::ThemeChoice choiceOf(ThemeName theme)
+{
+    return theme == ThemeName::Light ? gg::ui::ThemeChoice::Light : gg::ui::ThemeChoice::Dark;
+}
+
+ThemeName nameOf(gg::ui::ThemeChoice theme)
+{
+    return theme == gg::ui::ThemeChoice::Light ? ThemeName::Light : ThemeName::Dark;
+}
+} // namespace
+
+gg::core::CommandKind toCommandKind(gg::ui::RingCommand command) noexcept
+{
+    switch (command)
+    {
+    case gg::ui::RingCommand::AddSplice:
+        return gg::core::CommandKind::AddSplice;
+    case gg::ui::RingCommand::ClearSplices:
+        return gg::core::CommandKind::ClearSplices;
+    case gg::ui::RingCommand::AddSpliceAt:
+        return gg::core::CommandKind::AddSpliceAt;
+    }
+    return gg::core::CommandKind::ClearSplices; // unreachable: every command is named above
+}
+
 std::string formatOf(const clap_host *host)
 {
     if (host == nullptr)
@@ -107,17 +129,6 @@ std::string formatOf(const clap_host *host)
     return {};
 }
 
-gg::ui::ThemeChoice choiceOf(ThemeName theme)
-{
-    return theme == ThemeName::Light ? gg::ui::ThemeChoice::Light : gg::ui::ThemeChoice::Dark;
-}
-
-ThemeName nameOf(gg::ui::ThemeChoice theme)
-{
-    return theme == gg::ui::ThemeChoice::Light ? ThemeName::Light : ThemeName::Dark;
-}
-} // namespace
-
 EditorPlugin::EditorPlugin(const clap_host *host, Product product)
     : GigaGrainsPlugin(host, product),
       // Each undo or redo of a value is one gesture of its own, so hosts record it.
@@ -137,11 +148,22 @@ EditorPlugin::EditorPlugin(const clap_host *host, Product product)
               }})),
       editorContext_(std::make_unique<gg::ui::EditorContext>())
 {
+    replaceShim(1.0);
+}
+
+void EditorPlugin::replaceShim(double scale)
+{
     // As Shortcircuit XT does. Creating the shim needs no window and no message loop: the shim
     // starts JUCE's GUI in guiCreate, so a plugin that never shows its editor (or a headless
     // test) never does.
-    clapJuceShim = std::make_unique<sst::clap_juce_shim::ClapJuceShim>(this);
-    clapJuceShim->setResizable(true);
+    auto shim = std::make_unique<sst::clap_juce_shim::ClapJuceShim>(this);
+    shim->setResizable(true);
+    if (scale != 1.0)
+    {
+        // Safe with no editor: the shim applies a scale only to a holder it has.
+        shim->guiSetScale(scale);
+    }
+    clapJuceShim = std::move(shim); // the old shim, and any editor it holds, goes here
 }
 
 EditorPlugin::~EditorPlugin() = default;
@@ -159,6 +181,7 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         view.valid = true;
         view.head = meta.head;
         view.windowFrames = meta.windowFrames;
+        view.oldestHeld = meta.oldestHeld;
         const gg::RingStorage *storage = p->ringRead(layer).storage; // collect()'s thread: live
         view.ringFrames = storage != nullptr ? storage->frames() : 0;
         view.spliceCount = std::min<uint32_t>(meta.spliceCount, gg::core::kMaxSplices);
@@ -166,14 +189,13 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         view.frozen = meta.frozen;
         return view;
     };
-    context.ringCommand = [this](uint8_t layer, gg::ui::RingCommand command, float seconds) {
+    context.ringCommand = [this](uint8_t layer, gg::ui::RingCommand command, double value) {
         if (layer >= gg::core::kLayers)
         {
             return;
         }
-        const bool add = command == gg::ui::RingCommand::AddSplice;
-        uiCommand({0, add ? gg::core::CommandKind::AddSplice : gg::core::CommandKind::ClearSplices,
-                   layer, add ? seconds : 0.0f});
+        const gg::core::CommandKind kind = toCommandKind(command);
+        uiCommand({0, kind, layer, kind == gg::core::CommandKind::ClearSplices ? 0.0 : value});
     };
     // The window or splice of a layer's ring, or the message for the user.
     const auto capture = [this](uint8_t layer, uint32_t splice,
@@ -192,7 +214,8 @@ void EditorPlugin::fillRingContext(gg::ui::EditorContext &context)
         std::shared_ptr<const gg::SampleBuffer> buffer;
         try
         {
-            buffer = media().captureRing(layer, splice, *p);
+            // The lane's Capture: the splice the engine plays (carry-over row 386).
+            buffer = media().captureRing(layer, splice, *p, true);
         }
         catch (const std::bad_alloc &)
         {
@@ -581,8 +604,16 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
     // until the editor's destructor, or guiDestroy for the shim's, turns it off. The editor
     // copies its `publishing`, so each closes its own flag, once.
     updatePublished();
+    // The editor's destructor is the one caller of publishing(false) (EditorContext), so
+    // `alive` counts it gone exactly when it is.
     auto counted = std::make_shared<bool>(true);
-    context.publishing = [this, counted](bool open) {
+    auto alive = std::make_shared<bool>(true);
+    context.publishing = [this, counted, alive](bool open) {
+        if (!open && *alive)
+        {
+            *alive = false;
+            --liveEditors_;
+        }
         if (!open && *counted)
         {
             *counted = false;
@@ -590,6 +621,7 @@ std::unique_ptr<juce::Component> EditorPlugin::createEditor()
         }
     };
     auto editor = gg::ui::makeEditor(context);
+    ++liveEditors_;
     editorOpened(true);
     lastEditor_ = std::move(counted);
     return editor;
@@ -607,9 +639,11 @@ bool EditorPlugin::guiCreate(const char *api, bool isFloating) noexcept
 void EditorPlugin::guiDestroy() noexcept
 {
     // With a parent attached the shim destroys its editor here, whose destructor closes it.
-    // Without one (a host that created the GUI and never showed it) the shim keeps the editor
-    // until the next guiCreate or its own end, so it is closed here: publishing follows
-    // guiDestroy either way.
+    // Without one (a host that created the GUI and never showed it) the shim would keep the
+    // editor, and the next guiCreate would replace it, which the shim asserts against (carry-over
+    // row 232). So the editor is closed here, and the shim replaced, which destroys it: publishing
+    // follows guiDestroy, and the next guiCreate finds an empty shim.
+    const bool kept = shimEditor_ != nullptr && !clapJuceShim->isEditorAttached();
     clapJuceShim->guiDestroy();
     if (shimEditor_ != nullptr && *shimEditor_)
     {
@@ -617,6 +651,28 @@ void EditorPlugin::guiDestroy() noexcept
         editorOpened(false);
     }
     shimEditor_.reset();
+    if (kept)
+    {
+        try
+        {
+            // The scale the host set, which the shim's getGuiScale reports only on Windows.
+            replaceShim(guiScale_);
+        }
+        catch (...)
+        {
+            // Out of memory for a new shim: the old one stays, with its editor, as before.
+        }
+    }
+}
+
+bool EditorPlugin::guiSetScale(double scale) noexcept
+{
+    const bool taken = clapJuceShim->guiSetScale(scale);
+    if (taken)
+    {
+        guiScale_ = scale;
+    }
+    return taken;
 }
 
 bool EditorPlugin::guiAdjustSize(uint32_t *width, uint32_t *height) noexcept

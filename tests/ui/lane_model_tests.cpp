@@ -1362,6 +1362,39 @@ TEST_CASE("a splice mark's seconds round-trip", "[ui]")
     CHECK(p.ringMeta(0).splices[1] == inSplice);
 }
 
+TEST_CASE("the played splice is numbered as the engine numbers it, Loop ignored", "[ui]")
+{
+    // Row 386: with Loop on and a mark older than the loop, the splice the engine plays (and the
+    // lane outlines) is numbered from the first mark in storage, not inside the loop window as a
+    // capture's own splice argument is (spliceSpan with Loop on, SP-T8a).
+    const int64_t head = frames(100.0);
+    const int64_t m0 = head - frames(20.0); // left the 16 s storage
+    const int64_t m1 = head - frames(12.0); // older than the 10 s loop
+    const int64_t m2 = head - frames(8.0);
+    const int64_t m3 = head - frames(2.0);
+    const gg::ui::RingView ring = ringOf(16.0, 100.0, {m0, m1, m2, m3});
+    const int64_t loop = frames(10.0);
+    for (uint32_t k = 1; k <= 4; ++k)
+    {
+        INFO("splice " << k);
+        const auto played = gg::ui::playedSplice(ring, k);
+        REQUIRE(played.has_value());
+        const gg::ui::RingSpan storage = gg::ui::spliceSpan(ring, false, 0, k);
+        CHECK(played->from == storage.from);
+        CHECK(played->to == storage.to);
+        // The anchor an AddSplice takes is the played splice's end.
+        CHECK(gg::ui::spliceAnchor(ring, k) == played->to);
+    }
+    // Splice 1 is [m1, m2): older than the loop, where a capture's numbering finds m2 first.
+    CHECK(gg::ui::playedSplice(ring, 1)->from == m1);
+    CHECK(gg::ui::playedSplice(ring, 1)->to == m2);
+    CHECK(gg::ui::spliceSpan(ring, true, loop, 1).from == m2);
+    // No selection, or no mark in storage: the window plays, and nothing is outlined.
+    CHECK_FALSE(gg::ui::playedSplice(ring, 0).has_value());
+    CHECK_FALSE(gg::ui::playedSplice(ringOf(16.0, 100.0, {m0}), 1).has_value());
+    CHECK(gg::ui::spliceAnchor(ringOf(16.0, 100.0, {m0}), 1) == head);
+}
+
 TEST_CASE("spliceAnchor numbers from the first mark in storage", "[ui]")
 {
     // LiveSource::anchorAt: the head with no splice selected or no mark in storage
@@ -1378,6 +1411,37 @@ TEST_CASE("spliceAnchor numbers from the first mark in storage", "[ui]")
     CHECK(gg::ui::spliceAnchor(ringOf(16.0, 100.0, {m0}), 1) == head);
     CHECK(gg::ui::anyMarkIn(ring, m1, m2));
     CHECK_FALSE(gg::ui::anyMarkIn(ring, m1 + 1, m2));
+}
+
+TEST_CASE("a Live lane shorter than 16 s maps its span and clamps older frames", "[ui]")
+{
+    // Row 388 (n): an 8 s ring across the lane. Its span is 8 s: the head at the right edge, 8 s
+    // back at the left, nothing older; Position tops out at the 8 s value, below 1.
+    LaneGeometry narrow = fxLane(1600.0f); // 200 px a second
+    narrow.ringSeconds = 8.0;
+    const int64_t head = frames(100.0);
+    const auto x = [&](int64_t frame) { return gg::ui::ringFrameX(narrow, head, frame, kRate); };
+    REQUIRE(x(head).has_value());
+    CHECK(*x(head) == 1600.0f);
+    REQUIRE(x(head - frames(4.0)).has_value());
+    CHECK_THAT(*x(head - frames(4.0)), WithinAbs(800.0, 1e-3));
+    REQUIRE(x(head - frames(8.0)).has_value());
+    CHECK_THAT(*x(head - frames(8.0)), WithinAbs(0.0, 1e-3));
+    CHECK_FALSE(x(head - frames(8.0) - 1).has_value());
+    CHECK_FALSE(x(head - frames(12.0)).has_value()); // inside a 16 s ring, not this one
+    // The inverse clamps to the span: past the left edge is 8 s back, not 16.
+    CHECK(gg::ui::ringFrameAt(narrow, head, -100.0f, kRate) == head - frames(8.0));
+    CHECK(gg::ui::ringFrameAt(narrow, head, 0.0f, kRate) == head - frames(8.0));
+    CHECK(gg::ui::ringFrameAt(narrow, head, 1600.0f, kRate) == head);
+    // Position: the 8 s value is the lane's top, below 1 (16 s); a larger one pins to the edge.
+    const float top = gg::ui::livePositionMax(narrow);
+    CHECK(top < 1.0f);
+    CHECK_THAT(fxPositionSeconds(top), WithinAbs(8.0, 1e-3));
+    CHECK_THAT(gg::ui::scanWindow(top, 0.0f, narrow).x1, WithinAbs(0.0, 1e-2));
+    CHECK(gg::ui::scanWindow(1.0f, 0.0f, narrow).x1 == gg::ui::scanWindow(top, 0.0f, narrow).x1);
+    CHECK(gg::ui::positionValueAtX(-500.0f, narrow) == top);
+    // The middle is 4 s back.
+    CHECK_THAT(fxPositionSeconds(gg::ui::positionValueAtX(800.0f, narrow)), WithinAbs(4.0, 1e-3));
 }
 
 TEST_CASE("a Live lane past 16 s reaches Position past 1", "[ui]")

@@ -454,14 +454,20 @@ bool anyMarkIn(const RingView &ring, int64_t from, int64_t to) noexcept
     return false;
 }
 
-int64_t spliceAnchor(const RingView &ring, uint32_t k) noexcept
+std::optional<RingSpan> playedSplice(const RingView &ring, uint32_t k) noexcept
 {
     // The engine numbers from the first mark in storage, m >= head − N, and ignores Loop.
     if (k == 0 || !anyMarkIn(ring, ring.head - ring.ringFrames, ring.head))
     {
-        return ring.head;
+        return std::nullopt;
     }
-    return spliceSpan(ring, false, 0, k).to;
+    return spliceSpan(ring, false, 0, k);
+}
+
+int64_t spliceAnchor(const RingView &ring, uint32_t k) noexcept
+{
+    const std::optional<RingSpan> played = playedSplice(ring, k);
+    return played ? played->to : ring.head;
 }
 
 float spliceSeconds(int64_t anchor, int64_t frame, double sampleRate) noexcept

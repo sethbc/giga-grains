@@ -37,12 +37,18 @@ struct RingCopy
 ///   Length in frames (llround(seconds × rate), at least 1, as the Processor sets it), the Splice
 ///   selection aside (Task 8's ruling: a saved ring is this window, Splice reselects on restore);
 /// - `splice` k >= 1 (a capture's): the span from the k-th mark inside the window, oldest first
-///   (D6), to the next mark or R0; k past the count is the last; with no mark inside, the window.
+///   (D6), to the next mark or R0; k past the count is the last; with no mark inside, the window
+///   (ruling SP-T8a: gg-render's capture, and a capture's own argument);
+/// - with `fromStorage` (the editor's lane capture, carry-over row 386), splice k is the one the
+///   engine plays for the Splice parameter at k (ruling SP-T1a/b, LiveSource::spliceAt): numbered
+///   from the first mark in storage, [max(0, R0 − N), R0), Loop ignored; with no mark in storage,
+///   the window as above (the loop's while Loop is on), which the engine then plays.
 struct RingSpanRequest
 {
     bool loop{false};
     int64_t loopFrames{0};
     uint32_t splice{0};
+    bool fromStorage{false};
 };
 
 /// Reads layer `layer`'s span `request` (RingSpanRequest) through core::RingRead's protocol (spec

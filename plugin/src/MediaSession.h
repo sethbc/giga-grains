@@ -168,9 +168,12 @@ class MediaSession
 
     /// The layer's ring window, or splice `splice` of it (RingSpanRequest, with the layer's Loop
     /// and Loop Length bases), at the active rate (spec §6.4); nullptr, with the status "no ring
-    /// to capture", when the layer has no ring or it is empty.
+    /// to capture", when the layer has no ring or it is empty. With `asPlayed` (the editor's lane
+    /// capture), splice k is the one the engine plays for Splice k (RingSpanRequest::fromStorage);
+    /// without, a capture's own numbering inside the window (SP-T8a).
     std::shared_ptr<const SampleBuffer> captureRing(uint8_t layer, uint32_t splice,
-                                                    const core::Processor &processor);
+                                                    const core::Processor &processor,
+                                                    bool asPlayed = false);
     /// `buffer` becomes layer `targetLayer`'s sample through its loader as an in-memory load
     /// (SampleLoader::loadInMemory): its entry embedded, `wav`, with its WAV bytes' fingerprint
     /// and a payload id; the session saves it by the embed rule. False when the cap refuses it.

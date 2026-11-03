@@ -5,7 +5,8 @@
 # embed_text_*: runs cmake/embed-text.cmake over fixture files and compares its output with what
 # the escaping rules (the script's header) say it must be. A mismatch reports the first differing
 # byte offset and a few bytes around it, not two whole blobs.
-#   cmake -DGG_CASE=<escapes|long-line|empty|unpaired> -DGG_REPO=<repo> -DGG_OUT=<dir>
+#   cmake -DGG_CASE=<escapes|long-line|empty|unpaired|newline-aligned> -DGG_REPO=<repo>
+#         -DGG_OUT=<dir>
 #         -P run.cmake
 
 file(REMOVE_RECURSE "${GG_OUT}")
@@ -86,15 +87,40 @@ endif ()
 # CMake's file(WRITE) and file(APPEND) write in text mode on Windows, so a "\n" in a fixture lands
 # in the file as CR LF there. The embedder must carry whatever bytes the file holds, so the expected
 # text spells a newline as the fixture really has it: gg_detect_newline sets gg_nl to "\x0a" or
-# "\x0d\x0a" from the bytes of ${src}.
+# "\x0d\x0a" from the bytes of ${src}. The hex is two digits a byte, so the pair must start at an
+# even offset: "10d0a0" (bytes 10 d0 a0) holds "0d0a" across bytes, and is no CR LF (row 388 (r)).
 macro(gg_detect_newline)
     file(READ "${src}" gg_fixture_hex HEX)
-    if (gg_fixture_hex MATCHES "0d0a")
+    if (gg_fixture_hex MATCHES "^(..)*0d0a")
         set(gg_nl "\\x0d\\x0a")
     else ()
         set(gg_nl "\\x0a")
     endif ()
 endmacro()
+
+if (GG_CASE STREQUAL "newline-aligned")
+    # gg_detect_newline over bytes 10 d0 a0 (a control character, then U+0420 in UTF-8), no
+    # newline at all: their hex holds "0d0a" at an odd offset alone, which is no CR LF.
+    string(ASCII 16 c10)
+    file(WRITE "${src}" "${c10}Р")
+    file(READ "${src}" hex HEX)
+    if (NOT hex STREQUAL "10d0a0")
+        message(FATAL_ERROR "the fixture's bytes are ${hex}, not 10d0a0")
+    endif ()
+    gg_detect_newline()
+    if (NOT gg_nl STREQUAL "\\x0a")
+        message(FATAL_ERROR "bytes 10 d0 a0 were taken for CR LF (${gg_nl})")
+    endif ()
+    # And a real CR LF, at an even offset, still is one.
+    string(ASCII 13 cr)
+    file(WRITE "${src}" "${c10}${cr}\n")
+    file(READ "${src}" hex HEX)
+    gg_detect_newline()
+    if (hex MATCHES "^100d0a" AND NOT gg_nl STREQUAL "\\x0d\\x0a")
+        message(FATAL_ERROR "bytes ${hex} hold a CR LF, but gg_nl is ${gg_nl}")
+    endif ()
+    return()
+endif ()
 
 # The fixture, and the body the generated array must hold (between the "constexpr char kText0[] ="
 # line and the closing ";").

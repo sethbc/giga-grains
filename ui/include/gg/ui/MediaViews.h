@@ -21,6 +21,9 @@ struct RingView
     /// The ring's length N, its storage's frames (Processor::ringRead): what a Live lane spans
     /// and what MediaSession::spanOf numbers the splices within. 0 with no storage.
     int64_t ringFrames{0};
+    /// The oldest ring frame the storage holds (RingMeta::oldestHeld): after a Ring Length grow,
+    /// the lane shows nothing older until the head passes the frames the new storage never got.
+    int64_t oldestHeld{0};
     uint32_t spliceCount{0};
     std::array<int64_t, gg::core::kMaxSplices> splices{}; ///< ascending ring frames
     bool frozen{false};
@@ -33,11 +36,13 @@ struct MemoryView
     uint32_t capMiB{0};
 };
 
-/// A ring command of the editor's (the Processor's CommandKind AddSplice and ClearSplices).
+/// A ring command of the editor's (the Processor's CommandKind AddSplice, ClearSplices and
+/// AddSpliceAt).
 enum class RingCommand : uint8_t
 {
     AddSplice,
-    ClearSplices
+    ClearSplices,
+    AddSpliceAt ///< a mark at a ring frame itself (the lane's click; carry-over row 388 (m))
 };
 } // namespace gg::ui
 

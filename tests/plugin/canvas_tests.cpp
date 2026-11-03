@@ -681,6 +681,10 @@ TEST_CASE("a drop onto any lane loads its layer", "[plugin]")
     REQUIRE(notices.size() == 2);
     CHECK(notices[0] == "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
     CHECK(notices[1] == "can't load noextension: not a WAV, AIFF, FLAC or MP3 file");
+    // A folder dropped as "dir/" is named "dir" (row 388 (q)).
+    dropOn(0, pathOf("dir") + "/");
+    REQUIRE(notices.size() == 3);
+    CHECK(notices[2] == "can't load dir: not a WAV, AIFF, FLAC or MP3 file");
     // A drop left of the lanes is no lane's.
     canvas->filesDropped(juce::StringArray{pathOf("c.wav")}, 10,
                          canvas->laneBounds(1).getCentreY());
@@ -832,8 +836,8 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
 
     // A grain on lane D lights the accumulator inside its capsule's rectangle and nowhere else
     // (row 327: positions, not only lit pixels). It reads a quarter of the way into the 1 s
-    // sample, 100 ms at rate 2, an octave up. Queued after a frame, which clears the queue.
-    image = paintInto(900, 403);
+    // sample, 100 ms at rate 2, an octave up. The paints above have read the queue already, so
+    // the canvas takes it as new, not as a stale backlog (row 388 (p): no paint before it).
     // The canvas extrapolates its clock by wall time (up to 0.25 s past a change, never backwards)
     // and the grain lasts 100 ms, so a slow build (ASan) that spent longer than that on the paints
     // above holds now() up to kFrames + 12,000. Publish a clock past that, and draw the grain
@@ -842,6 +846,8 @@ TEST_CASE("the canvas paints four lanes, and again after a resize", "[plugin]")
     clock.store(kNow, std::memory_order_release);
     REQUIRE(queue.push(gg::core::GrainVis{kNow - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f, 3}));
     image = paintInto(900, 403);
+    // Lane D's geometry with the test's clock already stored: a Sample lane ignores the head,
+    // but a change that made it read one would read this clock's.
     const auto lane = laneOf(*canvas, 3, false, kRate, 48000);
     const auto c =
         gg::ui::grainCapsule({kNow - 100, 12000.0, 2.0f, 4800.0f, 1.0f, 0.0f}, kNow, kNow, lane);
@@ -953,8 +959,10 @@ TEST_CASE("held arrow keys make one undo entry on the canvas lane", "[plugin]")
     const juce::ScopedJuceInitialiser_GUI juceGui;
     UndoCanvas f;
     REQUIRE(f.canvas != nullptr);
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed (row 388 (f))
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(f.canvas->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK(f.undo.size() == 1);
@@ -1122,6 +1130,32 @@ TEST_CASE("a Live lane spans its ring", "[plugin]")
     CHECK(f.canvas->laneGeometry(0).ringSeconds == 16.0);
 }
 
+TEST_CASE("a 60 s ring's lane shows peaks over its 60 s", "[plugin]")
+{
+    // Row 385: each layer's peak strip was sized once for the 16 s ring, so a longer ring's lane
+    // showed peaks for its newest 16 s only. The strips now span the longest ring.
+    gg::test::useMediaScratch("canvas-ring-peaks");
+    PluginCanvas f(kFxPlugin);
+    f.flush(slotOf(gg::core::LayerParam::RingLength, 0), std::log2(60.0));
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    CHECK(f.impl->processor()->livePeaks(0).frames() >=
+          static_cast<int64_t>(gg::core::kRingMaxSeconds * kPluginRate));
+    // 20 s of noise: the lane's newest third holds it, older than the old strip's 16 s.
+    f.process(20 * 48000);
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    REQUIRE_THAT(lane.ringSeconds, Catch::Matchers::WithinAbs(60.0, 0.1));
+    const juce::Rectangle<float> bars = f.canvas->peaksDrawn(0);
+    REQUIRE_FALSE(bars.isEmpty());
+    // The oldest bar is 20 s behind the head, 40 s into the 60 s lane (the head runs on a
+    // little by the clock's extrapolation): well left of the 44 s a 16 s strip reached.
+    const float width = lane.width;
+    INFO("bars from " << bars.getX() << " to " << bars.getRight() << " of " << width);
+    CHECK(bars.getX() < width * 42.0f / 60.0f);
+    CHECK(bars.getX() > width * 38.0f / 60.0f); // nothing older than the 20 s written
+    CHECK(bars.getRight() > width * 59.0f / 60.0f);
+}
+
 TEST_CASE("the lane draws the ring's marks", "[plugin]")
 {
     gg::test::useMediaScratch("canvas-ring-marks");
@@ -1154,6 +1188,76 @@ TEST_CASE("the lane draws the ring's marks", "[plugin]")
     f.process(kBlock);
     f.paint();
     CHECK(f.canvas->marksDrawn(0).empty());
+}
+
+TEST_CASE("a grown ring's lane shows no peaks older than its storage holds", "[plugin]")
+{
+    // Row 385's review: an adoption copies the old storage's frames only as far as both windows
+    // reach, so after a grow from 16 s to 60 s the frames older than 16 s behind the head at that
+    // moment were never in the new storage. The strip still holds their peaks (it spans the
+    // longest ring); the lane must not draw them, frozen or not.
+    gg::test::useMediaScratch("canvas-ring-grow");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(24 * 48000);                                       // 24 s of noise into the 16 s ring
+    f.processWith(slotOf(gg::core::LayerParam::Freeze, 0), 1.0); // the head stops
+    f.process(48000);
+    const int64_t head = f.impl->processor()->ringMeta(0).head;
+    f.processWith(slotOf(gg::core::LayerParam::RingLength, 0), std::log2(60.0));
+    f.plugin.onMainThread(); // the watcher offers the 60 s ring
+    f.process(kBlock);       // adopted
+    f.plugin.onMainThread();
+    REQUIRE(f.impl->processor()->ringRead(0).storage->frames() == 60 * 48000);
+    const gg::core::RingMeta meta = f.impl->processor()->ringMeta(0);
+    REQUIRE(meta.head == head); // frozen
+    CHECK(meta.oldestHeld == head - 16 * 48000);
+    CHECK(f.context().ringView(0).oldestHeld == head - 16 * 48000);
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    REQUIRE_THAT(lane.ringSeconds, Catch::Matchers::WithinAbs(60.0, 0.1));
+    const juce::Rectangle<float> bars = f.canvas->peaksDrawn(0);
+    REQUIRE_FALSE(bars.isEmpty());
+    // The storage holds the newest 16 s of the 60 s lane: 44 s from its left. Without the clamp
+    // the strip's 24 s would draw from 36 s.
+    INFO("bars from " << bars.getX() << " of " << lane.width);
+    CHECK(bars.getX() >= lane.width * 44.0f / 60.0f - 1.0f);
+    CHECK(bars.getX() < lane.width * 45.0f / 60.0f);
+    // Still so after more frames: frozen, the head stands, and nothing comes back.
+    f.process(48000);
+    f.paint();
+    CHECK(f.canvas->peaksDrawn(0).getX() >= lane.width * 44.0f / 60.0f - 1.0f);
+}
+
+TEST_CASE("the lane outlines the splice the engine plays with Loop on", "[plugin]")
+{
+    // Row 386: the engine numbers the splices from the first mark in storage and ignores Loop
+    // (SP-T1a/b); the lane outlined splice k inside the loop window instead (a capture's own
+    // numbering, SP-T8a), so with a mark older than the loop it showed another splice.
+    gg::test::useMediaScratch("canvas-played-splice");
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(4 * 48000);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 3.0f);
+    f.context().ringCommand(0, gg::ui::RingCommand::AddSplice, 2.0f);
+    f.process(kBlock);
+    f.processWith(slotOf(gg::core::LayerParam::LoopLength, 0), 0.0); // 1 s: both marks older
+    f.processWith(slotOf(gg::core::LayerParam::Loop, 0), 1.0);
+    f.processWith(slotOf(gg::core::LayerParam::Splice, 0), 1.0);
+    f.process(kBlock);
+    const gg::ui::RingView ring = f.context().ringView(0);
+    REQUIRE(ring.spliceCount == 2);
+    REQUIRE(ring.splices[1] < ring.head - 48000); // older than the loop
+    // The engine plays [first, second): its window is that span's length.
+    CHECK(ring.windowFrames == ring.splices[1] - ring.splices[0]);
+    f.paint();
+    const auto outlined = f.canvas->spliceOutlined(0);
+    REQUIRE(outlined.has_value());
+    CHECK(outlined->from == ring.splices[0]);
+    CHECK(outlined->to == ring.splices[1]);
+    // Splice 0: the loop plays, and nothing is outlined.
+    f.processWith(slotOf(gg::core::LayerParam::Splice, 0), 0.0);
+    f.paint();
+    CHECK_FALSE(f.canvas->spliceOutlined(0).has_value());
 }
 
 TEST_CASE("a right-click adds a splice mark where clicked", "[plugin]")
@@ -1198,6 +1302,46 @@ TEST_CASE("a right-click adds a splice mark where clicked", "[plugin]")
     const gg::ui::RingView ringB = f.context().ringView(1);
     REQUIRE(ringB.spliceCount == 1);
     CHECK(ringB.splices[0] == headB);
+}
+
+TEST_CASE("a click on a running lane marks the frame under the pointer", "[plugin]")
+{
+    // Row 388 (m): the mark is the ring frame the right-click landed on (AddSpliceAt), however
+    // far the head runs, and however far the lane's clock extrapolates, before the item is chosen
+    // and the command applies. It was seconds behind the anchor as of the choice, which landed
+    // the mark off by the head's movement the lane hadn't seen.
+    gg::test::useMediaScratch("canvas-click-frame");
+    SteppedWallClock clock;
+    PluginCanvas f(kFxPlugin);
+    REQUIRE(f.plugin.activate(kPluginRate, kBlock));
+    f.process(10 * 48000);
+    f.paint();
+    const gg::ui::LaneGeometry lane = f.canvas->laneGeometry(0);
+    const juce::Rectangle<int> a = f.canvas->laneBounds(0);
+    const float x = 0.5f * lane.width;
+    const float off = static_cast<float>(a.getX());
+    const float y = static_cast<float>(a.getCentreY());
+    constexpr int kRight = juce::ModifierKeys::rightButtonModifier;
+    f.canvas->mouseDown(mouseAt(*f.canvas, off + x, y, {off + x, y}, false, kRight));
+    f.canvas->mouseUp(mouseAt(*f.canvas, off + x, y, {off + x, y}, false, kRight));
+    REQUIRE(f.shown.size() == 1);
+    const std::optional<int64_t> clicked = f.canvas->menuFrame(0);
+    REQUIRE(clicked.has_value());
+    // Under the pointer: the frame the lane shows at x, within a column, against the head drawn.
+    const double column = lane.ringSeconds * kPluginRate / lane.width;
+    CHECK(std::abs(static_cast<double>(*clicked - gg::ui::ringFrameAt(lane, f.canvas->headDrawn(0),
+                                                                      x, kPluginRate))) <= column);
+    // The audio runs on half a second, and the lane's clock 0.2 s past its last snapshot.
+    f.process(24000);
+    f.paint();
+    clock.advance(0.2);
+    f.paint(); // the lane runs its head on by the 0.2 s
+    REQUIRE(f.canvas->headDrawn(0) > f.context().ringView(0).head + 4800);
+    choose(f.shown.back(), "Add splice mark here");
+    f.process(kBlock);
+    const gg::ui::RingView ring = f.context().ringView(0);
+    REQUIRE(ring.spliceCount == 1);
+    CHECK(ring.splices[0] == *clicked);
 }
 
 TEST_CASE("the lane menu's ring items are disabled while inactive", "[plugin]")

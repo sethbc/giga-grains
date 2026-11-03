@@ -946,10 +946,13 @@ TEST_CASE("the editor's own gesture queued before a load is dropped, its gesture
     CHECK(impl.uiBaseValue(ParamSlot::Pitch) == 7.0f);
 }
 
-TEST_CASE("a host that never drains is asked for one main-thread callback, not one per callback",
+TEST_CASE("while undrained the plugin asks once for a main-thread callback, and again after a "
+          "drain",
           "[plugin][mutate]")
 {
-    // M5: on_main_thread re-asks only once a drain has been seen since the last request.
+    // M5: on_main_thread re-asks only once a drain has been seen since the last request. (Row
+    // 388 (e): named for what it checks; it was "a host that never drains ...", though it drains
+    // at its end.)
     FlushHost host;
     gg::test::PluginUnderTest plugin(kFx, host.clap());
     REQUIRE(plugin.valid());

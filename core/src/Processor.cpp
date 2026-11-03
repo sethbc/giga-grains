@@ -126,19 +126,32 @@ bool validControl(const ControlEvent &c) noexcept
            std::isfinite(c.value);
 }
 
-/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, and for
-/// AddSplice a finite value.
+/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, for AddSplice a
+/// finite value, and for AddSpliceAt a frame in [0, 2^53].
 bool validCommand(const CommandEvent &c) noexcept
 {
-    return c.kind <= CommandKind::ClearSplices && c.layer < Processor::kLayers &&
-           (c.kind != CommandKind::AddSplice || std::isfinite(c.value));
+    if (c.kind > CommandKind::AddSpliceAt || c.layer >= Processor::kLayers)
+    {
+        return false;
+    }
+    switch (c.kind)
+    {
+    case CommandKind::AddSplice:
+        return std::isfinite(c.value);
+    case CommandKind::AddSpliceAt:
+        return c.value >= 0.0 && c.value <= 0x1.0p53; // NaN fails both
+    case CommandKind::ClearSplices:
+        return true;
+    }
+    return false;
 }
 
 /// Whether two RingMetas are the same: the marks past spliceCount are 0 in both.
 bool sameMeta(const RingMeta &a, const RingMeta &b) noexcept
 {
     return a.head == b.head && a.windowFrames == b.windowFrames && a.spliceCount == b.spliceCount &&
-           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse;
+           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse &&
+           a.oldestHeld == b.oldestHeld;
 }
 
 /// v clamped to [0, 1], NaN as 0.
@@ -241,8 +254,9 @@ Processor::Processor(const ProcessorConfig &config)
         base_[s] = clampToRange(s, meta.defaultVal);
     }
     // Publishing (sub-project 5's spec §6.4): the engines' sink is ours for good, and forwards to
-    // setEventSink's after each piece. Each peak strip spans its ring, N = ceil(kLiveSeconds ×
-    // sampleRate) frames.
+    // setEventSink's after each piece. Each peak strip spans the longest ring, ceil(kRingMaxSeconds
+    // × sampleRate) frames, so a Ring Length resize never outgrows it (carry-over row 385): it is
+    // indexed by absolute ring time, so it serves any shorter ring as it is.
     grainQueue_ = std::make_unique<GrainQueue>();
     for (uint8_t L = 0; L < kLayers; ++L)
     {
@@ -268,7 +282,7 @@ Processor::Processor(const ProcessorConfig &config)
             channel.assign(pieceMax_, 0.0f);
         }
         l.overdubGain.assign(pieceMax_, 0.0f);
-        l.peaks.prepare(l.engine.liveFrames());
+        l.peaks.prepare(ringFramesFor(kRingMaxSeconds, config_.sampleRate));
         // The pool's storage bound on the spawns of one block (spec §6.7), each with at most one
         // steal before it (M2 engine spec §6.5).
         l.events.reserve(4 * static_cast<size_t>(engine.grainCapacity));
@@ -1243,6 +1257,7 @@ void Processor::publishRing(Layer &l) noexcept
     std::copy(marks.begin(), marks.end(), m.splices.begin());
     m.frozen = l.engineFrozen;
     m.framesInUse = live.framesInUse();
+    m.oldestHeld = live.oldestHeld();
     if (!sameMeta(m, l.metaPushed))
     {
         l.meta.push(m);
@@ -1280,12 +1295,18 @@ void Processor::applyCommands(int64_t b) noexcept
             live.clearSplices();
             continue;
         }
+        if (c.kind == CommandKind::AddSpliceAt)
+        {
+            // The frame itself (validCommand: in [0, 2^53]); outside the storage, a duplicate or
+            // a 33rd is ignored.
+            live.addSplice(std::llround(c.value));
+            continue;
+        }
         // The window as the last write left it, which b, the next sample, still reads.
         const int64_t anchor = live.anchorAt(b);
         const int64_t oldest = std::max<int64_t>(0, live.windowOldestAt(b));
         const double room = static_cast<double>(std::max<int64_t>(0, anchor - oldest));
-        const double behind =
-            std::clamp(static_cast<double>(c.value) * config_.sampleRate, 0.0, room);
+        const double behind = std::clamp(c.value * config_.sampleRate, 0.0, room);
         live.addSplice(anchor - std::llround(behind)); // a duplicate or a 33rd is ignored
     }
     pendingCommandCount_ = 0;

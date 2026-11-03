@@ -44,6 +44,9 @@ class AboutBox final : public sst::jucegui::screens::ModalBase
     void setPlainText(bool plain);
     /// The text the viewer shows now: the Markdown source or the plain text.
     juce::String shownText() const;
+    /// How many times a notice has been put in the viewer, for the tests: once as the box is
+    /// made, once per selection or Plain text toggle.
+    uint32_t shows() const noexcept { return shows_; }
 
     juce::Point<int> innerContentSize() override;
     void onEscape() override;
@@ -77,6 +80,7 @@ class AboutBox final : public sst::jucegui::screens::ModalBase
     juce::TextEditor plainView_;
     int selected_{0};
     bool plainText_{false};
+    uint32_t shows_{0};
 };
 } // namespace gg::ui
 

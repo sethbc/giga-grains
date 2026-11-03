@@ -962,7 +962,8 @@ void MediaSession::pollRingLengths(core::Processor &processor) noexcept
 }
 
 std::shared_ptr<const SampleBuffer> MediaSession::captureRing(uint8_t layer, uint32_t splice,
-                                                              const core::Processor &processor)
+                                                              const core::Processor &processor,
+                                                              bool asPlayed)
 {
     RingSlot &slot = rings_[layer];
     core::ParamValues values{};
@@ -978,7 +979,9 @@ std::shared_ptr<const SampleBuffer> MediaSession::captureRing(uint8_t layer, uin
     std::optional<RingCopy> copy;
     if (rate_ > 0.0)
     {
-        copy = readRing(processor, layer, windowOf(values, layer, splice), rate_);
+        RingSpanRequest request = windowOf(values, layer, splice);
+        request.fromStorage = asPlayed;
+        copy = readRing(processor, layer, request, rate_);
     }
     if (!copy.has_value())
     {

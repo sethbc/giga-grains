@@ -610,6 +610,44 @@ TEST_CASE("a spread pair's band is its spread either side of the base value", "[
     }
 }
 
+TEST_CASE("the instrument's Oscillator layer takes the Sample band", "[plugin]")
+{
+    // Row 388 (g): the unbuilt Oscillator falls back to the product's default kind, Sample in
+    // the instrument, so its Position band is two-sided there (the FX's, Live, is one-sided: the
+    // test above), and follows a switch to Live and back.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    const auto set = [&](ParamSlot slot, float v) {
+        recording.values[static_cast<std::size_t>(slot)] = v;
+    };
+    const auto band = [&] {
+        view.refresh();
+        auto *control = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(view, controlId(ParamSlot::Position).toRawUTF8()));
+        REQUIRE(control != nullptr);
+        return control->spreadBand();
+    };
+    const auto &meta = gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Instrument);
+    const auto to01 = [&](float v) { return (v - meta.minVal) / (meta.maxVal - meta.minVal); };
+    set(ParamSlot::Position, 0.5f);
+    set(ParamSlot::Spray, 0.25f);
+    const auto twoSided = std::pair{to01(0.25f), to01(0.75f)};
+    const auto oneSided = std::pair{to01(0.5f), to01(0.75f)};
+    for (const auto &[kind, expected] : {std::pair{gg::core::SourceKind::Oscillator, twoSided},
+                                         std::pair{gg::core::SourceKind::Live, oneSided},
+                                         std::pair{gg::core::SourceKind::Oscillator, twoSided},
+                                         std::pair{gg::core::SourceKind::Sample, twoSided}})
+    {
+        INFO("kind " << int(kind));
+        set(ParamSlot::Source, static_cast<float>(kind));
+        const auto shown = band();
+        REQUIRE(shown.has_value());
+        CHECK(*shown == expected);
+    }
+}
+
 TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -762,8 +800,10 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     auto *knob = childOfType<sst::jucegui::components::Knob>(size);
     REQUIRE(knob != nullptr);
     const float before = size.shownValue();
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK(recording.kinds().size() == 20 * 3); // each press is still a host gesture
@@ -774,12 +814,22 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     CHECK(undone[0] == std::pair{ParamSlot::Size, before});
 
     // A press with a pause is its own entry, and a drag between presses splits them.
+    clock.advance(0.05);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 1); // redone history: a new entry, not merged into the undone one
+    clock.advance(gg::ui::UndoStack::kNudgeMergeSeconds + 0.5);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 2); // the pause
+    clock.advance(0.05);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 2); // within the merge time again
     knob->onBeginEdit();
     knob->continuous()->setValueFromGUI(0.5f);
     knob->onEndEdit();
-    CHECK(undo.size() == 1);
+    CHECK(undo.size() == 3);
+    clock.advance(0.05);
     CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
-    CHECK(undo.size() == 2);
+    CHECK(undo.size() == 4);
 }
 
 TEST_CASE("a control destroyed mid commit-on-release gesture sends its value before the end",
@@ -870,14 +920,19 @@ TEST_CASE("Budget in the Output panel in both products", "[plugin]")
         auto *budget = dynamic_cast<gg::ui::ParamControl *>(
             findDeep(view, controlId(ParamSlot::Budget).toRawUTF8()));
         REQUIRE(budget != nullptr);
-        juce::Component *panel = budget->getParentComponent();
-        while (panel != nullptr && panel->getParentComponent() != &view)
-        {
-            panel = panel->getParentComponent();
-        }
-        REQUIRE(panel != nullptr);
-        CHECK(panel->isVisible());
-        CHECK(view.getLocalBounds().contains(panel->getBounds()));
+        // The Output panel, found below the view by its kind, not by walking up from the control
+        // to whatever sits under the view (the grid's viewport; row 388 (h)).
+        std::vector<gg::ui::ParamPanel *> panels;
+        collect(view, panels);
+        const auto output = std::find_if(panels.begin(), panels.end(), [](auto *p) {
+            return p->panel() == gg::ui::Panel::Output;
+        });
+        REQUIRE(output != panels.end());
+        gg::ui::ParamPanel &panel = **output;
+        CHECK(panel.isParentOf(budget));
+        CHECK(panel.isVisible());
+        CHECK(view.getLocalBounds().contains(
+            view.getLocalArea(panel.getParentComponent(), panel.getBounds())));
         CHECK(childOfType<sst::jucegui::components::Knob>(*budget) != nullptr);
         CHECK((findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) != nullptr) ==
               (mode == gg::core::Mode::Fx));
