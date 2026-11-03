@@ -124,6 +124,7 @@ void SpectralSource::reset() noexcept
         std::fill(a.begin(), a.end(), 0.0f);
     }
     pendingUntil_ = 0;
+    lastRingFrameStart_ = INT64_MIN;
 }
 
 void SpectralSource::setActive(bool active) noexcept
@@ -212,22 +213,31 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
     {
         return; // no material: the frame is silent
     }
-    // Seconds behind the ring's head at the hop itself, R − 256 − N/2 being the newest centre.
+    // Seconds behind the window's end at the hop itself (the extremes spec §6.2, amended for row
+    // 381): the window steers where the frame starts, as it steers a Live grain's admission, and
+    // the reads are bounded by the storage (ruling SP-T12aa). E is the window's end, the head at
+    // Loop off with no splice, so the newest start is min(E, R − 256) − N.
     const LiveSource &ring = *m.ring;
     const int64_t head = ring.headAt(hopTime);
+    const int64_t windowEnd = ring.anchorAt(hopTime);
     // Through the read bound, as every live grain reads (ruling SP-T12ad): a shrink's read limit
     // lands at a sample the render decides, the smaller storage when the main thread offers it, so
     // reading frames() would make the frames analyzed depend on that time. With no limit set the
-    // two are the same.
+    // two are the same. The window's oldest frame is R − N at Loop off with no splice, and never
+    // below it; the admission limit N′ narrows it during a shrink, as it narrows a Live grain's.
     const int64_t ringFrames = ring.readFrames();
     double behind = position * sampleRate_;
     behind = behind == behind ? behind : 0.0; // NaN reads as 0
-    const auto oldestStart = static_cast<double>(head - ringFrames);
-    const auto newestStart = static_cast<double>(head - kNewestMargin - n);
+    const auto oldestStart =
+        static_cast<double>(std::max(ring.windowOldestAt(hopTime), head - ringFrames));
+    const auto newestStart = static_cast<double>(std::min(windowEnd, head - kNewestMargin) - n);
     double start = newestStart - behind;
-    start = std::min(std::max(start, oldestStart), newestStart); // the newest bound wins
+    // The newest bound wins: a window shorter than N + 256 frames leaves the frame at the newest
+    // start, reading before the window's oldest frame, as a Live grain admitted there does.
+    start = std::min(std::max(start, oldestStart), newestStart);
     const auto first = static_cast<int64_t>(std::floor(start));
     const int64_t oldest = std::max<int64_t>(0, head - ringFrames);
+    lastRingFrameStart_ = first;
     for (uint32_t c = 0; c < 2; ++c)
     {
         readRing(ring, c, first, oldest);

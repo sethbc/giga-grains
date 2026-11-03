@@ -114,7 +114,9 @@ enum class CommandKind : uint8_t
 /// ring time anchorAt(b) − value × sampleRate (LiveSource::anchorAt: the head, or a selected
 /// splice's end), clamped into the window [max(0, its oldest frame), anchorAt(b)]; a mark on an
 /// existing one, or a 33rd, is ignored (LiveSource::addSplice). ClearSplices empties the layer's
-/// marks. A command on a layer that reads a sample, on a layer past kLayers, of an unknown kind,
+/// marks. A command on a layer whose ring nothing reads (readsRing: a Sample layer, or a Spectral
+/// one with a sample; a Spectral layer smearing its ring takes them), on a layer past kLayers, of
+/// an unknown kind,
 /// or an AddSplice whose value isn't finite is ignored, and takes no place in its group; every
 /// command after a group's Processor::kMaxGroupCommands-th valid one is ignored too (the cap
 /// counts the valid commands alone).

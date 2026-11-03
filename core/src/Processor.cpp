@@ -1253,8 +1253,9 @@ void Processor::applyCommands(int64_t b) noexcept
         const CommandEvent &c = pendingCommands_[k];
         Layer &l = *layers_[c.layer]; // validCommand: below kLayers
         LiveSource &live = l.engine.live();
-        // Spec §6.4: a layer that reads a sample ignores them.
-        if (l.kind != SourceMode::Live || !live.enabled())
+        // Spec §6.4: a layer that reads a sample ignores them. A layer whose ring is read takes
+        // them (readsRing: Live or Resample, or Spectral smearing its ring; row 381).
+        if (!readsRing(l.kind, l.engine.hasSampleSource()) || !live.enabled())
         {
             continue;
         }

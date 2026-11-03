@@ -542,8 +542,8 @@ struct LayersSetup
 };
 
 // The Spectral variant's setup (the extremes' final review): FX layers with no sample, all four
-// Spectral, so each smears its own live ring, the FX's default material. Render it with
-// layerAutomationKeepingKinds(), which leaves Source alone.
+// Spectral, so each smears its own live ring, the FX's default material, B and D in a loop.
+// Render it with layerAutomationKeepingKinds(), which leaves Source alone.
 inline LayersSetup spectralRingSetup(gg::TaskRunner *runner = nullptr)
 {
     LayersSetup s;
@@ -554,6 +554,14 @@ inline LayersSetup spectralRingSetup(gg::TaskRunner *runner = nullptr)
         {
             p.setBase(gg::core::layerSlot(gg::core::LayerParam::Source, L), 3.0f);
             p.setBase(gg::core::layerSlot(gg::core::LayerParam::Smear, L), 0.5f);
+        }
+        // Layers B and D loop (row 381: the window steers their analysis), 0.5 s and 1 s; A and
+        // C read their whole rings.
+        for (const uint8_t L : {uint8_t{1}, uint8_t{3}})
+        {
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::Loop, L), 1.0f);
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::LoopLength, L),
+                      L == 1 ? -1.0f : 0.0f);
         }
     };
     return s;

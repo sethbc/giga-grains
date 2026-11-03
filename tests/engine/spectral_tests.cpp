@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <vector>
 
@@ -206,6 +207,58 @@ TEST_CASE("the smear is the same bytes at any block split", "[engine][spectral]"
                 live.write(in, 2, static_cast<uint32_t>(t), t, n);
                 source.process(ringMaterial, 0.02, 21, 1, t, n);
                 t += n;
+            }
+            return ringFrames(source, kTotal);
+        };
+        const std::vector<float> expected = run({4096});
+        REQUIRE(peak(expected) > 0.01f);
+        for (const auto &sizes : splits)
+        {
+            INFO("first block " << sizes.front());
+            const std::vector<float> got = run(sizes);
+            REQUIRE(std::memcmp(got.data(), expected.data(), got.size() * sizeof(float)) == 0);
+        }
+    }
+
+    SECTION("ring material in a loop, then a splice")
+    {
+        // Row 381: the window steers the analysis, and is a function of R(t): Loop on from
+        // kLoopAt, then marks at 2,000 and 9,000 and splice 1 selected from kSpliceAt, each set
+        // between the writes at that sample (the blocks cut there), give the same ring at any
+        // split.
+        constexpr int64_t kLoopAt = 4800;
+        constexpr int64_t kSpliceAt = 12000;
+        auto run = [&](const std::vector<uint32_t> &sizes) {
+            gg::LiveSource live;
+            live.prepare(kSampleRate, 1.0, kMaxBlock);
+            SpectralSource source(kSampleRate, kMaxBlock);
+            source.setActive(true);
+            SpectralMaterial ringMaterial;
+            ringMaterial.ring = &live;
+            int64_t t = 0;
+            std::size_t i = 0;
+            while (t < kTotal)
+            {
+                if (t == kLoopAt)
+                {
+                    live.setLoop(true, 6000);
+                }
+                if (t == kSpliceAt && live.spliceCount() == 0) // once, past a 0-frame block
+                {
+                    REQUIRE(live.addSplice(2000));
+                    REQUIRE(live.addSplice(9000));
+                    live.selectSplice(1);
+                }
+                int64_t end = std::min<int64_t>(kTotal, t + sizes[i++ % sizes.size()]);
+                for (const int64_t cut : {kLoopAt, kSpliceAt})
+                {
+                    end = t < cut ? std::min(end, cut) : end;
+                }
+                const auto n = static_cast<uint32_t>(end - t);
+                const float *in[2] = {s.left.data(), s.right.data()};
+                live.write(in, 2, static_cast<uint32_t>(t), t, n);
+                source.process(ringMaterial, 0.02, 21, 1, t, n);
+                t = end;
             }
             return ringFrames(source, kTotal);
         };
@@ -567,6 +620,132 @@ TEST_CASE("ring material reads only valid frames", "[engine][spectral]")
     }
 }
 
+namespace
+{
+// Goertzel energy of channel 0 of interleaved frames [from, to) at hz.
+double energyAt(const std::vector<float> &frames, int64_t from, int64_t to, double hz)
+{
+    const double w = 2.0 * 3.14159265358979323846 * hz / kSampleRate;
+    const double coeff = 2.0 * std::cos(w);
+    double s1 = 0.0;
+    double s2 = 0.0;
+    for (int64_t f = from; f < to; ++f)
+    {
+        const double s0 =
+            static_cast<double>(frames[2 * static_cast<std::size_t>(f)]) + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+}
+
+// A stereo sine: lowHz over [split, frames), highHz before it, at 0.4.
+Stereo twoTones(int64_t frames, int64_t split, double highHz, double lowHz)
+{
+    Stereo s{std::vector<float>(static_cast<std::size_t>(frames)),
+             std::vector<float>(static_cast<std::size_t>(frames))};
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        const double hz = i < split ? highHz : lowHz;
+        const auto v = static_cast<float>(0.4 * std::sin(2.0 * 3.14159265358979323846 * hz *
+                                                         static_cast<double>(i) / kSampleRate));
+        s.left[static_cast<std::size_t>(i)] = v;
+        s.right[static_cast<std::size_t>(i)] = v;
+    }
+    return s;
+}
+
+// The smear of a 5 s live ring fed `s` in blocks of 512, `before` called before each block's
+// write (where the ring's window is set: its setters apply from the next write).
+std::vector<float> smearRing(const Stereo &s, double position,
+                             const std::function<void(gg::LiveSource &, int64_t)> &before)
+{
+    const auto frames = static_cast<int64_t>(s.left.size());
+    gg::LiveSource live;
+    live.prepare(kSampleRate, 5.0, kMaxBlock);
+    SpectralSource source(kSampleRate, kMaxBlock);
+    source.setActive(true);
+    SpectralMaterial m;
+    m.ring = &live;
+    for (int64_t t = 0; t < frames; t += 512)
+    {
+        before(live, t);
+        const float *in[2] = {s.left.data(), s.right.data()};
+        live.write(in, 2, static_cast<uint32_t>(t), t, 512);
+        source.process(m, position, 5, 0, t, 512);
+    }
+    return ringFrames(source, frames);
+}
+} // namespace
+
+TEST_CASE("ring material follows the loop window", "[engine][spectral]")
+{
+    // Row 381: 1 kHz for 3.5 s, then 200 Hz; Loop on with a 0.5 s loop; Position 3 s behind the
+    // head, far past the loop. The analysis starts at the loop's oldest frame, so over the last
+    // 0.5 s the smear is 200 Hz, with 1 kHz more than 40 dB down.
+    constexpr int64_t kFrames = 5 * 48000;
+    const Stereo s = twoTones(kFrames, 168000, 1000.0, 200.0);
+    const std::vector<float> out = smearRing(s, 3.0, [](gg::LiveSource &live, int64_t t) {
+        if (t == 0)
+        {
+            live.setLoop(true, 24000);
+        }
+    });
+    const double low = energyAt(out, kFrames - 24000, kFrames, 200.0);
+    const double high = energyAt(out, kFrames - 24000, kFrames, 1000.0);
+    INFO("200 Hz " << low << ", 1 kHz " << high);
+    REQUIRE(low > 0.0);
+    REQUIRE(10.0 * std::log10(low / high) > 40.0);
+
+    // Loop off, the same Position reads 3 s back, the 1 kHz.
+    const std::vector<float> off = smearRing(s, 3.0, [](gg::LiveSource &, int64_t) {});
+    REQUIRE(energyAt(off, kFrames - 24000, kFrames, 1000.0) >
+            100.0 * energyAt(off, kFrames - 24000, kFrames, 200.0));
+}
+
+TEST_CASE("ring material follows a selected splice", "[engine][spectral]")
+{
+    // Row 381: 200 Hz inside [1 s, 2 s), 1 kHz everywhere else; marks at 1 s and 2 s, splice 1
+    // selected from 2.5 s, Position 0. The analysis reads the splice's newest frames, so from
+    // 3 s on the smear is 200 Hz.
+    constexpr int64_t kFrames = 4 * 48000;
+    Stereo s = twoTones(kFrames, 0, 1000.0, 1000.0);
+    const Stereo low = twoTones(kFrames, 0, 200.0, 200.0);
+    std::copy(low.left.begin() + 48000, low.left.begin() + 96000, s.left.begin() + 48000);
+    std::copy(low.right.begin() + 48000, low.right.begin() + 96000, s.right.begin() + 48000);
+    const std::vector<float> out = smearRing(s, 0.0, [](gg::LiveSource &live, int64_t t) {
+        if (t == 120320) // 235 blocks: past both marks
+        {
+            REQUIRE(live.addSplice(48000));
+            REQUIRE(live.addSplice(96000));
+            live.selectSplice(1);
+        }
+    });
+    const double lowE = energyAt(out, 3 * 48000, kFrames, 200.0);
+    const double highE = energyAt(out, 3 * 48000, kFrames, 1000.0);
+    INFO("200 Hz " << lowE << ", 1 kHz " << highE);
+    REQUIRE(lowE > 0.0);
+    REQUIRE(10.0 * std::log10(lowE / highE) > 40.0);
+}
+
+TEST_CASE("a loop shorter than a frame reads the newest frames", "[engine][spectral]")
+{
+    // Row 381's edge: a window shorter than N + 256 frames leaves every frame at the newest
+    // start, whatever Position, as a Live grain admitted at the window's oldest frame reads past
+    // it: Loop on with 1,000 frames at Position 3 s is the smear of Loop off at Position 0.
+    constexpr int64_t kFrames = 2 * 48000;
+    const Stereo s = noiseSample(kFrames, 11);
+    const std::vector<float> loop = smearRing(s, 3.0, [](gg::LiveSource &live, int64_t t) {
+        if (t == 0)
+        {
+            live.setLoop(true, 1000);
+        }
+    });
+    const std::vector<float> newest = smearRing(s, 0.0, [](gg::LiveSource &, int64_t) {});
+    REQUIRE(peak(newest) > 0.01f);
+    REQUIRE(std::memcmp(loop.data(), newest.data(), loop.size() * sizeof(float)) == 0);
+}
+
 TEST_CASE("an empty sample is silent, never the ring", "[engine][spectral]")
 {
     // A sample, empty or not, is the material, as the Engine decides (D1): a sample with no
@@ -622,10 +801,15 @@ TEST_CASE("spectral source process does not allocate", "[engine][rt]")
         b.process(ringMaterial, 0.1, 1, 1, t, kBlock);
         t += kBlock;
     };
-    for (int i = 0; i < 20; ++i) // warm up past the first frames
+    // Ring material in a loop, then in a splice (row 381): the window's reads allocate nothing.
+    live.setLoop(true, 12000);
+    for (int i = 0; i < 40; ++i) // warm up past the first frames, and 12,000 frames of ring
     {
         step();
     }
+    REQUIRE(live.addSplice(t - 9000));
+    REQUIRE(live.addSplice(t - 2000));
+    live.selectSplice(1);
     const int64_t armedStart = t;
     AllocTripwire::resetCount();
     {

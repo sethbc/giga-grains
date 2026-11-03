@@ -42,9 +42,15 @@ struct SpectralMaterial
 /// clock reaches kH, from one window of N frames of the material:
 /// - a sample: frames from floor(position × (frames − 1)) − N/2 on, position clamped to [0, 1];
 ///   frames outside [0, frames) read 0;
-/// - the ring: frames from floor(R − 256 − N − position × sampleRate) on, where R =
-///   ring->headAt(kH) is the head at the hop itself, clamped so the window lies within
-///   [R − ringFrames, R − 256); frames below 0 or below R − ringFrames read 0.
+/// - the ring: frames from floor(min(E, R − 256) − N − position × sampleRate) on, where R =
+///   ring->headAt(kH) is the head at the hop itself and E = ring->anchorAt(kH) the end of the
+///   ring's window (LiveSource: R at Loop off with no splice, a selected splice's later mark),
+///   clamped to start no earlier than max(ring->windowOldestAt(kH), R − ringFrames) and no later
+///   than min(E, R − 256) − N, the later bound winning (so a window shorter than N + 256 frames
+///   leaves the frame at that start), with ringFrames = ring->readFrames(); frames below 0 or
+///   below R − ringFrames read 0 (the reads are bounded by the storage, not the window: ruling
+///   SP-T12aa). At Loop off with no splice and no shrink, the window is [R − ringFrames, R), so
+///   the frame lies within [R − ringFrames, R − 256).
 ///
 /// Each channel's window is multiplied by the analysis Hann and transformed forward with pffft's
 /// real FFT. Bin b (1 … N/2 − 1) of channel c keeps its magnitude and takes the phase θ =
@@ -124,6 +130,11 @@ class SpectralSource
 
     const LiveSource &ring() const noexcept { return ring_; }
 
+    /// The first material frame the last frame computed over ring material read (its window's
+    /// index 0), INT64_MIN when none has been since construction or reset(): kept for the tests,
+    /// which check it against the ring's window at the frame's hop.
+    int64_t lastRingFrameStart() const noexcept { return lastRingFrameStart_; }
+
   private:
     struct SetupDeleter
     {
@@ -169,6 +180,7 @@ class SpectralSource
     // The output time from which the accumulation is all 0: kH + 2N for the last frame k
     // computed, 0 before any. Inactive from it on, process() writes silence without reading it.
     int64_t pendingUntil_{0};
+    int64_t lastRingFrameStart_{INT64_MIN}; // lastRingFrameStart()
 };
 } // namespace gg
 

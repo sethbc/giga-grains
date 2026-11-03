@@ -251,6 +251,24 @@ the material with no transients and no comb; grains read it as they read the liv
   would read it as Sample or Live: a fraction of the sample, or seconds behind the ring's head
   (M1-k's one-sided seconds); Position's text follows the material (ruling FR-6's rule, from
   Source's base value and the loader's state).
+
+  > **Amended 2026-11-02 (the M2 close, row 381; D-specwindow built):** ring material follows
+  > sub-project 2's window, as a Live layer's grains do. At hop kH, with R the ring's head, E =
+  > `anchorAt(kH)` the window's end (R at Loop off with no splice, a selected splice's later mark)
+  > and `windowOldestAt(kH)` its oldest frame, the frame's first material frame is
+  > clamp(min(E, R − 256) − N − Position × rate, max(windowOldestAt(kH), R − readFrames), min(E,
+  > R − 256) − N), the newest bound winning: Position counts seconds behind the window's end, a
+  > loop's or a splice's window holds the analysis, and the frame never comes within 256 frames
+  > of the head. The reads stay bounded by the storage (ruling SP-T12aa): frames below max(0, R −
+  > readFrames) read 0. At Loop off with no splice this is the earlier law bit for bit (every
+  > golden's WAV kept its SHA-256), except during a Ring Length shrink, where the admission
+  > limit N′ narrows the frame's start as it narrows a Live grain's (SP-T12ad). **Ruling:** a
+  > window shorter than N + 256 frames (a loop under about 90 ms at 48 kHz, or a short splice)
+  > leaves every frame at the newest start, reading up to N frames before the window's oldest
+  > frame, as a Live grain admitted at the window's oldest frame reads past it; cyclic loop reads
+  > would be a later option. The ring commands (AddSplice, ClearSplices) reach every layer whose
+  > ring is read, `gg::core::readsRing` (a Live or Resample layer, or a Spectral one with no
+  > sample), the predicate `ringSaved` shares; a layer that reads a sample ignores them.
 - **The STFT.** Size N is the power of two nearest 85 ms at the running rate (4096 at 44.1 and
   48 kHz, 8192 at 88.2 and 96 kHz, 16384 above), hop H = N/4 (a multiple of 32, so every hop
   boundary is a grid boundary). Analysis and synthesis windows are both Hann, whose product at a
@@ -727,6 +745,8 @@ Loop, Loop Length and Splice). **Decided: option 1 (2026-11-01).**
 1. **Defer, carry-over row 381:** a Spectral smear reads outside the Loop/Splice window until it
    is built, and the ring commands skip it. *Cost:* the window does not shape a Spectral layer
    meanwhile.
+
+   **Amended 2026-11-02 (the M2 close, row 381):** built; §6.2's material has the law.
 2. *Build now.* *Cost:* more engine work before the merge.
 
 **D-corners. Should the extremes' sweep corners score their boundaries?** (the integration

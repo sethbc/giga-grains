@@ -211,8 +211,10 @@ Shares chainCorners(Mode mode, uint64_t seed, double minScored)
 } // namespace
 
 // The floors, a little under what each case measures (the integration review's Minor 2,
-// 2026-11-01): the FX scores 0.3323 of its render (the largest click score 8.81, the peak 1.082),
-// the instrument 0.2795 (11.08, 1.0). Each exemption's own share in the FX: the fade-in 0.08%,
+// 2026-11-01): the FX scores 0.3323 of its render (the largest click score 8.71, the peak 1.104;
+// 8.81 and 1.082 before row 381, when its Spectral layers' analysis ignored their rings'
+// windows), the instrument 0.2795 (11.08, 1.0; its Spectral layers smear the sine sample, which
+// no window shapes). Each exemption's own share in the FX: the fade-in 0.08%,
 // Reverb Size moves 45.3%, the reverb's onset 21.5%, kLimiterDrive 0 and kDelayGlideHold 31.5%;
 // in the instrument 0.08%, 44.8%, 22.4%, 0 and 24.9%. kLimiterDrive is pinned at 0: the ceiling
 // is held at 0 dB, so a share there means the limiter is driven where the case says it isn't.
