@@ -183,14 +183,17 @@ under 0.013 ns, under 0.6% of its median.
 
 **CI's report-only gate, read at the close** (the three full-length runs at `ca60f54`, dispatches
 41579049597, 41579058682 and 41579067573; verdicts against the baselines as they stood before the
-remake): Linux's EPYC 7763 reported 0 regressed of 42 ratios in both its runs (`engine-layers-full`
-included, so the flag it drew earlier on the 9V45 was that single-run entry's, not the code's); the
-mac leg's M1 VM reported 0 of 42 in all three runs; Windows' EPYC 7763 reported 7 of 42, all at
-block 256, against a single-run entry made on another toolchain (the entry predates the Ninja and
-clang-cl move, INTENT §23 #76, and Windows drifts up to ~20% between runs, §23 #47; Linux and the
-mac leg show no such rise on the same code). The two 9V74s (Windows' and Linux's) had no entry and
-so no verdict. The gate stays report-only until 1.0.0. The remake from these runs is commit
-`cf37b83`, whose message compares each replaced entry with the one before it.
+remake, from each run's `gg-bench.txt` verdict lines): Linux's EPYC 7763 (runs 41579049597 and
+41579067573) reported 0 of 42 ratios regressed (`engine-layers-full` included, so the flag it drew
+earlier on the 9V45 was that single-run entry's, not the code's); the mac leg's M1 VM reported 0 of
+42 in all three runs; Windows' EPYC 7763 (run 41579049597) reported 7 of 42, six of them at block
+256 (`engine-sample`, `engine-sample-eco`, `engine-full-pool`, `engine-layers`,
+`engine-layers-full` and `engine-overload`) and one (`engine-layers-full`) at block 32. The old
+entry is a single run at `630d740`, made before the Ninja and clang-cl move (INTENT §23 #76,
+merged 2026-11-02), and the Windows leg drifts up to ~20% between runs (§23 #47); the same commit's
+Linux and mac runs show no such rise. The two 9V74s (Windows' and Linux's) had no entry and so no
+verdict. The gate stays report-only until 1.0.0. The remake from these runs is commit `cf37b83`,
+whose message compares each replaced entry with the one before it.
 
 **Reproduce** (on an otherwise idle machine; about twenty minutes):
 

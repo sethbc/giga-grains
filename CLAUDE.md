@@ -42,10 +42,11 @@ AGPL-3.0-or-later.
   the 48 factory presets and their 48 goldens (108 in all). Sub-project 6, Views, is built (INTENT
   §23 #71; PRs #18 and #24): the Perform, Edit, Mod and FX views, four lanes with a pitch axis,
   the layer strip and XY pad, the Mod view's route path, undo, two themes, the About box,
-  `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the consistency pass,
-  the carry-over burned down to 15 open rows, the from-scratch build setup, the gate, the idle
-  figures and the release commit for v0.2.0 (the program manager tags it). **M3 is next**, run as
-  M1 was: one session, serial sub-projects, parallel tasks inside each (§23 #87). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the
+  consistency pass, the carry-over burned down to 15 open rows, the from-scratch build setup, the
+  gate, the idle figures and the release commit for v0.2.0 (the program manager tags it). **M3 is
+  next**, run as M1 was: one session, serial sub-projects, parallel tasks inside each (INTENT
+  §20, §23 #87). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
