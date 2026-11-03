@@ -1064,6 +1064,19 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
             throw BadInput(fmt::format("nothing to capture at {} s: layer {}'s ring is empty",
                                        op.timeSeconds, letterOf(op.layer)));
         }
+        if (op.into)
+        {
+            // Refused before anything is allocated: the capture's cost (what setSource will
+            // charge for it) less the source it replaces.
+            const uint64_t cost =
+                gg::media::sampleBytes(w.frames, 2, true, gg::RingStorage::levelCountFor(w.frames));
+            const uint64_t freed = sourceCost[*op.into];
+            const uint64_t need = cost > freed ? cost - freed : 0;
+            if (!budget.fits(need))
+            {
+                throw BadInput(budget.refusal(need));
+            }
+        }
         const auto buffer = ringBuffer(processor, op.layer, w, spec.sampleRate);
         if (!op.file.empty())
         {

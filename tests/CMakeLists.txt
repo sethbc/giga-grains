@@ -466,6 +466,19 @@ add_test(NAME render_preset_sample_mode
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
 set_tests_properties(render_preset_sample_mode PROPERTIES LABELS render
         FIXTURES_REQUIRED packed_presets)
+# render_capture_over_cap (carry-over 347): a capture into a layer that the memory cap can't hold
+# is refused before gg-render allocates its buffer (exit 2, the cap's refusal): a 30 s ring in a
+# 64 MiB cap, captured whole into layer B.
+set(render_capture_over_cap_args
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-capture-over-cap.json
+        -o ${CMAKE_BINARY_DIR}/render_capture_over_cap.wav)
+add_test(NAME render_capture_over_cap
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_capture_over_cap_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=over the memory cap: needs 32 MB, 10 MB free of 64 MB"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_capture_over_cap PROPERTIES LABELS render)
 # --pack-preset takes only -o and --content-dir: another option is refused (exit 2); and a source
 # that doesn't parse (here a render spec) is bad input, with the parser's message.
 add_test(NAME render_pack_preset_alone

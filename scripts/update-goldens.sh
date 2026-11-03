@@ -75,9 +75,10 @@ for product in "Giga Grains" "Giga Grains FX"; do
 done
 
 # The case folders: "<cases> <expected> <renders> <hash-name prefix> <content dir>" (the first
-# group's cases render without --content-dir, as they always have).
+# group's content dir is the media folder, as ctest passes it; a preset's samples come from
+# --content-dir alone).
 groups=(
-    "tests/golden/cases|tests/golden/expected|$renders_dir||"
+    "tests/golden/cases|tests/golden/expected|$renders_dir||$media_dir"
     "tests/golden/presets/cases|tests/golden/presets/expected|$renders_dir/presets|presets/|$content_dir"
 )
 
