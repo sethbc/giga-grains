@@ -1227,7 +1227,9 @@ sets it, and the test "the stress seam draws four lanes" covers it.
     grep -q Sbcx "$TMPDIR/auval-list.txt" && break
     sleep 2
   done
-  auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  if grep -q Sbcx "$TMPDIR/auval-list.txt"; then
+    auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  else echo "the registrar never listed Sbcx" >&2; fi
   ```
 
   Each of the three runs must end with `AU VALIDATION SUCCEEDED`.
