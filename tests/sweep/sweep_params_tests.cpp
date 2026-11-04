@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "core/LayersFixture.h"
@@ -32,6 +33,20 @@ using gg::core::Mode;
 using gg::core::ParamSlot;
 using gg::test::Material;
 using gg::test::SweepDriver;
+
+namespace gg::core
+{
+/// LivePeaks's friend (LivePeaks.h): stores a value into the bucket holding `frame`, which write()
+/// never does for a non-finite one.
+struct LivePeaksTestAccess
+{
+    static void plant(const LivePeaks &peaks, int64_t frame, float value)
+    {
+        peaks.peaks_[static_cast<size_t>((frame / LivePeaks::kBucket) % peaks.bucketCount_)].store(
+            value);
+    }
+};
+} // namespace gg::core
 
 namespace
 {
@@ -202,7 +217,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
     INFO(clean.where);
     REQUIRE(clean.finite);
     REQUIRE(clean.peak <= c.peakBound);
-    REQUIRE(clean.runawayDb <= 6.0);
+    REQUIRE(clean.runawayDb <= gg::test::Checks::kRunawayDb);
     REQUIRE(clean.clickScore <= c.clickLimit);
     REQUIRE(clean.where.empty());
 
@@ -230,7 +245,7 @@ TEST_CASE("sweep: the checks catch a planted NaN, peak, runaway and click", "[sw
                 }
             }
         },
-        [](const auto &v) { return v.runawayDb > 6.0; }, "runaway");
+        [](const auto &v) { return v.runawayDb > gg::test::Checks::kRunawayDb; }, "runaway");
     plant(
         [&] {
             for (auto &ch : out)
@@ -329,6 +344,26 @@ TEST_CASE("sweep: a click planted beside an exemption is caught", "[sweep]")
         CHECK(v.clickScore > c.clickLimit);
         CHECK(namesSample(v.where, at));
     }
+}
+
+TEST_CASE("sweep: a Reverb Size base set straight on the Processor is a move", "[sweep]")
+{
+    // Row 309: the driver saw a Size move only through its own set(); a base set on the
+    // Processor between calls is a move at the next call, and a queued set to the same value
+    // after it is not another.
+    SweepDriver d(Mode::Fx, 1119);
+    d.processor().setBase(ParamSlot::ReverbAmount, 0.5f);
+    d.play(1.0, Material::SineLive);
+    using gg::test::Exemption;
+    CHECK(d.exemptShare(Exemption::ReverbSize) == 0.0);
+    d.processor().setBase(ParamSlot::ReverbSize, 0.9f);
+    d.play(2.0, Material::SineLive);
+    const double afterDirect = d.exemptShare(Exemption::ReverbSize);
+    CHECK(afterDirect > 0.0);
+    d.set(ParamSlot::ReverbSize, static_cast<double>(d.processor().base(ParamSlot::ReverbSize)));
+    d.play(2.0, Material::SineLive);
+    // The same Size again exempts nothing more: the exempt stretch is the same in frames.
+    CHECK(d.exemptShare(Exemption::ReverbSize) * 5.0 == Catch::Approx(afterDirect * 3.0));
 }
 
 TEST_CASE("sweep: a Reverb Modulation drop at infinite Decay scores under the limit", "[sweep]")
@@ -431,7 +466,7 @@ TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[s
         REQUIRE(ring.slots != nullptr);
         // The last mirrored slot: a check that stopped short of the guard frames would miss it.
         const_cast<float *>(
-            ring.slots)[2 * static_cast<std::size_t>(ring.capacity + SweepDriver::kLiveGuardFrames -
+            ring.slots)[2 * static_cast<std::size_t>(ring.capacity + gg::RingStorage::kGuardFrames -
                                                      1)] = std::numeric_limits<float>::quiet_NaN();
         const auto v = d.check(c);
         INFO(v.where);
@@ -445,14 +480,12 @@ TEST_CASE("sweep: the checks catch non-finite values the Processor exposes", "[s
         const gg::test::Checks c = gg::test::chainBound(d, 0.0);
         REQUIRE(d.check(c).where.empty());
         // LivePeaks::write() stores a non-finite sample as 0, so a NaN reaches a bucket only by
-        // a poke: its first member is the bucket array (confirmed below by reading a written
-        // bucket through it, before anything is written).
+        // a poke, through the class's test accessor (row 309).
         const auto &peaks = d.processor().livePeaks(1);
-        auto *buckets = *reinterpret_cast<std::atomic<float> *const *>(&peaks);
         constexpr int64_t kFrame = 100 * gg::core::LivePeaks::kBucket;
         REQUIRE(peaks.at(kFrame) > 0.0f);
-        REQUIRE(buckets[100].load() == peaks.at(kFrame));
-        buckets[100].store(std::numeric_limits<float>::quiet_NaN());
+        gg::core::LivePeaksTestAccess::plant(peaks, kFrame,
+                                             std::numeric_limits<float>::quiet_NaN());
         const auto v = d.check(c);
         INFO(v.where);
         CHECK(!v.finite);
@@ -601,11 +634,135 @@ TEST_CASE("sweep: kLimiterDrive covers Peak driven under -6 dB, and the call's 1
     }
 }
 
+TEST_CASE("sweep: kLimiterDrive covers a mode fade into Peak at any call boundary", "[sweep]")
+{
+    // The director's K-2 (2026-11-02; INTENT #79): entering Peak mid-sound at -18 dB over a hot
+    // sine clicks 461 samples into the 480-sample mode fade, in the call before the first one
+    // whose gain passes -6 dB. The exemption is by samples: the fade's every sample is covered
+    // whatever the calls, the dip's included, so the check passes at every phase of the calls.
+    bool dipInDrivenCall = false, dipInQuietCall = false;
+    for (const uint32_t block : {64u, 480u, 1000u})
+    {
+        for (const int64_t phase : {int64_t{0}, int64_t{1}, int64_t{29}, int64_t{63}, int64_t{200}})
+        {
+            INFO("block " << block << ", phase " << phase);
+            SweepDriver d(Mode::Fx, 1301, block);
+            limiterBed(d);
+            d.processor().setBase(ParamSlot::LimiterRelease, 0.0f);
+            d.play(1.0 + static_cast<double>(phase) / SweepDriver::kRate, Material::SineLive);
+            const int64_t fadeAt = d.clock();
+            d.set(ParamSlot::LimiterCeiling, -18.0);
+            d.set(ParamSlot::LimiterMode, 2.0);
+            // The mode applies on the Processor's 32-sample control grid. Every sample of the
+            // fade from there, the dip at 461 among them, and 10 ms past it.
+            const int64_t fadeStart = (fadeAt + 31) / 32 * 32;
+            const int64_t dip = fadeStart + 461;
+            // One call at a time, so the call holding the dip can be told from the others.
+            while (d.clock() < fadeAt + 2 * 48000)
+            {
+                const int64_t before = d.clock();
+                d.play(static_cast<double>(block) / SweepDriver::kRate, Material::SineLive);
+                if (before <= dip && dip < d.clock())
+                {
+                    const bool driven =
+                        d.processor().limiterDrive().leastGain < SweepDriver::kPeakDriveGain;
+                    (driven ? dipInDrivenCall : dipInQuietCall) = true;
+                }
+            }
+            for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+            {
+                INFO("sample " << i << " into the fade");
+                CHECK(d.exemptAt(fadeStart + i));
+            }
+            // The control: the render clicks without the exemption.
+            CHECK(d.wholeRenderClickScore() > gg::test::chainBound(d, 0.2).clickLimit);
+            const auto v = d.check(gg::test::chainBound(d, 0.2));
+            INFO(v.where);
+            CHECK(v.where.empty());
+        }
+    }
+    // Both arrangements came up: the dip in a call whose gain passes -6 dB (the call-based
+    // exemption missed it) and in one whose gain stays above (the arrangement that was exempt).
+    CHECK(dipInDrivenCall);
+    CHECK(dipInQuietCall);
+}
+
+TEST_CASE("sweep: kLimiterDrive does not cover a mode fade into Soft or Off", "[sweep]")
+{
+    // At -9 dB the sine stays under twice the ceiling, so Soft isn't driven, and a step planted
+    // inside the fade still scores. Nothing of the fade is exempt, and the Peak tap stays idle.
+    // (Peak's fade toward Soft: below, with Peak driven the calls are exempt by D5b, so the
+    // narrowness is the fade's own samples once Peak has stopped being in use.)
+    const auto scoresStep = [](SweepDriver &d, int64_t at) {
+        const gg::test::Checks c = gg::test::chainBound(d, 0.0);
+        REQUIRE(d.check(c).where.empty());
+        plantStepFrom(d, at);
+        const auto v = d.check(c);
+        INFO(v.where);
+        CHECK(v.clickScore > c.clickLimit);
+        CHECK(namesSample(v.where, static_cast<std::size_t>(at)));
+    };
+    SECTION("into Soft")
+    {
+        SweepDriver d(Mode::Fx, 1302, 64);
+        limiterBed(d);
+        d.play(1.0, Material::SineLive);
+        const int64_t fadeAt = d.clock();
+        d.set(ParamSlot::LimiterCeiling, -9.0);
+        d.set(ParamSlot::LimiterMode, 1.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(!d.processor().limiterDrive().softDriven);
+        CHECK(d.processor().peakFadeSpan().first < 0);
+        for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+        {
+            CHECK(!d.exemptAt(fadeAt + i));
+        }
+        scoresStep(d, fadeAt + 240);
+    }
+    SECTION("into Off, from Soft")
+    {
+        SweepDriver d(Mode::Fx, 1303, 64);
+        limiterBed(d);
+        d.set(ParamSlot::LimiterCeiling, -9.0);
+        d.set(ParamSlot::LimiterMode, 1.0);
+        d.play(1.0, Material::SineLive);
+        const int64_t fadeAt = d.clock();
+        d.set(ParamSlot::LimiterMode, 0.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(d.processor().peakFadeSpan().first < 0);
+        for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+        {
+            CHECK(!d.exemptAt(fadeAt + i));
+        }
+        scoresStep(d, fadeAt + 240);
+    }
+    SECTION("out of Peak, into Soft")
+    {
+        // Peak at -9 dB holds its gain above -6 dB, so only the fade into Peak (at the start) is
+        // exempt; the fade out of it, a second on, is not.
+        SweepDriver d(Mode::Fx, 1304, 64);
+        limiterBed(d);
+        d.set(ParamSlot::LimiterCeiling, -9.0);
+        d.set(ParamSlot::LimiterMode, 2.0);
+        d.play(1.0, Material::SineLive);
+        const int64_t fadeAt = d.clock();
+        d.set(ParamSlot::LimiterMode, 1.0);
+        d.play(2.0, Material::SineLive);
+        CHECK(d.processor().peakFadeSpan().first < 0);
+        for (int64_t i = 0; i < 480 + SweepDriver::kLimiterDriveTail; ++i)
+        {
+            CHECK(!d.exemptAt(fadeAt + i));
+        }
+        scoresStep(d, fadeAt + 240);
+    }
+}
+
 TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[sweep]")
 {
     // Soft at -24 dB has the cloud at about eight times its ceiling: exempt. At -9 dB the input
     // stays under twice it, and Peak at -9 dB holds its gain above -6 dB: nothing is exempt, so
-    // a planted step fails there and the scored share is the unlimited render's.
+    // a planted step fails there. (The render's start enters Peak or Soft from Off: Peak's mode
+    // fade is exempt by K-2, 960 samples with its tail.)
     const auto render = [](double mode, double ceiling) {
         auto d = std::make_unique<SweepDriver>(Mode::Fx, 1205);
         limiterBed(*d);
@@ -644,7 +801,11 @@ TEST_CASE("sweep: kLimiterDrive looks away only where the limiter is driven", "[
         const auto d = render(2.0, -9.0);
         CHECK(d->processor().limiterDrive().leastGain > SweepDriver::kPeakDriveGain);
         const gg::test::Checks c = gg::test::chainBound(*d, 0.0);
-        CHECK(d->check(c).scoredFraction == unlimited);
+        // Only the mode fade into Peak (480 samples and the 480 after, from the render's
+        // start, K-2) is exempt: it is no more than that off the unlimited render's share.
+        const double scored = d->check(c).scoredFraction;
+        CHECK(scored <= unlimited);
+        CHECK(unlimited - scored <= 960.0 / static_cast<double>(d->clock()));
         plantStepFrom(*d, d->clock() - 20000);
         const auto v = d->check(c);
         INFO(v.where);

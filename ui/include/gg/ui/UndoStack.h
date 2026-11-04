@@ -71,7 +71,7 @@ class UndoStack
 
     explicit UndoStack(UndoCallbacks callbacks);
 
-    /// Opens a gesture on `slot` at value `before`, labelled `label` ("A Size"). A second begin of
+    /// Opens a gesture on `slot` at value `before`, labeled `label` ("A Size"). A second begin of
     /// a slot whose gesture is still open is ignored (its first before and label are kept);
     /// gestures on different slots may be open at once.
     void beginGesture(gg::core::ParamSlot slot, float before, std::string label);
@@ -83,7 +83,7 @@ class UndoStack
     /// No entry when `after` equals the before exactly, or when no gesture on `slot` is open.
     void endGesture(gg::core::ParamSlot slot, float after);
 
-    /// Opens a group: the gestures that end before endGroup make one entry, labelled with the
+    /// Opens a group: the gestures that end before endGroup make one entry, labeled with the
     /// first's label. Groups nest; the outermost endGroup closes it.
     void beginGroup();
     /// Closes the group, pushing its entry if any of its gestures changed a value. Without an open

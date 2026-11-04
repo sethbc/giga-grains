@@ -76,7 +76,7 @@ TEST_CASE("rings follow the routes that target the control", "[ui][mod]")
     CHECK(gg::ui::ringsFor(routes, ParamSlot::ReverbSize, 3, 1.0f, 1.0f).empty());
 }
 
-TEST_CASE("rings colour by the source's family", "[ui][mod]")
+TEST_CASE("rings color by the source's family", "[ui][mod]")
 {
     const auto family = [](ModSource source) {
         ModRoutes routes{};

@@ -255,15 +255,18 @@ bool freezeOn(const ParamValues &values, uint8_t layer) noexcept
     return read(values, layerSlot(LayerParam::Freeze, layer)) > 0.5f;
 }
 
+bool readsRing(SourceMode kind, bool hasSample) noexcept
+{
+    // By a Live or Resample layer's grains, or by a Spectral layer's analysis when it has no
+    // sample (the integration review's I2).
+    return kind == SourceMode::Live || (kind == SourceMode::Spectral && !hasSample);
+}
+
 bool ringSaved(const ParamValues &base, Mode mode, uint8_t layer, SourceMode material) noexcept
 {
     assert(layer < kLayers);
     const SourceMode kind = builtKind(sourceKindOf(base, layer), mode);
-    // The ring is read: by a Live or Resample layer's grains, or by a Spectral layer's analysis
-    // when it has no sample (the integration review's I2).
-    const bool ringIsRead =
-        kind == SourceMode::Live || (kind == SourceMode::Spectral && material == SourceMode::Live);
-    return ringIsRead &&
+    return readsRing(kind, material != SourceMode::Live) &&
            (freezeOn(base, layer) || read(base, layerSlot(LayerParam::Loop, layer)) > 0.5f);
 }
 

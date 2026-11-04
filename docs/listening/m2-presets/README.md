@@ -94,11 +94,17 @@ The specs are the preset goldens' (`tests/golden/presets/cases/`), made 8 s long
 | `init-fx.wav`, `init-inst.wav` | 8 s | INIT in each product: the FX over the phrase, the instrument over the violin | The plain defaults (D8) |
 | `mutate-ladder.wav` | 16 s | FX 01 Soft Focus, then Mutate at 10%, 30% and 60% (seed fixed, counter 1 to 3), 4 s each | Variations that stay in the family at 10% and leave it by 60% (D3, D4) |
 
-### Measured (the M5 Max, `build/dev` at this commit)
+### Measured (the M5 Max, `build/release` at `df1c3ae`)
 
 Peak is `peakDb`; RMS is the power mean of the 10 ms `rmsEnvelopeDb` frames (the mono mix) over
 the whole file; click is `clickScore` (metricsVersion 2; the goldens' limit is 15). No file has a
 non-finite or denormal sample.
+
+**Re-rendered on `release` at `df1c3ae`** (the M2 close, Task 16; row 398): the table was
+measured on `build/dev`, and all 55 rows were diffed against these renders. 54 are identical to
+two decimals. One moved: `fx-06-spectral-mist`'s peak, −9.05 to −9.06 (row 365, DC at unity in the
+Spectral kind, which also moves `fx-20-melting-clock` and `inst-21-smoke-cathedral` below the
+second decimal). Their spectrograms show no artifact.
 
 | File | Peak dBFS | RMS dBFS | Click |
 |---|---|---|---|
@@ -108,7 +114,7 @@ non-finite or denormal sample.
 | fx-03-slow-hours | -6.04 | -22.43 | 4.94 |
 | fx-04-undertow | -11.71 | -24.30 | 4.42 |
 | fx-05-shimmer-veil | -9.95 | -23.32 | 4.67 |
-| fx-06-spectral-mist | -9.05 | -23.66 | 4.57 |
+| fx-06-spectral-mist | -9.06 | -23.66 | 4.57 |
 | fx-07-dust-motes | -6.25 | -22.10 | 4.63 |
 | fx-08-still-water | -9.14 | -23.00 | 4.44 |
 | fx-09-snapshot-keys | -6.97 | -20.77 | 4.32 |

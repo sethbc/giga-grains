@@ -193,11 +193,15 @@ struct EditorContext
     /// A Live layer's ring as the audio thread last published it; valid is false while
     /// inactive. Main thread.
     std::function<RingView(uint8_t layer)> ringView;
-    /// Adds a splice mark `seconds` behind the ring's head, or clears the layer's marks. Dropped
-    /// while inactive; applied at the next process().
-    std::function<void(uint8_t layer, RingCommand, float seconds)> ringCommand;
+    /// AddSplice: a splice mark `value` seconds behind the anchor (the head, or the selected
+    /// splice's end); AddSpliceAt: a mark at ring frame `value` itself (an integer, exact in the
+    /// double); ClearSplices: the layer's marks cleared (`value` unused). Dropped while inactive;
+    /// applied at the next process().
+    std::function<void(uint8_t layer, RingCommand, double value)> ringCommand;
     /// Captures layer `layer`'s ring window (`splice` 0), or its splice k >= 1, into layer
-    /// `target` as an in-memory sample. "" on success, else the message for the user:
+    /// `target` as an in-memory sample. Splice k is the one the engine plays for the Splice
+    /// parameter at k (numbered from the first mark in storage, Loop ignored: what the lane
+    /// outlines; carry-over row 386). "" on success, else the message for the user:
     /// "the plugin isn't running", "no ring to capture", or the target's status after the memory
     /// cap refused it.
     std::function<std::string(uint8_t layer, uint32_t splice, uint8_t target)> captureTo;

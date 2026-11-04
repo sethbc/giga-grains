@@ -31,6 +31,7 @@
 #include "Render.h"
 #include "RenderSpec.h"
 #include "Signals.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
@@ -90,6 +91,21 @@ std::string rejection(const nlohmann::json &j)
 bool bitIdentical(const std::vector<float> &a, const std::vector<float> &b)
 {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+/// The first line where two event logs differ, for an INFO (row 234: a recurrence's line names
+/// its layer and onset), or that they are the same.
+std::string firstDifference(const std::vector<std::string> &a, const std::vector<std::string> &b)
+{
+    const auto [ia, ib] = std::mismatch(a.begin(), a.end(), b.begin(), b.end());
+    if (ia == a.end() && ib == b.end())
+    {
+        return "the event logs are the same";
+    }
+    const auto line = std::to_string(ia - a.begin());
+    return "the event logs differ first at line " + line + ": " +
+           (ia != a.end() ? *ia : std::string{"(none)"}) + " against " +
+           (ib != b.end() ? *ib : std::string{"(none)"});
 }
 
 /// An instrument spec of its own (not a golden case's, which may be retuned): a sweep sample and a
@@ -434,7 +450,8 @@ TEST_CASE("render block size does not change output", "[render]")
 
     RenderSpec spec = parseCase(name);
     std::vector<std::string> refEvents;
-    const auto ref = gg::render::render(spec, &refEvents);
+    gg::render::RenderReport refReport;
+    const auto ref = gg::render::render(spec, &refEvents, {}, &refReport);
     REQUIRE(ref.sampleRate == spec.sampleRate);
     REQUIRE(ref.channels.size() == 2);
     REQUIRE(ref.channels[0].size() >= static_cast<std::size_t>(3.0 * spec.sampleRate));
@@ -443,11 +460,68 @@ TEST_CASE("render block size does not change output", "[render]")
     // Same samples, same length (the release tail included), same grains.
     spec.blockSize = blockSize;
     std::vector<std::string> events;
-    const auto out = gg::render::render(spec, &events);
+    gg::render::RenderReport report;
+    const auto out = gg::render::render(spec, &events, {}, &report);
     REQUIRE(out.sampleRate == ref.sampleRate);
     REQUIRE(out.channels.size() == 2);
     CHECK(bitIdentical(out.channels[0], ref.channels[0]));
     CHECK(bitIdentical(out.channels[1], ref.channels[1]));
+    {
+        INFO(firstDifference(events, refEvents));
+        CHECK(events == refEvents);
+    }
+    // Row 234: no layer's enable flipped against its on ramp or off the grid, in either render
+    // (a recurrence of its extra grain says here whether the flip was the cause).
+    INFO("the spec's block size: " << gg::core::describeFaults(refReport));
+    INFO("block size " << blockSize << ": " << gg::core::describeFaults(report));
+    REQUIRE(refReport.enableFaults == 0);
+    REQUIRE(report.enableFaults == 0);
+    REQUIRE(refReport.gateFaults == 0);
+    REQUIRE(report.gateFaults == 0);
+}
+
+TEST_CASE("render at 44.1 kHz flips layer enables off the grid without a fault", "[render]")
+{
+    // Row 234's grid invariant at a rate where the 10 ms ramp, 441 samples, is off the 32-frame
+    // grid: layer B's ramp off ends 441 samples after its grid boundary, a legitimate flip off
+    // the grid, which must not count as a fault. Layer B switched on, off and on again, over a
+    // sine, in blocks of 1 and 128: no fault, the same bytes and the same grains.
+    // Not vacuous: at 44.1 kHz the ramp, R = round(10 ms x rate), ends off the 32-frame grid.
+    REQUIRE(std::llround(Processor::kRampSeconds * 44100.0) % Processor::kControlGrid != 0);
+    std::string error;
+    const auto spec = gg::render::parseRenderSpec(R"({
+        "mode": "fx", "sampleRate": 44100, "durationSeconds": 2.0, "blockSize": 128, "seed": 1,
+        "input": {"kind": "sine", "frequencyHz": 330, "seconds": 2.0, "amplitude": 0.4},
+        "channels": 2, "params": {"Mix": 1.0, "B Pitch": 7},
+        "automation": [{"time": 0.5, "param": "Layer B On", "value": 1},
+                       {"time": 1.0, "param": "Layer B On", "value": 0},
+                       {"time": 1.5, "param": "Layer B On", "value": 1}]})",
+                                                  error);
+    INFO(error);
+    REQUIRE(spec.has_value());
+    std::vector<std::string> refEvents;
+    gg::render::RenderReport refReport;
+    const auto ref = gg::render::render(*spec, &refEvents, {}, &refReport);
+    INFO("blocks of 128: " << gg::core::describeFaults(refReport));
+    REQUIRE(refReport.enableFaults == 0);
+    REQUIRE(refReport.gateFaults == 0);
+    // Not vacuous: layer B spoke.
+    REQUIRE(std::any_of(refEvents.begin(), refEvents.end(), [](const std::string &line) {
+        return line.find(R"("layer":1,)") != std::string::npos;
+    }));
+
+    RenderSpec ones = *spec;
+    ones.blockSize = 1;
+    std::vector<std::string> events;
+    gg::render::RenderReport report;
+    const auto out = gg::render::render(ones, &events, {}, &report);
+    INFO("blocks of 1: " << gg::core::describeFaults(report));
+    REQUIRE(report.enableFaults == 0);
+    REQUIRE(report.gateFaults == 0);
+    REQUIRE(out.channels.size() == 2);
+    CHECK(bitIdentical(out.channels[0], ref.channels[0]));
+    CHECK(bitIdentical(out.channels[1], ref.channels[1]));
+    INFO(firstDifference(events, refEvents));
     CHECK(events == refEvents);
 }
 
@@ -1639,7 +1713,8 @@ TEST_CASE("note and file renders do not depend on block size", "[render]")
     RenderSpec spec = parseCase(name);
     gg::render::resolvePaths(spec, writeMedia("render-block-size-media"));
     std::vector<std::string> refEvents;
-    const auto ref = gg::render::render(spec, &refEvents);
+    gg::render::RenderReport refReport;
+    const auto ref = gg::render::render(spec, &refEvents, {}, &refReport);
     REQUIRE(ref.channels.size() == 2);
     REQUIRE(ref.channels[0].size() ==
             static_cast<std::size_t>(gg::render::framesFor(spec.durationSeconds, spec.sampleRate)));
@@ -1647,11 +1722,22 @@ TEST_CASE("note and file renders do not depend on block size", "[render]")
 
     spec.blockSize = blockSize;
     std::vector<std::string> events;
-    const auto out = gg::render::render(spec, &events);
+    gg::render::RenderReport report;
+    const auto out = gg::render::render(spec, &events, {}, &report);
     REQUIRE(out.channels.size() == 2);
     CHECK(bitIdentical(out.channels[0], ref.channels[0]));
     CHECK(bitIdentical(out.channels[1], ref.channels[1]));
-    CHECK(events == refEvents);
+    {
+        INFO(firstDifference(events, refEvents));
+        CHECK(events == refEvents);
+    }
+    // Row 234, as in "render block size does not change output".
+    INFO("the spec's block size: " << gg::core::describeFaults(refReport));
+    INFO("block size " << blockSize << ": " << gg::core::describeFaults(report));
+    REQUIRE(refReport.enableFaults == 0);
+    REQUIRE(report.enableFaults == 0);
+    REQUIRE(refReport.gateFaults == 0);
+    REQUIRE(report.gateFaults == 0);
 }
 
 TEST_CASE("a chord's grains take its three keys, and its release decays to silence", "[render]")
@@ -2738,6 +2824,31 @@ TEST_CASE("a capture is the ring's newest frames, or a splice's span", "[render]
     expect("whole.wav", 0, sr);            // 1.0 s of ring, from the first frame
     expect("first.wav", 14400, 14400);     // [0.3 s, 0.6 s)
     expect("last.wav", 28800, sr - 28800); // [0.6 s, the head)
+}
+
+TEST_CASE("a spectral layer's splices reach a capture", "[render][spectral]")
+{
+    // Row 381: the ring commands reach a Spectral layer that smears its ring (no sample), so a
+    // capture of its splice k is that span of the ring, as a Live layer's is.
+    const std::string dir = freshDirectory("ring-capture-spectral");
+    auto j = ringFxJson(2.0);
+    j["params"] = {{"A Ring Length", 3.0}, {"A Source", 3}};
+    j["operations"] = nlohmann::json::parse(R"([
+        {"time": 0.3, "layer": "A", "op": "splice"},
+        {"time": 0.6, "layer": "A", "op": "splice"},
+        {"time": 1.0, "layer": "A", "op": "capture", "splice": 1}])");
+    j["operations"][2]["file"] = dir + "/first.wav";
+    const RenderSpec spec = parseJson(j);
+    (void)gg::render::render(spec, nullptr);
+    const auto input = gg::render::makeInput(spec.fx.input, 1, 48000.0, 1);
+    const auto cap = gg::metrics::readAudioFile(dir + "/first.wav");
+    REQUIRE(cap.has_value());
+    REQUIRE(cap->channels.size() == 2);
+    REQUIRE(cap->channels[0].size() == 14400); // [0.3 s, 0.6 s)
+    const std::vector<float> want(input.channels[0].begin() + 14400,
+                                  input.channels[0].begin() + 28800);
+    CHECK(bitIdentical(cap->channels[0], want));
+    CHECK(bitIdentical(cap->channels[1], want));
 }
 
 TEST_CASE("clearSplices removes the marks a save would keep", "[render]")

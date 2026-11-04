@@ -104,14 +104,14 @@ TEST_CASE("the Mod view marks a toggle's and a menu's routes with dots", "[plugi
     // The factory route Macro Freeze to Freeze reaches the toggle.
     gg::ui::ParamControl *freeze = controlOf(ParamSlot::Freeze);
     REQUIRE(freeze->rings().size() == 1);
-    CHECK(freeze->rings()[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
-    // A chip dropped on the Source menu adds a dot in the modulators' colour.
+    CHECK(freeze->rings()[0].color == gg::ui::Palette::dark().sourceFamilies[0]);
+    // A chip dropped on the Source menu adds a dot in the modulators' color.
     gg::ui::ParamControl *menu = controlOf(ParamSlot::Source);
     CHECK(menu->rings().empty());
     dropChip(menu, 9);
     view.refresh();
     REQUIRE(menu->rings().size() == 1);
-    CHECK(menu->rings()[0].colour == gg::ui::Palette::dark().sourceFamilies[1]);
+    CHECK(menu->rings()[0].color == gg::ui::Palette::dark().sourceFamilies[1]);
     CHECK(h.routes[12].curve == gg::core::ModCurve::Unipolar);
 }
 
@@ -198,12 +198,119 @@ TEST_CASE("a fresh Mod view shows the layer letter and a ring click selects its 
     // Ring 0's radius: the knob's, 2 px of gap and half the 3 px spacing.
     const auto circle = knob->getBounds().toFloat();
     const float r = circle.getWidth() * 0.5f;
-    const auto centre = circle.withHeight(circle.getWidth()).getCentre();
-    const float y = centre.y - (r + 3.5f);
-    size->mouseDown(mouseAt(*size, centre.x, y, {centre.x, y}, false));
-    size->mouseUp(mouseAt(*size, centre.x, y, {centre.x, y}, false));
+    const auto center = circle.withHeight(circle.getWidth()).getCentre();
+    const float y = center.y - (r + 3.5f);
+    size->mouseDown(mouseAt(*size, center.x, y, {center.x, y}, false));
+    size->mouseUp(mouseAt(*size, center.x, y, {center.x, y}, false));
     CHECK(routes->selected() == size->rings()[0].slot);
     CHECK(h.undo.size() == 0);
+}
+
+TEST_CASE("an undo that adds one route selects it; a load selects none", "[plugin]")
+{
+    // Row 333 (the director's option 1, 2026-11-02): a refresh selects a route that appeared
+    // only when it is the one route that did (an undo, a redo, a drop), never on a load.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *routes = dynamic_cast<gg::ui::RouteList *>(findDeep(view, "routes"));
+    REQUIRE(routes != nullptr);
+    REQUIRE(routes->selected() == 0);
+
+    // Clear slot 2 (a factory route), then undo it: the one route that came back is selected.
+    REQUIRE(h.routes[1].source != gg::core::ModSource::None);
+    auto *clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    REQUIRE(clear->onClick);
+    clear->onClick();
+    view.refresh();
+    REQUIRE(h.routes[1].source == gg::core::ModSource::None);
+    routes->select(0);
+    h.undo.undo();
+    view.refresh();
+    CHECK(h.routes[1].source != gg::core::ModSource::None);
+    CHECK(routes->selected() == 2);
+    // Redo takes it away, a second undo brings it back: selected again.
+    h.undo.redo();
+    view.refresh();
+    routes->select(0);
+    h.undo.undo();
+    view.refresh();
+    CHECK(routes->selected() == 2);
+
+    // A load never selects (the director's answer: "never on a load"), whatever it brings: the
+    // plugin's presetLoads count moves with it. One route, then five.
+    uint64_t loads = 0;
+    h.recording.context.presetLoads = [&loads] { return loads; };
+    view.refresh(); // the count's first look
+    routes->select(0);
+    {
+        gg::core::ModRoutes one = h.routes;
+        REQUIRE(one[30].source == gg::core::ModSource::None);
+        one[30] = {.source = gg::core::ModSource::Lfo2,
+                   .target = ParamSlot::Size,
+                   .depth = 0.5f,
+                   .curve = gg::core::ModCurve::Bipolar};
+        h.routes = one;
+        ++loads;
+        view.refresh();
+        CHECK(routes->selected() == 0);
+    }
+    routes->select(0);
+    gg::core::ModRoutes loaded = h.routes;
+    for (std::size_t i = 12; i < 17; ++i)
+    {
+        loaded[i] = {.source = gg::core::ModSource::Lfo1,
+                     .target = ParamSlot::Position,
+                     .depth = 0.25f,
+                     .curve = gg::core::ModCurve::Bipolar};
+    }
+    h.routes = loaded;
+    ++loads;
+    view.refresh();
+    CHECK(routes->selected() == 0);
+    // And so does one that brings them while a row is selected.
+    routes->select(3);
+    for (std::size_t i = 20; i < 23; ++i)
+    {
+        loaded[i] = loaded[12];
+    }
+    h.routes = loaded;
+    ++loads;
+    view.refresh();
+    CHECK(routes->selected() == 3);
+    // Several routes at once without a load (no source does that today) select none either.
+    routes->select(0);
+    for (std::size_t i = 40; i < 42; ++i)
+    {
+        loaded[i] = loaded[12];
+    }
+    h.routes = loaded;
+    view.refresh();
+    CHECK(routes->selected() == 0);
+    // A load (or a save) that leaves the routes as they were moves the count alone: the next
+    // look takes it in, and an undo after it that brings one route back still selects it (row
+    // 333's review: the count is read before the unchanged-routes return).
+    clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    clear->onClick();
+    view.refresh();
+    ++loads;
+    view.refresh(); // the same routes: only the count moved
+    routes->select(0);
+    h.undo.undo();
+    view.refresh();
+    CHECK(routes->selected() == 2);
+    // After the loads, an undo that brings one back selects it again.
+    clear = dynamic_cast<juce::Button *>(findDeep(view, "route.2.clear"));
+    REQUIRE(clear != nullptr);
+    clear->onClick();
+    view.refresh();
+    h.undo.undo();
+    view.refresh();
+    CHECK(routes->selected() == 2);
 }
 
 TEST_CASE("choosing no source in the route list clears the row", "[plugin]")
@@ -380,6 +487,52 @@ TEST_CASE("a half-built route row is kept until it has a target", "[plugin]")
     }
 }
 
+TEST_CASE("a half-built row survives another row's edit and yields to its slot's route", "[plugin]")
+{
+    // Row 388 (b): a refresh that another edit causes keeps a draft and its "choose a target";
+    // a route that comes into the draft's slot by another way (an undo, the host) wins.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *source = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.source"));
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
+    auto *curve = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.1.curve"));
+    REQUIRE(source != nullptr);
+    REQUIRE(target != nullptr);
+    REQUIRE(curve != nullptr);
+    source->setSelectedId(static_cast<int>(gg::core::ModSource::Lfo1) + 1,
+                          juce::sendNotificationSync);
+    REQUIRE(target->getText() == "choose a target");
+
+    // Another row's edit: the routes change, the rows are shown again, the draft stays.
+    curve->setSelectedId(static_cast<int>(gg::core::ModCurve::UnipolarSquared) + 1,
+                         juce::sendNotificationSync);
+    REQUIRE(h.undo.size() == 1);
+    view.refresh();
+    CHECK(source->getSelectedId() == static_cast<int>(gg::core::ModSource::Lfo1) + 1);
+    CHECK(target->getText() == "choose a target");
+    // Its undo too.
+    h.undo.undo();
+    view.refresh();
+    CHECK(target->getText() == "choose a target");
+
+    // A route in slot 13 from elsewhere: it wins, and the draft is gone.
+    h.routes[12] = {.source = gg::core::ModSource::Lfo2,
+                    .target = ParamSlot::Pitch,
+                    .depth = 1.0f,
+                    .curve = gg::core::ModCurve::Bipolar};
+    view.refresh();
+    CHECK(source->getSelectedId() == static_cast<int>(gg::core::ModSource::Lfo2) + 1);
+    CHECK(target->getText() == "Pitch");
+    // Cleared again, the slot is empty: no draft comes back.
+    h.routes[12] = {};
+    view.refresh();
+    CHECK(source->getSelectedId() == 1);
+    CHECK(target->getText() != "choose a target");
+}
+
 TEST_CASE("a route to a hidden target shows its name", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -394,11 +547,82 @@ TEST_CASE("a route to a hidden target shows its name", "[plugin]")
     auto *target = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.13.target"));
     REQUIRE(target != nullptr);
     CHECK(target->getText() == "Mix");
-    // Dimmed: the hidden name reads in the palette's dim text color, not the target boxes'.
+    // Dimmed: the hidden name reads in the palette's dim text color, the other targets in its
+    // text color (row 388 (a)).
     auto *other = dynamic_cast<juce::ComboBox *>(findDeep(view, "route.14.target"));
     REQUIRE(other != nullptr);
-    CHECK(target->findColour(juce::ComboBox::textColourId) !=
-          other->findColour(juce::ComboBox::textColourId));
+    CHECK(target->findColour(juce::ComboBox::textColourId) == gg::ui::Palette::dark().dimText);
+    CHECK(other->findColour(juce::ComboBox::textColourId) == gg::ui::Palette::dark().text);
+}
+
+TEST_CASE("a hidden target stays dimmed across a theme switch", "[plugin]")
+{
+    // Row 388 (a): in an editor, through the theme switch and a refresh, in both themes.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Instrument);
+    h.routes[12] = {.source = gg::core::ModSource::Lfo1,
+                    .target = ParamSlot::Mix,
+                    .depth = 0.25f,
+                    .curve = gg::core::ModCurve::Bipolar};
+    const auto editor = gg::ui::makeEditor(h.recording.context);
+    REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Mod));
+    auto *routes = dynamic_cast<gg::ui::RouteList *>(findDeep(*editor, "routes"));
+    REQUIRE(routes != nullptr);
+    routes->refresh();
+    auto *target = dynamic_cast<juce::ComboBox *>(findDeep(*editor, "route.13.target"));
+    auto *other = dynamic_cast<juce::ComboBox *>(findDeep(*editor, "route.14.target"));
+    REQUIRE(target != nullptr);
+    REQUIRE(other != nullptr);
+    for (const gg::ui::ThemeChoice theme :
+         {gg::ui::ThemeChoice::Light, gg::ui::ThemeChoice::Dark, gg::ui::ThemeChoice::Light})
+    {
+        const bool light = theme == gg::ui::ThemeChoice::Light;
+        INFO((light ? "light" : "dark"));
+        const gg::ui::Palette &pal = light ? gg::ui::Palette::light() : gg::ui::Palette::dark();
+        REQUIRE(gg::ui::setTheme(*editor, theme));
+        CHECK(target->findColour(juce::ComboBox::textColourId) == pal.dimText);
+        CHECK(other->findColour(juce::ComboBox::textColourId) == pal.text);
+        routes->refresh();
+        CHECK(target->findColour(juce::ComboBox::textColourId) == pal.dimText);
+        CHECK(other->findColour(juce::ComboBox::textColourId) == pal.text);
+    }
+}
+
+TEST_CASE("a loaded depth past the target's range is kept until moved", "[plugin]")
+{
+    // Row 330 (a): the core takes any finite depth, so a loaded one past the target's span widens
+    // the slider rather than being clamped to it on the first touch.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    ModHarness h(gg::core::Mode::Fx);
+    const auto &meta = gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Fx);
+    const float range = meta.maxVal - meta.minVal;
+    const float loaded = -3.0f * range;
+    h.routes[12] = {.source = gg::core::ModSource::Lfo1,
+                    .target = ParamSlot::Position,
+                    .depth = loaded,
+                    .curve = gg::core::ModCurve::Bipolar};
+    gg::ui::ModView view(h.recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *depth = dynamic_cast<juce::Slider *>(findDeep(view, "route.13.depth"));
+    REQUIRE(depth != nullptr);
+    CHECK(depth->getValue() == static_cast<double>(loaded));
+    CHECK(depth->getMinimum() <= static_cast<double>(loaded));
+
+    // A small drag moves it from where it is, not from the clamp.
+    REQUIRE(depth->onDragStart);
+    REQUIRE(depth->onDragEnd);
+    depth->onDragStart();
+    depth->setValue(static_cast<double>(loaded) * 0.99, juce::sendNotificationSync);
+    depth->onDragEnd();
+    CHECK(h.routes[12].depth == static_cast<float>(static_cast<double>(loaded) * 0.99));
+    CHECK(h.routes[12].depth < -range);
+    CHECK(h.undo.size() == 1);
+    // A route within its range keeps the target's span.
+    auto *other = dynamic_cast<juce::Slider *>(findDeep(view, "route.1.depth"));
+    REQUIRE(other != nullptr);
+    const auto &target = gg::core::paramMeta(h.routes[0].target, gg::core::Mode::Fx);
+    CHECK(other->getMaximum() == static_cast<double>(target.maxVal - target.minVal));
 }
 
 TEST_CASE("retargeting a route scales its depth to the new target's units", "[plugin]")

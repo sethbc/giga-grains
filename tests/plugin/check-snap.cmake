@@ -6,6 +6,10 @@
 # 4 views x 2 sizes = 32 PNGs, each named <product>-<view>-<theme>-<w>x<h>.png and non-empty.
 #   cmake -DTOOL=<gg-snap> -DOUT=<dir> -P check-snap.cmake
 
+# A -P script sets no policies of its own: the project's minimum, so CMake 3.x reads it as 4.x
+# does (CMP0012's TRUE in a condition among them).
+cmake_minimum_required(VERSION 3.22)
+
 file(REMOVE_RECURSE "${OUT}")
 execute_process(COMMAND "${TOOL}" "${OUT}" RESULT_VARIABLE status
         OUTPUT_VARIABLE out ERROR_VARIABLE err)

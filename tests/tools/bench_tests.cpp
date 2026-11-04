@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <numbers>
 #include <numeric>
@@ -111,7 +112,7 @@ TEST_CASE("bench statistics", "[bench]")
     CHECK(gg::bench::quantile({7.0}, 0.25) == 7.0);
 }
 
-TEST_CASE("bench rounds vary each configuration's neighbours", "[bench]")
+TEST_CASE("bench rounds vary each configuration's neighbors", "[bench]")
 {
     // A full run's shape: 5 kernels x 3 block sizes, over 5 rounds.
     constexpr uint32_t n = 15;
@@ -520,10 +521,58 @@ TEST_CASE("baseline entries the run lacks fail the verdict", "[bench]")
     CHECK_NOTHROW(gg::bench::checkBaseline(baseline));
 }
 
+namespace
+{
+using CaseBlocks = std::set<std::pair<std::string, uint32_t>>;
+
+// The cases of one tier at the three block sizes, each once.
+CaseBlocks caseBlocks(std::initializer_list<const char *> names)
+{
+    CaseBlocks out;
+    for (const char *name : names)
+    {
+        for (const uint32_t block : {32u, 64u, 256u})
+        {
+            out.emplace(name, block);
+        }
+    }
+    return out;
+}
+
+// The shapes a committed entry may have: the 4 gated cases (12 ratios); those and the six
+// report-only cases of M2 sub-projects 1 and 3 (30, an entry made at 630d740); or those and the
+// four report-only cases that sub-projects 2 and 4 added (42, an entry made at ca60f54).
+std::vector<CaseBlocks> baselineEntryShapes()
+{
+    CaseBlocks gated =
+        caseBlocks({"engine-sample", "engine-sample-eco", "engine-live", "engine-full-pool"});
+    CaseBlocks older = gated;
+    older.merge(caseBlocks({"engine-layers", "engine-layers-full", "engine-sample-hq",
+                            "engine-sample-hq-up", "engine-overload", "engine-sample-sse"}));
+    CaseBlocks newer = older;
+    newer.merge(
+        caseBlocks({"engine-live-long", "engine-sample-smear", "engine-buses", "engine-spectral"}));
+    return {gated, older, newer};
+}
+
+// True when `ratios` (as stored: a duplicate shows as a size above the set's) is exactly one shape.
+bool isBaselineEntryShape(const CaseBlocks &found, std::size_t count)
+{
+    for (const CaseBlocks &shape : baselineEntryShapes())
+    {
+        if (found == shape && count == shape.size())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
 TEST_CASE("the committed baselines are well formed", "[bench]")
 {
     // CI checks each leg's run against its file, so each must pass checkBaseline(): an entry per
-    // CPU model with every engine case at every block size, each once.
+    // CPU model with every gated engine case at every block size, each once.
     const std::vector<std::string> legs{"linux-gcc13", "mac-universal", "windows-clangcl"};
     for (const std::string &leg : legs)
     {
@@ -537,40 +586,47 @@ TEST_CASE("the committed baselines are well formed", "[bench]")
         for (const nlohmann::json &m : baseline.at("machines"))
         {
             INFO(m.at("machine").get<std::string>());
-            // The 4 gated engine cases x 3 block sizes must all be there (a stray case, a
-            // duplicate or a missing block size fails). An entry made from three merged runs
-            // also carries the report-only cases below, once each; an older entry may not.
-            std::set<std::pair<std::string, uint32_t>> found;
+            // Exactly one of baselineEntryShapes(): a stray case, a duplicate, a missing block
+            // size or a partial set of report-only cases fails.
+            CaseBlocks found;
             for (const nlohmann::json &r : m.at("ratios"))
             {
                 found.emplace(r.at("case").get<std::string>(), r.at("blockSize").get<uint32_t>());
             }
-            std::set<std::pair<std::string, uint32_t>> expected;
-            for (const char *name :
-                 {"engine-sample", "engine-sample-eco", "engine-live", "engine-full-pool"})
-            {
-                for (const uint32_t block : {32u, 64u, 256u})
-                {
-                    expected.emplace(name, block);
-                }
-            }
-            const bool withReportOnly = m.at("ratios").size() > expected.size();
-            if (withReportOnly)
-            {
-                for (const char *name :
-                     {"engine-layers", "engine-layers-full", "engine-sample-hq",
-                      "engine-sample-hq-up", "engine-overload", "engine-sample-sse"})
-                {
-                    for (const uint32_t block : {32u, 64u, 256u})
-                    {
-                        expected.emplace(name, block);
-                    }
-                }
-            }
-            CHECK(m.at("ratios").size() == expected.size());
-            CHECK(found == expected);
+            CHECK(isBaselineEntryShape(found, m.at("ratios").size()));
         }
     }
+}
+
+TEST_CASE("the baseline entry shapes are narrow", "[bench]")
+{
+    const std::vector<CaseBlocks> shapes = baselineEntryShapes();
+    REQUIRE(shapes.size() == 3);
+    CHECK(shapes[0].size() == 12);
+    CHECK(shapes[1].size() == 30);
+    CHECK(shapes[2].size() == 42);
+    for (const CaseBlocks &shape : shapes)
+    {
+        CHECK(isBaselineEntryShape(shape, shape.size()));
+    }
+    // A duplicate (the set is the same, the count is not).
+    CHECK_FALSE(isBaselineEntryShape(shapes[2], 43));
+    // A missing block size, a stray case, and a partial set of the report-only cases.
+    CaseBlocks missing = shapes[2];
+    missing.erase(missing.begin());
+    CHECK_FALSE(isBaselineEntryShape(missing, missing.size()));
+    CaseBlocks stray = shapes[0];
+    stray.emplace("engine-stray", 32u);
+    CHECK_FALSE(isBaselineEntryShape(stray, stray.size()));
+    CaseBlocks partial = shapes[1];
+    partial.merge(caseBlocks({"engine-live-long", "engine-sample-smear", "engine-buses"}));
+    CHECK(partial.size() == 39);
+    CHECK_FALSE(isBaselineEntryShape(partial, partial.size()));
+    // 36 ratios: the older shape and two of the four newer cases.
+    CaseBlocks thirtySix = shapes[1];
+    thirtySix.merge(caseBlocks({"engine-live-long", "engine-buses"}));
+    CHECK(thirtySix.size() == 36);
+    CHECK_FALSE(isBaselineEntryShape(thirtySix, thirtySix.size()));
 }
 
 namespace
@@ -946,9 +1002,9 @@ TEST_CASE("hermite-simd-grainfilter low-passes each grain at 1 kHz", "[bench]")
                                                     fl.data(), fr.data(), kBlock);
             if (b >= kBlocks / 2) // past the filters' onset
             {
+                CHECK(std::equal(fl.begin(), fl.end(), fr.begin())); // the same source on both
                 for (uint32_t i = 0; i < kBlock; ++i)
                 {
-                    CHECK(fl[i] == fr[i]); // the same source on both channels
                     plain += static_cast<double>(pl[i]) * pl[i];
                     filtered += static_cast<double>(fl[i]) * fl[i];
                 }
@@ -1246,11 +1302,25 @@ TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
     CHECK(status == 0);
     CHECK(output.find("\nchain ") != std::string::npos);
     CHECK(output.find("% core @48k") != std::string::npos);
+    CHECK(output.find("\nspectral ") != std::string::npos);
 
     std::ifstream in(jsonPath, std::ios::binary);
     REQUIRE(in);
     const nlohmann::json j = nlohmann::json::parse(in);
     CHECK(j.at("benchmark").get<std::string>() == "chain");
+    // The report-only spectral stage (carry-over 372): its own runs, summary and settings.
+    const nlohmann::json &spectral = j.at("spectral");
+    REQUIRE(spectral.at("runs").is_array());
+    REQUIRE(spectral.at("runs").size() == 2);
+    for (const nlohmann::json &run : spectral.at("runs"))
+    {
+        CHECK(run.get<double>() > 0.0);
+    }
+    CHECK(spectral.at("nsPerSample").get<double>() > 0.0);
+    CHECK(spectral.at("min").get<double>() <= spectral.at("nsPerSample").get<double>());
+    CHECK(spectral.at("iqr").get<double>() >= 0.0);
+    CHECK(spectral.at("cpuPctOneCoreAt48k").get<double>() > 0.0);
+    CHECK(spectral.at("settings").at("grainsReading").get<int>() == 0);
     CHECK(j.at("rounds").get<int>() == 2);
     const nlohmann::json &runs = j.at("runs");
     REQUIRE(runs.is_array());
@@ -1268,6 +1338,26 @@ TEST_CASE("the chain benchmark runs and writes its json", "[bench]")
 
     CHECK_THROWS_AS(gg::bench::runChain({.runSeconds = 0.0}), std::invalid_argument);
     CHECK_THROWS_AS(gg::bench::runChain({.rounds = 0}), std::invalid_argument);
+}
+
+TEST_CASE("the canvas bench refuses a report that timed no resolve", "[bench]")
+{
+    // Row 388 (c): runCanvas's check, apart from the timing.
+    const gg::bench::CanvasResult good{4096, 0.1, 0.2, 0.3, 0.4, 0.9, 0.9, 1.0};
+    gg::bench::CanvasReport report;
+    report.frames = 30;
+    report.results = {good, good, good};
+    CHECK_NOTHROW(gg::bench::checkCanvasReport(report));
+    CHECK_NOTHROW(gg::bench::checkCanvasReport(gg::bench::CanvasReport{}));
+    for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN()})
+    {
+        INFO(bad);
+        gg::bench::CanvasReport r = report;
+        r.results[1].grains = 8192;
+        r.results[1].resolveMs = bad;
+        CHECK_THROWS_WITH(gg::bench::checkCanvasReport(r),
+                          "the canvas bench timed no resolve at 8192 grains");
+    }
 }
 
 TEST_CASE("the canvas bench reports four banded lanes", "[bench]")

@@ -159,7 +159,7 @@ class EnvFollower
     float env_{0.0f};
 };
 
-/// The global MIDI sources, each in [0, 1]: the last CC 1, channel pressure and pitch bend (centre
+/// The global MIDI sources, each in [0, 1]: the last CC 1, channel pressure and pitch bend (center
 /// 0.5) and the last note-on's velocity and key / 127. Plain values the Processor holds and sets.
 struct MidiSources
 {

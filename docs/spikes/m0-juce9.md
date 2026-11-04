@@ -142,7 +142,7 @@ No MIDI was sent, so the note-on counter was only seen at 0. The MIDI paths are 
 ## License
 
 JUCE 9.0.4's `LICENSE.md` dual-licenses the JUCE modules under the **AGPLv3** and the commercial
-JUCE 9 licence. Each module header still says "You may also use this code under the terms of
+JUCE 9 license. Each module header still says "You may also use this code under the terms of
 the AGPLv3".
 
 The dual-license terms are unchanged from 8.0.16-security. In the license text, the EULA link

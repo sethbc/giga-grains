@@ -62,15 +62,25 @@ juce::PopupMenu GrainCanvas::laneMenu(uint8_t layer)
     const RingView ring = ringOf(layer);
     const gg::core::RingParams params = ringParamsOf(layer);
     const uint32_t splice = params.splice; // the selected one, or 0 for the window
-    // Commands, not parameters (VW-P2b): no undo entry. The mark's value is taken when it is
-    // chosen, from the head the lane draws at then, so it lands on the frame clicked.
+    // Commands, not parameters (VW-P2b): no undo entry. The mark is the ring frame clicked
+    // (AddSpliceAt), so it lands there however far the head runs before the command applies.
     menu.addItem(juce::PopupMenu::Item("Add splice mark here")
                      .setEnabled(ring.valid)
                      .setAction([safe, layer, frame] {
                          if (safe != nullptr && safe->context_.ringCommand)
                          {
-                             safe->context_.ringCommand(layer, RingCommand::AddSplice,
-                                                        safe->spliceValueFor(layer, frame));
+                             // The frame clicked itself (carry-over row 388 (m)): wherever the
+                             // head is when the command applies. From the keyboard, at the
+                             // anchor as it applies.
+                             if (frame)
+                             {
+                                 safe->context_.ringCommand(layer, RingCommand::AddSpliceAt,
+                                                            static_cast<double>(*frame));
+                             }
+                             else
+                             {
+                                 safe->context_.ringCommand(layer, RingCommand::AddSplice, 0.0);
+                             }
                              safe->repaint();
                          }
                      }));

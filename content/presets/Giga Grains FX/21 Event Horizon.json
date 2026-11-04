@@ -3,7 +3,7 @@
   "name": "Event Horizon",
   "author": "Giga Grains",
   "description": "Everything falls into an endless, dark room that never decays; play a phrase and it hangs in the air for as long as you let it.",
-  "tags": ["extreme", "reverb", "drone", "dark", "live-input"],
+  "tags": ["extreme", "reverb", "drone", "dark"],
   "params": {
     "Mix": 0.8,
     "Size": -1.736966,

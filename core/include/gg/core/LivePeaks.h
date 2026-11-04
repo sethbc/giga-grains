@@ -30,6 +30,7 @@ namespace gg::core
 /// main thread's, while neither writes nor reads run.
 class LivePeaks
 {
+    friend struct LivePeaksTestAccess; // tests/sweep: plants a bucket value
     static_assert(std::atomic<float>::is_always_lock_free);
 
   public:

@@ -778,7 +778,7 @@ void SampleLoader::workerLoop()
                 result.error = kCantLoad;
             }
         }
-        if (result.cancelled)
+        if (result.canceled)
         {
             // Stopped by deactivate(): it runs again when the worker next starts, unless a newer
             // request has replaced it (the destructor drops the queue with the loader).
@@ -820,7 +820,7 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
         job.file, job.settings, decodeBound(job.capBytes, job.usedBytes), std::nullopt, &cancel_);
     if (cancel_.load(std::memory_order_relaxed))
     {
-        result.cancelled = true;
+        result.canceled = true;
         return result;
     }
     if (!loaded.error.empty())
@@ -828,6 +828,7 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
         result.error = std::move(loaded.error);
         return result;
     }
+    result.relink = job.kind == JobKind::Relink;
     result.differentAudio = job.kind == JobKind::Relink && !job.expectedSha256.empty() &&
                             loaded.entry.sha256Hex != job.expectedSha256;
     result.entry = std::move(loaded.entry);
@@ -851,7 +852,7 @@ SampleLoader::Result SampleLoader::run(const Job &job, double rate)
     if (rate > 0.0)
     {
         result.prepared = prepare(std::move(loaded.decoded), rate, result.entry, &cancel_);
-        result.cancelled = result.prepared == nullptr;
+        result.canceled = result.prepared == nullptr;
     }
     else
     {
@@ -891,6 +892,14 @@ void SampleLoader::apply(Result &result)
         // names the file that failed.
         setRequestError(result.fileName, std::move(result.error));
         return;
+    }
+    // A relink to the same audio keeps the entry's content reference (a factory preset's sample
+    // relinked by hand stays portable), as the search's "moved" branch does; other audio is a
+    // different sample and drops it (row 389).
+    if (result.relink && !result.differentAudio && entry_.has_value() &&
+        entry_->sha256Hex == result.entry.sha256Hex)
+    {
+        result.entry.contentPath = entry_->contentPath;
     }
     entry_ = std::move(result.entry);
     newerMedia_.reset(); // the sample loaded replaces a newer build's manifest

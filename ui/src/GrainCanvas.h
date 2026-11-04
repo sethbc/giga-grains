@@ -23,7 +23,7 @@
 #include "gg/ui/Editor.h"
 #include "gg/ui/LaneModel.h"
 #include "gg/ui/LaneState.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/SplatRenderer.h"
 #include "gg/ui/StressGrains.h"
 
@@ -44,11 +44,13 @@ namespace gg::ui
 ///
 /// **A Live lane spans its layer's ring** (ruling VW-P2d, amended): ringView's ringFrames /
 /// sampleRate seconds, 16 s while there is none (inactive). Its peaks draw over the frames the
-/// peak strip holds, its newest LivePeaks::frames(); older columns have none (the grains still
-/// draw there). Over the peaks it draws, in order, the loop window while the layer's Loop is on
-/// (spliceSpan's window, shaded), the selected splice (Splice's base value, rounded, when it is 1
-/// or more: its span outlined), and each mark: a 1 px rule, numbered from the oldest inside the
-/// window (D6) at its top when the lane is at least 40 px high.
+/// peak strip holds (the longest ring's) back to the oldest frame the ring's storage holds
+/// (RingView::oldestHeld: after a Ring Length grow, no older than the old ring reached). Over the
+/// peaks it draws, in order, the loop window while the layer's Loop is on (spliceSpan's window,
+/// shaded), the splice the engine plays (playedSplice for Splice's base value, rounded, when it is
+/// 1 or more and a mark is in storage: its span outlined), and each mark: a 1 px rule, numbered as
+/// the engine numbers the splices, from the oldest still in storage, Loop ignored (ruling SP-T1a/b;
+/// carry-over row 386), at its top when the lane is at least 40 px high.
 ///
 /// **The lane menu** (ruling VW-P2a) opens on a right-click on any lane, which selects its layer
 /// and begins no drag, or on Shift+F10 on the keyboard's lane (laneMenu). A Live lane's: "Add
@@ -63,7 +65,7 @@ namespace gg::ui
 /// (grainCapsule) into its lane's rows of one accumulator image, at physical-pixel resolution; a
 /// Live lane's only once a snapshot gives it its write head. The image covers the lanes alone:
 /// its x runs from 0 at the lanes' left edge, its y is the canvas's. The resolve tints each
-/// lane's rows with its layer's colour. paint then draws the image and, over it, per lane, the
+/// lane's rows with its layer's color. paint then draws the image and, over it, per lane, the
 /// peaks, the rectangles, the tint and the marker. With the plugin inactive (the context's
 /// publish pointers null) it draws only those static parts.
 ///
@@ -81,7 +83,7 @@ namespace gg::ui
 /// it (onSelectLayer). A file dropped on any lane goes to the context's loadSampleFor for its
 /// layer (ruling VW-P2c); a file that isn't a sample is refused with a notice (postNotice), and
 /// one dropped on a Live layer is loaded with a notice that its Source must be Sample to play it.
-/// With the context's undo stack, each gesture is an entry, labelled with its parameter's name.
+/// With the context's undo stack, each gesture is an entry, labeled with its parameter's name.
 ///
 /// **The keyboard** (spec §6.9): the canvas takes focus, and its focused lane is the selected
 /// one, its rectangle outlined: Left and Right move its Position, Up and Down its Pitch, by 1/100
@@ -121,7 +123,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// before the first painted frame.
     double averageFrameMs() const noexcept;
 
-    /// The layer whose lane is outlined in its colour; 0 at first. Out of range is ignored.
+    /// The layer whose lane is outlined in its color; 0 at first. Out of range is ignored.
     void setSelectedLayer(uint8_t layer);
     uint8_t selectedLayer() const noexcept { return selected_; }
     /// Called with the layer when a press lands in its lane (the canvas has selected it).
@@ -148,6 +150,17 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     /// The head (ring frames) the last paint drew layer `layer`'s marks against; 0 before. For
     /// the tests.
     int64_t headDrawn(uint8_t layer) const noexcept;
+    /// The splice the last paint outlined on layer `layer`'s lane, in ring frames; none when it
+    /// outlined none, or for a lane out of range. For the tests.
+    std::optional<RingSpan> spliceOutlined(uint8_t layer) const;
+    /// The ring frame the last right-click on layer `layer`'s lane landed on, which its menu's
+    /// "Add splice mark here" marks (AddSpliceAt); none from the keyboard or another lane. For
+    /// the tests.
+    std::optional<int64_t> menuFrame(uint8_t layer) const noexcept;
+    /// The bounds of the peak bars the last paint built for layer `layer`'s lane, x in columns
+    /// from the lane's left edge; empty when it drew none, or for a lane out of range. For the
+    /// tests.
+    juce::Rectangle<float> peaksDrawn(uint8_t layer) const;
 
     /// Layer `layer`'s lane menu (the class comment), for the place last right-clicked on it, or
     /// for the keyboard (no place) when the menu was opened by Shift+F10 or not at all. Its
@@ -229,9 +242,6 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     int64_t loopFramesOf(const gg::core::RingParams &ring, double sampleRate) const noexcept;
     /// The head the lane draws at: the snapshot's, run on to now, or the ring view's without one.
     int64_t laneHead(uint8_t layer, const RingView &ring) const noexcept;
-    /// The value of an AddSplice that marks `frame` (the anchor, the head or the selected
-    /// splice's end, when nullopt).
-    float spliceValueFor(uint8_t layer, std::optional<int64_t> frame) const;
     void drawRing(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane, const Palette &pal);
     /// Builds layer `layer`'s menu for `frame` (nullopt: the keyboard's) and shows it.
     void openLaneMenu(uint8_t layer, std::optional<int64_t> frame);
@@ -246,7 +256,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     void drawLane(juce::Graphics &g, uint8_t layer, const Palette &pal);
     void drawPeaks(juce::Graphics &g, uint8_t layer, const LaneGeometry &lane, const Palette &pal);
     void drawRect(juce::Graphics &g, const WindowRect &r, bool ghost, bool oneSided,
-                  juce::Colour colour) const;
+                  juce::Colour color) const;
     void beginDragGesture(Held which);
     void endDrag();
     /// One whole gesture on layer `layer`'s `which`, from `before` (what the lane showed) to
@@ -306,6 +316,7 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     // The marks the last paint drew, per lane (marksDrawn).
     std::array<std::vector<float>, kLaneCount> marks_;
     std::array<int64_t, kLaneCount> headDrawn_{};
+    std::array<std::optional<RingSpan>, kLaneCount> outlined_{};
     // The lane menu's place: the ring frame right-clicked on its layer's lane, or none (the
     // keyboard's, or a Sample lane's).
     uint8_t menuLayer_{0};
@@ -321,9 +332,9 @@ class GrainCanvas final : public juce::Component, public juce::FileDragAndDropTa
     bool began_{false}; // the gesture has begun (a Body drag's waits for its axis)
     float downX_{0.0f}, downY_{0.0f};
     float anchorX_{0.0f}; // the grabbed part's x at the press: Position's x, or the edge's
-    float anchorY_{0.0f}; // and its y: the rectangle's centre, or the edge's
-    float fixedX_{0.0f};  // what a Spray drag measures from: Position's x, or the centre
-    float fixedY_{0.0f};  // what a Pitch Spread drag measures from: the rectangle's centre
+    float anchorY_{0.0f}; // and its y: the rectangle's center, or the edge's
+    float fixedX_{0.0f};  // what a Spray drag measures from: Position's x, or the center
+    float fixedY_{0.0f};  // what a Pitch Spread drag measures from: the rectangle's center
     bool sentAny_{false};
     float lastSent_{0.0f};
     float dragBefore_{0.0f}; // the dragged value as the lane showed it when the gesture began

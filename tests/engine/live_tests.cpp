@@ -1380,7 +1380,7 @@ TEST_CASE("live input wiring and source mode", "[live]")
                             .position = 0.1,
                             .spray = 0.05,
                             .pitchSemitones = 3.0,
-                            .gain = 0.5f}; // stereo 0: every grain centred, both gains exactly 1
+                            .gain = 0.5f}; // stereo 0: every grain centered, both gains exactly 1
 
     const auto render = [&](const float *const *in, uint32_t inChannels) {
         gg::Engine engine(liveConfig());
@@ -2118,6 +2118,7 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
     copyFrames(ring, bigger, r0 - kN, r0);
     writeRamp(ring, r0 + 4096, 512);
     const int64_t head = ring.head();
+    CHECK(ring.oldestHeld() == head - kN); // the 2 s storage holds its window
 
     gg::RingStorage *previous = &bigger; // overwritten
     // A gap past kAdoptCopyFrames, or a storage without a block's slack, is declined.
@@ -2131,6 +2132,9 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
     REQUIRE(previous == nullptr); // the ring owned its first storage
     REQUIRE(ring.head() == head);
     REQUIRE(ring.frames() == 4 * 48000);
+    // The 4 s storage holds the old window alone (row 385's review): nothing older than 2 s
+    // behind the head at the adoption, until the head moves 2 s on.
+    CHECK(ring.oldestHeld() == head - kN);
     REQUIRE(ring.view().slots == bigger.slots());
     gg::LiveSource::Cursor c;
     bool same = true;
@@ -2149,6 +2153,7 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
     }
     // Ring time continues: the next frames land after the head.
     writeRamp(ring, head + 1000, 512);
+    CHECK(ring.oldestHeld() == head - kN); // still the floor: head − N is older
     float l = 0.0f;
     float r = 0.0f;
     REQUIRE(ring.read(static_cast<double>(head + 500), ring.head(), c, l, r));
@@ -2161,6 +2166,9 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
     REQUIRE(previous == &bigger);
     REQUIRE(ring.frames() == 48000);
     const int64_t now = ring.head();
+    CHECK(ring.oldestHeld() == now - 48000); // a shrink: the new N is the bound
+    ring.reset();
+    CHECK(ring.oldestHeld() == 0);
     same = true;
     for (int64_t f = now - 48000 + 1; f <= now - 3; ++f)
     {

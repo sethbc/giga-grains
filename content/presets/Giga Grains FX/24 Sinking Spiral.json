@@ -3,7 +3,7 @@
   "name": "Sinking Spiral",
   "author": "Giga Grains",
   "description": "Resamples its own output an octave down, again and again, into a descending, darkening spiral under your input.",
-  "tags": ["extreme", "dark", "drone", "live-input"],
+  "tags": ["extreme", "dark", "drone"],
   "params": {
     "Mix": 0.7,
     "Size": -2,

@@ -33,7 +33,7 @@ std::string shortName(const std::string &name)
     return name.starts_with(kPrefix) ? name.substr(kPrefix.size()) : name;
 }
 
-/// A macro's value, labelled with its short name.
+/// A macro's value, labeled with its short name.
 ParamValue macroValue(const EditorContext &context, ParamSlot slot)
 {
     return ParamValue(context, slot, shortName(gg::core::paramMeta(slot, context.mode).name));
@@ -221,7 +221,7 @@ void MacroRow::resized()
         slot = slot.reduced(6, 2);
         if (i == kFreezeIndex)
         {
-            // The large toggle: the cell's width, a little more than half its height, centred.
+            // The large toggle: the cell's width, a little more than half its height, centered.
             const int h = std::min(slot.getHeight(), std::max(28, slot.getHeight() * 3 / 5));
             impl_->toggle->setBounds(slot.withSizeKeepingCentre(slot.getWidth(), h));
             continue;

@@ -33,6 +33,12 @@ function (gg_mark_system_includes)
 endfunction ()
 
 add_subdirectory(catch2 EXCLUDE_FROM_ALL)
+# No target here uses C++20 modules. fmt 12.2.0 adds an fmt-module target (FMT_MODULE defaults on
+# where CMake can scan), and its CMake policy range (up to 3.28, CMP0155) makes CMake scan fmt's own
+# C++23 sources for module imports with clang-scan-deps, which CI's extracted LLVM doesn't carry,
+# and which Windows' configure rejects outright. Both are off for fmt and the rest of libs/.
+set(FMT_MODULE OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 add_subdirectory(fmt EXCLUDE_FROM_ALL)
 
 # sst-cpputils and simde must exist before sst-basic-blocks, which links them if present.

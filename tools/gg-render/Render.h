@@ -5,6 +5,7 @@
 #ifndef GG_RENDER_RENDER_H
 #define GG_RENDER_RENDER_H
 
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <string>
@@ -14,6 +15,7 @@
 
 #include "RenderSpec.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/EnableFault.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/metrics/AudioData.h"
 
@@ -54,6 +56,10 @@ struct RenderOptions
     /// the root a saved sample's content path is made relative to.
     std::string mediaDir;
 };
+
+/// What a render reports beside its audio: carry-over row 234's diagnostic, the Processor's
+/// faultCounts() at the render's end (all zero in sample mode, which has no Processor).
+using RenderReport = gg::core::FaultCounts;
 
 /// Renders the spec in its mode, in process() calls of blockSize frames (a part's last call may
 /// be shorter). The output is stereo, and bit-identical for any blockSize.
@@ -150,8 +156,10 @@ struct RenderOptions
 ///   makeInput reject but parseRenderSpec never produces;
 /// - std::bad_alloc if memory runs out.
 /// gg-render exits with status 3, an internal error, for all but BadInput.
+///
+/// `report`, when not null, receives what the render saw beside its audio (RenderReport).
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines,
-                              const RenderOptions &options = {});
+                              const RenderOptions &options = {}, RenderReport *report = nullptr);
 
 /// The routes in effect for a render: `routes` (the factory routes, or a preset's) with each of
 /// the spec's routes (`mod`) set in its slot, a "None" route clearing it. Throws

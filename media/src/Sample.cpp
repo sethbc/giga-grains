@@ -75,13 +75,13 @@ LoadedSample loadSample(const fs::path &file, const core::MachineSettings &setti
         out.error = std::move(decoded.error);
         return out;
     }
-    const auto cancelled = [cancel] {
+    const auto canceled = [cancel] {
         return cancel != nullptr && cancel->load(std::memory_order_relaxed);
     };
     const auto hash = knownHash ? std::move(knownHash) : hashFile(file, cancel);
-    if (cancelled())
+    if (canceled())
     {
-        return failure(file, "cancelled");
+        return failure(file, "canceled");
     }
     if (!hash)
     {
@@ -140,7 +140,7 @@ std::shared_ptr<const PreparedSource> prepare(std::shared_ptr<SampleBuffer> deco
     auto source = PreparedSource::make(std::move(converted), cancel);
     if (source == nullptr)
     {
-        // Cancelled while building the pyramid: nothing to share.
+        // Canceled while building the pyramid: nothing to share.
         return nullptr;
     }
     if (share != nullptr)

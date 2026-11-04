@@ -3,6 +3,7 @@
 // Copyright 2026, the Giga Grains authors (see git history)
 
 #include "gg/core/Processor.h"
+#include "gg/core/Window.h"
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,10 @@ static_assert(kBudgetUnitsPerGrain == gg::kNormalStereoWeight);
 
 namespace
 {
+/// The rising half of this table is the reverb's onset fade (row 302). Built at load, off the
+/// audio thread.
+const HannTable kReverbFade;
+
 /// The configuration the engines would reject, rejected before anything is allocated.
 const ProcessorConfig &validated(const ProcessorConfig &c)
 {
@@ -121,19 +126,32 @@ bool validControl(const ControlEvent &c) noexcept
            std::isfinite(c.value);
 }
 
-/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, and for
-/// AddSplice a finite value.
+/// Whether a command's fields are in range (CommandEvent): a known kind, a layer, for AddSplice a
+/// finite value, and for AddSpliceAt a frame in [0, 2^53].
 bool validCommand(const CommandEvent &c) noexcept
 {
-    return c.kind <= CommandKind::ClearSplices && c.layer < Processor::kLayers &&
-           (c.kind != CommandKind::AddSplice || std::isfinite(c.value));
+    if (c.kind > CommandKind::AddSpliceAt || c.layer >= Processor::kLayers)
+    {
+        return false;
+    }
+    switch (c.kind)
+    {
+    case CommandKind::AddSplice:
+        return std::isfinite(c.value);
+    case CommandKind::AddSpliceAt:
+        return c.value >= 0.0 && c.value <= 0x1.0p53; // NaN fails both
+    case CommandKind::ClearSplices:
+        return true;
+    }
+    return false;
 }
 
 /// Whether two RingMetas are the same: the marks past spliceCount are 0 in both.
 bool sameMeta(const RingMeta &a, const RingMeta &b) noexcept
 {
     return a.head == b.head && a.windowFrames == b.windowFrames && a.spliceCount == b.spliceCount &&
-           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse;
+           a.splices == b.splices && a.frozen == b.frozen && a.framesInUse == b.framesInUse &&
+           a.oldestHeld == b.oldestHeld;
 }
 
 /// v clamped to [0, 1], NaN as 0.
@@ -236,8 +254,9 @@ Processor::Processor(const ProcessorConfig &config)
         base_[s] = clampToRange(s, meta.defaultVal);
     }
     // Publishing (sub-project 5's spec §6.4): the engines' sink is ours for good, and forwards to
-    // setEventSink's after each piece. Each peak strip spans its ring, N = ceil(kLiveSeconds ×
-    // sampleRate) frames.
+    // setEventSink's after each piece. Each peak strip spans the longest ring, ceil(kRingMaxSeconds
+    // × sampleRate) frames, so a Ring Length resize never outgrows it (carry-over row 385): it is
+    // indexed by absolute ring time, so it serves any shorter ring as it is.
     grainQueue_ = std::make_unique<GrainQueue>();
     for (uint8_t L = 0; L < kLayers; ++L)
     {
@@ -263,7 +282,7 @@ Processor::Processor(const ProcessorConfig &config)
             channel.assign(pieceMax_, 0.0f);
         }
         l.overdubGain.assign(pieceMax_, 0.0f);
-        l.peaks.prepare(l.engine.liveFrames());
+        l.peaks.prepare(ringFramesFor(kRingMaxSeconds, config_.sampleRate));
         // The pool's storage bound on the spawns of one block (spec §6.7), each with at most one
         // steal before it (M2 engine spec §6.5).
         l.events.reserve(4 * static_cast<size_t>(engine.grainCapacity));
@@ -997,6 +1016,8 @@ void Processor::reset() noexcept
         publishStorage(*l); // ring time restarted: a read spanning it is retried
     }
     reverb_->reset();
+    reverbPrevActive_ = false;
+    reverbOnsetAt_ = -1;
 }
 
 void Processor::setSourceNow(uint8_t layer, std::shared_ptr<const PreparedSource> s)
@@ -1105,7 +1126,12 @@ bool Processor::applyOffer(Layer &l, const SourceOffer &offer) noexcept
     // over what they set.
     if (offer.hasRing)
     {
-        if (adoptRing(l, offer.ring))
+        if (offer.ring.storage == nullptr && !offer.ring.restore)
+        {
+            // A withdrawn ring (SourceExchange::withdrawRing): nothing to adopt or decline.
+            l.sources.markRingAdopted(offer.ringSerial);
+        }
+        else if (adoptRing(l, offer.ring))
         {
             l.sources.markRingAdopted(offer.ringSerial);
         }
@@ -1157,6 +1183,10 @@ bool Processor::adoptRing(Layer &l, const RingOffer &offer) noexcept
         l.engine.ringResized(); // Position and Spray reach the new length
     }
     publishStorage(l);
+    if (adoptRingHook_)
+    {
+        adoptRingHook_(); // a test's (setAdoptRingHook): between the publication and the retirement
+    }
     // Only now, with the new storage published, may the main thread free the old one: a reader
     // that took the old pointer before the publication copies from it until it sees the epoch
     // change, and collect() runs on the reader's thread, between reads (core::RingRead).
@@ -1227,6 +1257,7 @@ void Processor::publishRing(Layer &l) noexcept
     std::copy(marks.begin(), marks.end(), m.splices.begin());
     m.frozen = l.engineFrozen;
     m.framesInUse = live.framesInUse();
+    m.oldestHeld = live.oldestHeld();
     if (!sameMeta(m, l.metaPushed))
     {
         l.meta.push(m);
@@ -1253,8 +1284,9 @@ void Processor::applyCommands(int64_t b) noexcept
         const CommandEvent &c = pendingCommands_[k];
         Layer &l = *layers_[c.layer]; // validCommand: below kLayers
         LiveSource &live = l.engine.live();
-        // Spec §6.4: a layer that reads a sample ignores them.
-        if (l.kind != SourceMode::Live || !live.enabled())
+        // Spec §6.4: a layer that reads a sample ignores them. A layer whose ring is read takes
+        // them (readsRing: Live or Resample, or Spectral smearing its ring; row 381).
+        if (!readsRing(l.kind, l.engine.hasSampleSource()) || !live.enabled())
         {
             continue;
         }
@@ -1263,12 +1295,18 @@ void Processor::applyCommands(int64_t b) noexcept
             live.clearSplices();
             continue;
         }
+        if (c.kind == CommandKind::AddSpliceAt)
+        {
+            // The frame itself (validCommand: in [0, 2^53]); outside the storage, a duplicate or
+            // a 33rd is ignored.
+            live.addSplice(std::llround(c.value));
+            continue;
+        }
         // The window as the last write left it, which b, the next sample, still reads.
         const int64_t anchor = live.anchorAt(b);
         const int64_t oldest = std::max<int64_t>(0, live.windowOldestAt(b));
         const double room = static_cast<double>(std::max<int64_t>(0, anchor - oldest));
-        const double behind =
-            std::clamp(static_cast<double>(c.value) * config_.sampleRate, 0.0, room);
+        const double behind = std::clamp(c.value * config_.sampleRate, 0.0, room);
         live.addSplice(anchor - std::llround(behind)); // a duplicate or a 33rd is ignored
     }
     pendingCommandCount_ = 0;
@@ -1292,6 +1330,16 @@ uint64_t Processor::loweredGrains() const noexcept
         lowered += l->engine.loweredGrains();
     }
     return lowered;
+}
+
+uint32_t Processor::engineGateFaults() const noexcept
+{
+    uint32_t faults = 0;
+    for (const auto &l : layers_)
+    {
+        faults += l->engine.gateFaults();
+    }
+    return faults;
 }
 
 uint64_t Processor::stolenGrains() const noexcept
@@ -1555,6 +1603,8 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     tapSoftDriven_ = false;
     tapGlideFirst_ = -1;
     tapGlideLast_ = -1;
+    tapPeakFadeFirst_ = -1;
+    tapPeakFadeLast_ = -1;
     takeOffers();
     // The input feeds the rings in both products (M2 sub-project 1's spec §6.2), and the mix in
     // the FX alone (render).
@@ -1825,6 +1875,23 @@ void Processor::renderLayerPiece(uint8_t L, int64_t from, uint32_t n, const floa
     const bool renders = rendering_[L];
     if (renders != l.enabledGiven)
     {
+        // Row 234 (enableFaults()): a flip needs its on ramp's agreement (the expression
+        // rendering_[L] was computed from, re-evaluated from state no task writes), and lands off
+        // the control grid only where a ramp off reaches 0 (on.start + R) or after a jump
+        // (setBase, setBases, reset: start 0). Asserted in Debug, counted in every build; this
+        // branch runs only at a flip, so a render without one never reaches it.
+        const bool agrees = renders == (l.on.to != 0.0f || l.on.at(from, rampSamples_) != 0.0f);
+        const bool onGrid = from % static_cast<int64_t>(kControlGrid) == 0 || l.on.start == 0 ||
+                            (!renders && from == l.on.start + rampSamples_);
+        assert(agrees);
+        assert(onGrid);
+        if (!agrees || !onGrid) [[unlikely]]
+        {
+            if (enableFaults_.fetch_add(1, std::memory_order_relaxed) == 0)
+            {
+                firstEnableFault_ = {L, from, !agrees, !onGrid};
+            }
+        }
         // Spec §6.3: off, the engine spawns nothing and its grains end here; on again, the
         // pending onset is forced to this boundary, so the layer speaks at once.
         l.engine.setEnabled(renders);
@@ -2128,6 +2195,17 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             const float a = amount_.at(t, rampSamples_);
             const float s = drySend_.at(t, rampSamples_);
             const bool active = a != 0.0f; // read by the reverb at a chunk's first sample
+            if ((t & (static_cast<int64_t>(kControlGrid) - 1)) == 0)
+            {
+                // Row 302: a chunk that turns the reverb on after idle ones, at t > 0, starts
+                // the send's fade-in (the room is empty, and a step at its input would click).
+                // The sequence of chunks decides, so the fade is block-size invariant.
+                if (active && !reverbPrevActive_ && t > 0)
+                {
+                    reverbOnsetAt_ = t;
+                }
+                reverbPrevActive_ = active;
+            }
             // Read both inputs before writing either output: out may be in, and a mono input
             // feeds both channels. The instrument's input feeds the rings alone.
             float d[2] = {0.0f, 0.0f};
@@ -2192,6 +2270,22 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                     side[c] = fx ? wet[c] * m : wet[c];
                 }
             }
+            if (reverbOnsetAt_ >= 0)
+            {
+                const int64_t into = t - reverbOnsetAt_;
+                if (into < rampSamples_)
+                {
+                    // The rising half of the Hann window, sin^2, over kRampSeconds.
+                    const float g = kReverbFade.at(0.5 * static_cast<double>(into) /
+                                                   static_cast<double>(rampSamples_));
+                    rIn[0] *= g;
+                    rIn[1] *= g;
+                }
+                else
+                {
+                    reverbOnsetAt_ = -1;
+                }
+            }
             // Reverb 2 sums (L + R)·0.5, which overflows to inf (and its loop to NaN, held until
             // the next clear) past about 8.5e37: a huge but finite dry input sent at 100% would.
             // The wet side is bounded by softLimit; ±1e6 is far past anything audible.
@@ -2215,6 +2309,12 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
                     std::max(std::abs(side[0]), std::abs(side[1])) > 2.0f * ceiling)
                 {
                     tapSoftDriven_ = true;
+                }
+                if (limiter_.fadeToPeakWith(limiterParams_.mode))
+                {
+                    const int64_t at = t - b.callStart;
+                    tapPeakFadeFirst_ = tapPeakFadeFirst_ < 0 ? at : tapPeakFadeFirst_;
+                    tapPeakFadeLast_ = at;
                 }
                 limiter_.process(side[0], side[1], limiterParams_.mode, ceiling,
                                  limiterRelease_.at(t, rampSamples_));

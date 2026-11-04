@@ -17,7 +17,7 @@
 
 #include "../Palette.h"
 #include "gg/ui/EditLayout.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/RouteEdits.h"
 #include "gg/ui/UndoStack.h"
 
@@ -163,7 +163,7 @@ struct RouteList::Impl
             build(static_cast<uint8_t>(i + 1), *rows[i]);
         }
         content.setSize(240, static_cast<int>(rows.size()) * kRowH);
-        applyColours();
+        applyColors();
     }
 
     /// Fills `row`'s target box: "—", then every valid target the product shows, by slot index
@@ -374,7 +374,7 @@ struct RouteList::Impl
 
     /// The boxes, the depth sliders and the clear buttons take the theme's colors (the editor's
     /// palette, found above the list), so a light theme has no dark box in it.
-    void applyColours()
+    void applyColors()
     {
         const Palette &pal = paletteOf(owner);
         const juce::Colour box = pal.header, text = pal.text;
@@ -467,6 +467,12 @@ struct RouteList::Impl
     void refresh()
     {
         const ModRoutes now = routes();
+        // The load count is read at every look, the routes changed or not: a load (or a save)
+        // that leaves the routes as they were still moves it, and the next look must not take
+        // that for a load (row 333's review).
+        const uint64_t loads = context.presetLoads ? context.presetLoads() : 0;
+        const bool loaded = shown.has_value() && loads != loadsSeen;
+        loadsSeen = loads;
         if (shown && *shown == now)
         {
             return;
@@ -478,9 +484,13 @@ struct RouteList::Impl
                 drafts[i].reset(); // the route came by another way: it wins
             }
         }
-        // A route that appeared since the last look (a drop, a redo, the host's patch) comes
-        // into view: the newest one, outlined.
+        // A route that appeared since the last look comes into view, outlined, when it is the
+        // only one that did (a drop, an undo or a redo); a load never selects, whatever it brings
+        // (row 333, the director's answer, 2026-11-02): the plugin's presetLoads count moves at
+        // every preset or state load, in the same main-thread call that sets the routes (read
+        // above).
         uint8_t added = 0;
+        std::size_t appeared = 0;
         if (shown)
         {
             for (std::size_t i = 0; i < now.size(); ++i)
@@ -489,8 +499,13 @@ struct RouteList::Impl
                     (*shown)[i].source == gg::core::ModSource::None)
                 {
                     added = static_cast<uint8_t>(i + 1);
+                    ++appeared;
                 }
             }
+        }
+        if (appeared != 1 || loaded)
+        {
+            added = 0;
         }
         shown = now;
         const Palette &pal = paletteOf(owner);
@@ -518,6 +533,9 @@ struct RouteList::Impl
                                      juce::dontSendNotification);
             if (half)
             {
+                // Not the box's text-when-nothing-selected alone: setSelectedId(0) empties the
+                // text, which that only paints (dimmed); this sets it, so the box reads it (row
+                // 388 (b): the setText isn't redundant).
                 row.target.setText(kChooseTarget, juce::dontSendNotification);
             }
             row.targetLayer.setSelectedId(r.targetLayer < gg::core::kLayers ? r.targetLayer + 1
@@ -526,9 +544,14 @@ struct RouteList::Impl
             row.curve.setSelectedId(static_cast<int>(r.curve) + 1, juce::dontSendNotification);
             if (depthSlot != i + 1) // the slider being dragged shows itself
             {
-                const double range = depthRange(r.target, context.mode);
+                // A loaded depth past the target's span (the core takes any finite one) widens
+                // the slider, so it shows and keeps that depth until the user moves it (row
+                // 330 (a)).
+                const double depth = static_cast<double>(r.depth);
+                const double range = std::max(depthRange(r.target, context.mode),
+                                              std::isfinite(depth) ? std::abs(depth) : 0.0);
                 row.depth.setRange(-range, range, 0.0);
-                row.depth.setValue(static_cast<double>(r.depth), juce::dontSendNotification);
+                row.depth.setValue(depth, juce::dontSendNotification);
             }
             row.sourceLayer.setEnabled(active && gg::core::isPerLayerSource(r.source));
             row.targetLayer.setEnabled(active && gg::core::isLayerTarget(r.target));
@@ -584,7 +607,8 @@ struct RouteList::Impl
     std::array<std::optional<ModRoute>, gg::core::kModSlots> drafts;
     bool refreshing{false}; ///< refresh() sets the controls: their callbacks edit nothing
     uint8_t selected{0};
-    uint8_t depthSlot{0}; ///< the slot whose depth slider is being dragged
+    uint64_t loadsSeen{0}; ///< context.presetLoads() at the last refresh
+    uint8_t depthSlot{0};  ///< the slot whose depth slider is being dragged
     ModRoutes depthBefore{}, depthAfter{};
 };
 
@@ -598,9 +622,9 @@ RouteList::~RouteList() = default;
 
 void RouteList::refresh() { impl_->refresh(); }
 
-void RouteList::parentHierarchyChanged() { impl_->applyColours(); }
+void RouteList::parentHierarchyChanged() { impl_->applyColors(); }
 
-void RouteList::lookAndFeelChanged() { impl_->applyColours(); }
+void RouteList::lookAndFeelChanged() { impl_->applyColors(); }
 
 void RouteList::select(uint8_t slot)
 {

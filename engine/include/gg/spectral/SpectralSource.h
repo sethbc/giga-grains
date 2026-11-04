@@ -12,13 +12,14 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/source/LiveSource.h"
+#include "gg/spectral/SpectralConstants.h"
 
 struct PFFFT_Setup; // pffft's opaque setup (pffft.h); pffft stays private to gg-engine
 
 namespace gg
 {
-/// What one frame of the Spectral Smear reads: the layer's sample when sample[0] != nullptr,
-/// otherwise its live ring.
+/// What one frame of the Spectral Smear reads: the layer's sample when sample[0] != nullptr (with
+/// sampleFrames 0 or less, silence: never the ring), otherwise its live ring.
 struct SpectralMaterial
 {
     /// The sample's channels (sample[1] is ignored when sampleMono, and a null sample[1] counts
@@ -41,15 +42,22 @@ struct SpectralMaterial
 /// clock reaches kH, from one window of N frames of the material:
 /// - a sample: frames from floor(position × (frames − 1)) − N/2 on, position clamped to [0, 1];
 ///   frames outside [0, frames) read 0;
-/// - the ring: frames from floor(R − 256 − N − position × sampleRate) on, where R =
-///   ring->headAt(kH) is the head at the hop itself, clamped so the window lies within
-///   [R − ringFrames, R − 256); frames below 0 or below R − ringFrames read 0.
+/// - the ring: frames from floor(min(E, R − 256) − N − position × sampleRate) on, where R =
+///   ring->headAt(kH) is the head at the hop itself and E = ring->anchorAt(kH) the end of the
+///   ring's window (LiveSource: R at Loop off with no splice, a selected splice's later mark),
+///   clamped to start no earlier than max(ring->windowOldestAt(kH), R − ringFrames) and no later
+///   than min(E, R − 256) − N, the later bound winning (so a window shorter than N + 256 frames
+///   leaves the frame at that start), with ringFrames = ring->readFrames(); frames below 0 or
+///   below R − ringFrames read 0 (the reads are bounded by the storage, not the window: ruling
+///   SP-T12aa). At Loop off with no splice and no shrink, the window is [R − ringFrames, R), so
+///   the frame lies within [R − ringFrames, R − 256).
 ///
 /// Each channel's window is multiplied by the analysis Hann and transformed forward with pffft's
 /// real FFT. Bin b (1 … N/2 − 1) of channel c keeps its magnitude and takes the phase θ =
 /// uniform01(hash(seed, layer, c, Field::SpectralPhase, k × (N/2 + 1) + b)) turns, cos θ and
-/// sin θ from sineDet; DC and Nyquist are kept as they are. The inverse is scaled by 1/N, the
-/// synthesis Hann and 1/kOverlapGain, and overlap-added for spectral time [kH, kH + N). The
+/// sin θ from sineDet; DC and Nyquist keep their phase, scaled by kOverlapGain (they add in
+/// amplitude, so the synthesis' 1/kOverlapGain leaves them at unity). The inverse is scaled by 1/N,
+/// the synthesis Hann and 1/kOverlapGain, and overlap-added for spectral time [kH, kH + N). The
 /// ring's sample at output time t is the accumulation at spectral time t − N, so every sample
 /// written is complete. Mono material: channel 1 copies channel 0.
 ///
@@ -71,15 +79,18 @@ struct SpectralMaterial
 class SpectralSource
 {
   public:
-    /// The output ring: Spray's 2 s, Size's 2 s, the 256-frame margins and a block (spec §6.2).
-    static constexpr double kRingSeconds = 5.0;
+    /// The output ring: Spray's 2 s, Size's 2 s, the 256-frame margins and a block (spec §6.2;
+    /// spectral::kRingSeconds, SpectralConstants.h).
+    static constexpr double kRingSeconds = spectral::kRingSeconds;
     /// The STFT's window, in seconds; fftSizeFor() rounds it to a power of two.
-    static constexpr double kWindowSeconds = 0.085;
+    static constexpr double kWindowSeconds = spectral::kWindowSeconds;
     /// What the synthesis divides out: 0.75 = √(mean(w_a²) × Σ_k w_s(n − kH)²) = √(3/8 × 3/2),
     /// not the 1.5 that Σ_k w_a·w_s sums to. The phases are redrawn every frame, so the
     /// overlapping frames are incoherent and add in power, not in amplitude: dividing by 1.5
     /// would leave a steady material 6 dB down. The intent (spec §6.2) is that a steady material
-    /// keeps its RMS within 1 dB, and 0.75 does (a test).
+    /// keeps its RMS within 1 dB, and 0.75 does (a test). DC and Nyquist, which keep their
+    /// phase, add in amplitude (Σ_k w_a·w_s = 1.5 over a frame's DC gain of 1/2): they are
+    /// scaled by 0.75 before the inverse, so they too come out at unity (row 365; a test).
     static constexpr double kOverlapGain = 0.75;
 
     /// N: the power of two nearest kWindowSeconds × sampleRate (4096 at 44.1 and 48 kHz), at
@@ -87,7 +98,9 @@ class SpectralSource
     static uint32_t fftSizeFor(double sampleRate) noexcept;
 
     /// Allocates everything (not real-time safe). Throws std::invalid_argument unless sampleRate
-    /// is finite and > 0, and std::bad_alloc if pffft can't make its setup or buffers.
+    /// is finite and > 0, std::logic_error if pffft rejects the FFT size (it never does for
+    /// fftSizeFor's powers of two in [128, 2^24]), and std::bad_alloc if pffft can't allocate its
+    /// buffers.
     /// maxBlockSize 0 counts as 1.
     SpectralSource(double sampleRate, uint32_t maxBlockSize);
     ~SpectralSource();
@@ -120,6 +133,11 @@ class SpectralSource
 
     const LiveSource &ring() const noexcept { return ring_; }
 
+    /// The first material frame the last frame computed over ring material read (its window's
+    /// index 0), INT64_MIN when none has been since construction or reset(): kept for the tests,
+    /// which check it against the ring's window at the frame's hop.
+    int64_t lastRingFrameStart() const noexcept { return lastRingFrameStart_; }
+
   private:
     struct SetupDeleter
     {
@@ -134,6 +152,8 @@ class SpectralSource
     // Computes frame k (hop boundary kH) and adds it into the accumulation.
     void computeFrame(const SpectralMaterial &m, double position, uint64_t seed, uint32_t layer,
                       int64_t k) noexcept SST_CPPUTILS_NONBLOCKING;
+    // Zero frame_ outside window indices [lo, hi), the reads' frames outside the material.
+    void clearOutside(int64_t lo, int64_t hi) noexcept SST_CPPUTILS_NONBLOCKING;
     // Fill frame_ with channel c of the window starting at material frame start, times the
     // analysis Hann.
     void readSample(const SpectralMaterial &m, uint32_t c,
@@ -163,6 +183,7 @@ class SpectralSource
     // The output time from which the accumulation is all 0: kH + 2N for the last frame k
     // computed, 0 before any. Inactive from it on, process() writes silence without reading it.
     int64_t pendingUntil_{0};
+    int64_t lastRingFrameStart_{INT64_MIN}; // lastRingFrameStart()
 };
 } // namespace gg
 

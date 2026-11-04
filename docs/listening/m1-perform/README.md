@@ -65,7 +65,7 @@ steps every 0.125 s. It holds there until 5.5 s, then steps back to 0 by 6.5 s.
 enough to leave short silences. A 30 s render at the defaults has 13 spacings over 150 ms, the
 longest 240 ms, which leaves up to 90 ms with no grain sounding. Files with the same seed and
 Density history share the same onsets, so the same holes recur (near 5.45 s in `04` and `06`,
-for example). They are Distribution's behaviour, not a macro's.
+for example). They are Distribution's behavior, not a macro's.
 
 | File | Length | What it is | Listen for |
 |---|---|---|---|
@@ -154,7 +154,7 @@ branch build, installed during validation. Replace it, and the CLAP and VST3, wi
 build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's install).
 
 - [ ] **Both products load in both hosts,** and each opens the Perform view. It has a header
-  (product, preset "Init", Perform, Edit greyed out, "frame ms (avg 60)"), the canvas and the
+  (product, preset "Init", Perform, Edit grayed out, "frame ms (avg 60)"), the canvas and the
   row of eight macros. The instrument also has the loader strip.
 - [ ] **The three remote-controls pages in Bitwig.** Both products show three pages:
   - "Perform": the eight macros, Size, Density, Pitch, Spray, Texture, Freeze, then Feedback

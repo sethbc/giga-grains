@@ -19,7 +19,7 @@ namespace gg::ui
 {
 /// The Perform view's eight macros (sub-project 5's spec §6.1), in remote-control order:
 /// sst-jucegui knobs, and a large toggle for Freeze (Macro 6, stepped). Their component IDs are
-/// "macro.1" .. "macro.8", and each is labelled with its parameter's name less "Macro ".
+/// "macro.1" .. "macro.8", and each is labeled with its parameter's name less "Macro ".
 ///
 /// Each control's data source is an adaptor over the context's base value: an edit (a drag, a
 /// click, the wheel or a key) is a gesture, beginGesture, setValue for each change and

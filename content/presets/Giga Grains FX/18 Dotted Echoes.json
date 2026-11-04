@@ -3,7 +3,7 @@
   "name": "Dotted Echoes",
   "author": "Giga Grains",
   "description": "Short grains on a fixed 375 ms ping-pong delay, a dotted eighth at 120 BPM, their length pulsing with the host's beat (play the transport); made for drum loops.",
-  "tags": ["rhythmic", "percussive", "wide", "live-input"],
+  "tags": ["rhythmic", "percussive", "wide"],
   "params": {
     "Mix": 0.5,
     "Level": 6,

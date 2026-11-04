@@ -548,6 +548,13 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     // retire grains early to make room. Disabled, nothing spawns (and the pool is empty).
     int64_t renderedTo = blockStart;
     const auto spawn = [&](const GrainDraw &d) {
+        // Row 234 (gateFaults()): the gate in effect is the request, applied at process()'s first
+        // frame, so a grain while it is requested off means enabled_ was read wrong. The grain
+        // still goes on: the counter only records it.
+        if (!requestedEnabled_) [[unlikely]]
+        {
+            ++gateFaults_;
+        }
         if (mode_ == SourceMode::Live || mode_ == SourceMode::Spectral)
         {
             // setSourceMode admits Spectral only with the smear.

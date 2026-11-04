@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "RingReader.h"
 #include "SampleLoader.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
@@ -29,47 +30,6 @@
 
 namespace gg::plugin
 {
-/// A copy of part of a layer's ring, read on the main thread without stopping the audio thread
-/// (readRing).
-struct RingCopy
-{
-    std::shared_ptr<SampleBuffer> window; ///< stereo, at the rate given, oldest frame first
-    int64_t oldest{0};                    ///< the ring time of window's first frame
-    int64_t head{0};                      ///< R0: the head the copy is the window as of
-    std::vector<int64_t> marks;           ///< the splice marks inside the copy, as ring times
-};
-
-/// The span of a layer's ring a read takes (readRing), by ring time, as of the head R0 with N the
-/// storage's window:
-/// - the window: [max(0, R0 − N), R0), and with Loop on its newest min(L, N) frames, L the Loop
-///   Length in frames (llround(seconds × rate), at least 1, as the Processor sets it), the Splice
-///   selection aside (Task 8's ruling: a saved ring is this window, Splice reselects on restore);
-/// - `splice` k >= 1 (a capture's): the span from the k-th mark inside the window, oldest first
-///   (D6), to the next mark or R0; k past the count is the last; with no mark inside, the window.
-struct RingSpanRequest
-{
-    bool loop{false};
-    int64_t loopFrames{0};
-    uint32_t splice{0};
-};
-
-/// Reads layer `layer`'s span `request` (RingSpanRequest) through core::RingRead's protocol (spec
-/// §6.4, as Processor.h documents it): the epoch, the storage, the head R0 with acquire order, the
-/// copy, an acquire fence, then the head R1 and the epoch again. A frame f of the copy is the one
-/// written for it when the epoch held and R1 − f <= N (the documented check, frame by frame): so a
-/// copy whose oldest frames the head lapped while it copied is still good from max(from, R1 − N)
-/// on. A read is tried up to 8 times for the whole span (a frozen ring passes at once, a running
-/// one whose head moved during the copy fails the whole-span check), and a try whose epoch held is
-/// kept with its lapped front trimmed (a capture's; a save keeps the window's length and writes
-/// silence over that front instead, MediaSession::save) when it is the last, or when its span is
-/// longer than N − (R1 − R0), so that at that write rate every try would lap it (a whole window of
-/// a running ring: its first try). nullopt with no ring, an
-/// empty span, or the storage replaced under every try. Main thread only: the storage may be read
-/// only on the thread that frees it (Processor::ringRead). Consumes the layer's RingMeta
-/// (Processor::ringMeta, which has one consumer), for the marks.
-std::optional<RingCopy> readRing(const core::Processor &processor, uint8_t layer,
-                                 const RingSpanRequest &request, double rate);
-
 /// An instance's media (M2 sub-project 2's spec §6.3–§6.8), in both products: four
 /// SampleLoaders, one per layer, sharing the instance's memory budget; the rings the session
 /// saves and restores (D1, D8); the Ring Length watcher, which resizes a ring through its layer's
@@ -161,7 +121,9 @@ class MediaSession
     /// layer's loaded Ring Length at `activeRate`, after a check against the budget, as an offer
     /// held from the first sample when the layer's loaded Freeze is on. Inactive (`activeRate`
     /// 0), the rings wait for activate(). A ring that can't be found, whose payload is missing,
-    /// that the cap refuses or that won't decode is left out, with its status. Never throws.
+    /// that the cap refuses or that won't decode is left out, with its status. While active, a
+    /// layer this restore offers no ring for withdraws the restore offer an older one left
+    /// waiting there (SourceExchange::withdrawRing). Never throws.
     /// `state` is taken by value: its AUDI payloads are moved into shared storage that the
     /// restored samples and held rings alias, never copied.
     Restored restore(core::SessionState state, double activeRate) noexcept;
@@ -181,9 +143,13 @@ class MediaSession
     /// The plugin's deactivate(), with the audio thread stopped: the rings of D1 in `processor`
     /// (if any) are kept for the next activation as the frames copied (no encode or hash on the
     /// host's main thread: the next save() makes the WAV bytes, cached while inactive), restored
-    /// there with no decode and converted if its rate differs, as a restore's are; the loaders
-    /// deactivate. Never throws: a ring that can't be kept is lost with its Processor, as
-    /// before.
+    /// there with no decode and converted if its rate differs, as a restore's are; once a save
+    /// has made the bytes, they replace the frames, which are dropped (one copy held against the
+    /// cap), and the activation restores from them (a frozen window a save has just encoded is
+    /// kept as those bytes, never copied). That activation decodes under the cap's decode bound,
+    /// so near a tight cap it may refuse a ring the frames' move would have restored: the price
+    /// of holding the ring once. The loaders deactivate. Never throws: a ring
+    /// that can't be kept is lost with its Processor, as before.
     void deactivate(const core::Processor *processor, const core::ParamValues &values) noexcept;
     /// clap_plugin.on_main_thread, after the plugin has collected its exchanges: the loaders'
     /// finished work, then the Ring Length watcher while active.
@@ -202,9 +168,12 @@ class MediaSession
 
     /// The layer's ring window, or splice `splice` of it (RingSpanRequest, with the layer's Loop
     /// and Loop Length bases), at the active rate (spec §6.4); nullptr, with the status "no ring
-    /// to capture", when the layer has no ring or it is empty.
+    /// to capture", when the layer has no ring or it is empty. With `asPlayed` (the editor's lane
+    /// capture), splice k is the one the engine plays for Splice k (RingSpanRequest::fromStorage);
+    /// without, a capture's own numbering inside the window (SP-T8a).
     std::shared_ptr<const SampleBuffer> captureRing(uint8_t layer, uint32_t splice,
-                                                    const core::Processor &processor);
+                                                    const core::Processor &processor,
+                                                    bool asPlayed = false);
     /// `buffer` becomes layer `targetLayer`'s sample through its loader as an in-memory load
     /// (SampleLoader::loadInMemory): its entry embedded, `wav`, with its WAV bytes' fingerprint
     /// and a payload id; the session saves it by the embed rule. False when the cap refuses it.
@@ -221,6 +190,10 @@ class MediaSession
 
     /// Layer `layer`'s status message (the class comment).
     std::string status(uint8_t layer) const;
+
+    /// The captures folder: the settings file's (read at each call), or
+    /// gg::media::defaultCapturesFolder(). The editor's too.
+    std::filesystem::path capturesFolder() const;
 
     /// The rings encoded (WAV bytes and hash) by save() and deactivate() so far: for tests.
     uint32_t ringsEncoded() const noexcept { return ringsEncoded_; }
@@ -240,8 +213,10 @@ class MediaSession
         std::optional<core::RingEntry> pendingEntry;
         std::shared_ptr<const std::string> pendingBytes; // null: filed, read from its path
         // A ring kept at deactivate, as the frames it copied: pendingEntry has no fingerprint
-        // and pendingBytes is null until the next save() encodes it (then both are set), and
-        // activate() restores these frames, never decoding.
+        // and pendingBytes is null until the next save() encodes it, and activate() restores
+        // these frames, never decoding. Once the bytes exist (that save, or a save's cache at
+        // deactivate), the frames are dropped and activate() restores from the bytes: the
+        // instance holds the ring once (carry-over row 354).
         std::shared_ptr<SampleBuffer> pendingWindow;
         // A ring restored while active, from its offer until the audio thread adopts it or
         // declines it (restoreInFlight): what a save writes for the layer meanwhile, since the
@@ -278,8 +253,11 @@ class MediaSession
         return loaders_[layer]->hasSample() ? SourceMode::Sample : SourceMode::Live;
     }
     void refreshBudget() noexcept;
-    /// The captures folder: the settings', or gg::media::defaultCapturesFolder().
-    std::filesystem::path capturesFolder() const;
+    /// Whether `slot`'s save cache holds the frozen window of storage epoch `epoch` and head
+    /// `head` starting at `oldest` (the class comment's cache): save() and deactivate() then take
+    /// its bytes and copy nothing.
+    static bool cacheHolds(const RingSlot &slot, bool frozen, uint32_t epoch, int64_t head,
+                           int64_t oldest) noexcept;
     /// Restores the held ring of `layer` into `processor` (activate()).
     void restoreHeld(core::Processor &processor, uint8_t layer);
 

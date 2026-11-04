@@ -24,7 +24,7 @@ using Catch::Matchers::WithinAbs;
 
 namespace
 {
-/// The kernel the renderer promises: intensity * max(0, 1 - d^2/r^2), for pixel centres at
+/// The kernel the renderer promises: intensity * max(0, 1 - d^2/r^2), for pixel centers at
 /// integer coordinates.
 float expectedSplat(float cx, float cy, float r, float intensity, uint32_t x, uint32_t y)
 {
@@ -74,7 +74,7 @@ TEST_CASE("splat writes intensity at center and nothing outside radius", "[ui]")
         }
     }
 
-    // A splat between pixel centres weights each pixel by its own distance.
+    // A splat between pixel centers weights each pixel by its own distance.
     splat.clear();
     splat.add(20.5f, 5.25f, 2.5f, 1.0f);
     REQUIRE_THAT(splat.accumAt(20, 5),
@@ -210,7 +210,7 @@ TEST_CASE("resolve saturates monotonically", "[ui]")
     gg::ui::SplatRenderer splat(w, h);
     for (uint32_t x = 0; x < w; ++x)
     {
-        // Radius 0.5 reaches only the pixel under the centre, at full weight.
+        // Radius 0.5 reaches only the pixel under the center, at full weight.
         splat.add(static_cast<float>(x), 0, 0.5f, intensities[x]);
         REQUIRE(splat.accumAt(x, 0) == intensities[x]);
     }
@@ -228,7 +228,7 @@ TEST_CASE("resolve saturates monotonically", "[ui]")
         INFO("intensity " << intensities[x]);
         const uint32_t p = out[x];
         REQUIRE(channel(p, 24) == 255); // opaque
-        // A white tint gives grey: all three channels equal 255 * (1 - exp(-a)), give or take
+        // A white tint gives gray: all three channels equal 255 * (1 - exp(-a)), give or take
         // one step of rounding.
         const double expected = 255.0 * (1.0 - std::exp(-static_cast<double>(intensities[x])));
         for (const int shift : {16, 8, 0})
@@ -328,7 +328,7 @@ TEST_CASE("a capsule is flat along its axis", "[ui]")
     gg::ui::SplatRenderer capsule(w, h);
     capsule.addCapsule(5, 20, 10, 3, 0.7f);
 
-    // On the axis, between the ends, every pixel gets the splat's centre value exactly.
+    // On the axis, between the ends, every pixel gets the splat's center value exactly.
     for (uint32_t x = 5; x <= 20; ++x)
     {
         INFO("pixel " << x);
@@ -454,7 +454,7 @@ TEST_CASE("a capsule at the right edge of a canvas over 16M pixels wide stays on
 TEST_CASE("the banded resolve tints each band", "[ui]")
 {
     // M2's four lanes share one accumulator; the resolve tints each lane's rows with its layer's
-    // colour (spec §6.3). A 4-row canvas, one band per row, one splat per row: each row's pixel
+    // color (spec §6.3). A 4-row canvas, one band per row, one splat per row: each row's pixel
     // carries its band's tint, as the one-tint resolve would give it.
     constexpr uint32_t w = 8, h = 4, stride = 10;
     constexpr uint32_t kPad = 0xDEADBEEFu;

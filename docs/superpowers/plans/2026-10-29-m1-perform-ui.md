@@ -575,12 +575,12 @@ and 10. Task 12 waits for everything that renders.
 - [ ] **Step 1: Write the failing tests.**
   - `splat_tests.cpp`: `"a capsule equals a splat when its ends coincide"` (`addCapsule(10, 10,
     10, 3, 0.7)` matches `add(10, 10, 3, 0.7)` pixel for pixel); `"a capsule is flat along its
-    axis"`: intensity at (x, y) for x0 < x < x1 equals the splat's centre value; clipping and
+    axis"`: intensity at (x, y) for x0 < x < x1 equals the splat's center value; clipping and
     NaN rules as for `add`.
   - `lane_model_tests.cpp` (`[ui]`): `"the fx lane puts the head at the right edge"`: a grain at
     `startPos = head − 8 s` is at x = width/2 (±0.5 px); `"a grain scrolls left with time"`;
     `"pan maps to y"`; `"the scan window follows the position and spray tapers"`: Position
-    0.28967658 (0.25 s) and Spray 0.36033038 (50 ms) give a window centred 0.25 s behind the
+    0.28967658 (0.25 s) and Spray 0.36033038 (50 ms) give a window centered 0.25 s behind the
     head, 0.1 s wide; `positionValueAtX` inverts `scanWindow` within 1e-5 across the lane;
     `"hit testing"` at the edges and body; `"a drag emits begin, values, end once"` (Review
     Focus 5) is Task 11's (it needs the component); here pin the model side:
@@ -690,7 +690,7 @@ and 10. Task 12 waits for everything that renders.
 
 **Files:**
 - Create: `ui/src/GrainCanvas.h`, `ui/src/GrainCanvas.cpp`, `ui/src/MacroRow.h`,
-  `ui/src/MacroRow.cpp`, `ui/src/Theme.h` (the dark style sheet and colours)
+  `ui/src/MacroRow.cpp`, `ui/src/Theme.h` (the dark style sheet and colors)
 - Modify: `ui/src/Editor.cpp` (rewrite the layout: header, canvas, macro row, the instrument's
   loader strip), `ui/include/gg/ui/Editor.h` (`kEditorMinWidth = 640`, `kEditorMinHeight =
   360`), `plugin/src/editor/EditorPlugin.cpp:102-112` (the folder callback returns the
@@ -733,7 +733,7 @@ and 10. Task 12 waits for everything that renders.
     three setValue(Position, …) with values decreasing as x moves left, one end.
   - `"the canvas draws the grains the queue holds"`: push two `GrainVis` into a `GrainQueue`
     and a snapshot, call the canvas's `renderFrame()` (a public method the paint path uses) and
-    read the accumulator (`accumAt`) at the expected capsule centres > 0 and at an empty spot
+    read the accumulator (`accumAt`) at the expected capsule centers > 0 and at an empty spot
     == 0.
   - `"the folder button reports a failed save"`: with `setSampleFolder` returning false, the
     status label shows the returned message (row 198).

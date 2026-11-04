@@ -197,7 +197,9 @@ class Engine
     /// liveSeconds is not finite and >= 0, grainCapacity is above kMaxGrainCapacity, or layer is
     /// 4 or more
     /// (all checked before anything is allocated), or if the ring's storage, N + maxBlockSize
-    /// frames, would exceed 2^40, and std::bad_alloc if the Spectral Smear can't be allocated.
+    /// frames, would exceed 2^40; std::bad_alloc if the Spectral Smear's buffers can't be
+    /// allocated, and std::logic_error if pffft rejects its FFT size (SpectralSource's
+    /// constructor; unreachable for fftSizeFor's sizes).
     explicit Engine(const EngineConfig &config);
 
     /// Not real-time safe: call only while process() is not running. PreparedSource::make, then
@@ -207,7 +209,8 @@ class Engine
     /// nullptr means no source: the schedule keeps running but no grains spawn in Sample mode,
     /// and the grains still sounding, which would read nothing, end at once. That ends the
     /// grains reading the ring too: a source removed entirely is the one hard cut that remains,
-    /// by design. Otherwise grains reading the ring are left alone.
+    /// by design. Otherwise grains reading the ring are left alone. The removal leaves bus2Used()
+    /// raised, so the layer's bus-2 filter rings out rather than adding a second cut.
     ///
     /// The engine owns this source, keeping it alive until the next setSource or its
     /// destruction; takeRetiredSource never hands it back. Sources adopted with adoptSource that
@@ -406,13 +409,20 @@ class Engine
     /// True from the first admission of a bus-1 grain (whichever process() form runs) until
     /// reset() or the enable gate turning off, where the pool is cleared; false at construction.
     /// It stays raised while no grain is on bus 1 any more, so a layer that sums bus2 after its
-    /// filter keeps the filter's tail (extremes spec §6.3).
+    /// filter keeps the filter's tail (extremes spec §6.3). A source removal, setSource(nullptr),
+    /// clears the pool but keeps it raised too, so bus 2's filter rings out.
     bool bus2Used() const noexcept { return bus2Used_; }
     /// Grains admitted at a lower tier than their draw's, by the overload ladder's rung 2 or by
     /// a steal, since construction or reset().
     uint64_t loweredGrains() const noexcept { return lowered_; }
     /// Grains the overload ladder stole to admit another, since construction or reset().
     uint64_t stolenGrains() const noexcept { return stolen_; }
+    /// Carry-over row 234's diagnostic, the engine's side: the grains the schedule emitted while
+    /// the enable gate was requested off, since construction (reset() keeps the count). process()
+    /// applies the request at its first frame and nothing changes it during the call, so a grain
+    /// emitted then means the gate (enabled_) was read as on when it was off: never in a correct
+    /// render. Read it on the thread that calls process(), or after it returns.
+    uint32_t gateFaults() const noexcept { return gateFaults_; }
     /// The source mode in effect: set by the last process() call (see setSourceMode).
     SourceMode sourceMode() const noexcept { return mode_; }
     /// N, the live ring's length in frames; 0 without a ring.
@@ -603,6 +613,7 @@ class Engine
     uint64_t dropped_{0};
     uint64_t lowered_{0};
     uint64_t stolen_{0};
+    uint32_t gateFaults_{0}; // gateFaults(): raised on a branch a correct render never takes
 };
 } // namespace gg
 

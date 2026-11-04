@@ -188,7 +188,7 @@ struct SourceSpec
 
 /// The engine's gg::CloudParams as the spec spells them, with M0's names: grainRateHz is the
 /// density, positionJitter the spray, and the duration is in milliseconds. Stereo isn't in the
-/// spec, so every grain is centred. Every value is a finite number; the engine clamps them to
+/// spec, so every grain is centered. Every value is a finite number; the engine clamps them to
 /// the ranges documented on gg::CloudParams. grainDurationMs is at most kMaxSeconds · 1000,
 /// which also bounds the release tail.
 struct StreamSpec
@@ -299,7 +299,7 @@ struct ControlSpec
     /// "modWheel" (CC 1), "aftertouch" (channel pressure) or "pitchBend": the mod matrix's Mod
     /// Wheel, Aftertouch and Pitch Bend sources.
     std::string kind;
-    double value{0.0};  ///< 0..1; pitch bend's centre is 0.5.
+    double value{0.0};  ///< 0..1; pitch bend's center is 0.5.
     uint8_t channel{0}; ///< 0..15; optional in the spec, 0 by default.
 
     friend bool operator==(const ControlSpec &, const ControlSpec &) = default;

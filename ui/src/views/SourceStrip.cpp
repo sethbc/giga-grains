@@ -7,7 +7,7 @@
 #include <algorithm>
 
 #include "../Palette.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/Rings.h"
 
 namespace gg::ui

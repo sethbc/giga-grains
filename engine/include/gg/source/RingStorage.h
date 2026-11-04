@@ -73,10 +73,9 @@ static_assert(kRingMaxLevels == 4);
 class RingStorage
 {
   public:
-    /// The guard slots past the capacity, C .. C + 14 (LiveSource's kGuardFrames), and past each
-    /// level's.
+    /// The guard slots past the capacity, C .. C + 14, and past each level's.
     static constexpr int64_t kGuardFrames = 15;
-    /// The half-band's half length, h: the frames its sum reaches on each side of its centre.
+    /// The half-band's half length, h: the frames its sum reaches on each side of its center.
     static constexpr int64_t kHalfbandHalf = (kHalfbandTaps - 1) / 2;
     /// The most ring frames a level may lag the head by (spec §6.9): LiveSource::kHeadMargin.
     static constexpr int64_t kRingLevelLagLimit = 256;

@@ -6,21 +6,21 @@
 
 #include <cstddef>
 
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 
 namespace gg::ui
 {
 namespace
 {
-/// The layers' colours, opaque.
-std::array<juce::Colour, 4> layerColours()
+/// The layers' colors, opaque.
+std::array<juce::Colour, 4> layerColors()
 {
-    std::array<juce::Colour, 4> colours;
-    for (std::size_t i = 0; i < colours.size(); ++i)
+    std::array<juce::Colour, 4> colors;
+    for (std::size_t i = 0; i < colors.size(); ++i)
     {
-        colours[i] = juce::Colour(0xff000000u | kLayerTints[i]);
+        colors[i] = juce::Colour(0xff000000u | kLayerTints[i]);
     }
-    return colours;
+    return colors;
 }
 
 Palette makeDark()
@@ -41,7 +41,7 @@ Palette makeDark()
     p.freeze = juce::Colour(0xff7fb4ff);
     p.feedback = juce::Colour(0xffff6b8b);
     p.notice = juce::Colour(0xfff0e442); // Okabe–Ito's yellow
-    p.layers = layerColours();
+    p.layers = layerColors();
     p.sourceFamilies = {juce::Colour(0xfff0e442), juce::Colour(0xffd55e00),
                         juce::Colour(0xff0072b2), juce::Colour(0xff999999), p.text};
     return p;
@@ -49,7 +49,7 @@ Palette makeDark()
 
 Palette makeLight()
 {
-    // sst-jucegui's light sheet's surfaces; the canvas's colours are the dark palette's (D9).
+    // sst-jucegui's light sheet's surfaces; the canvas's colors are the dark palette's (D9).
     Palette p = makeDark();
     p.background = juce::Colour(0xfff2f3f5);
     p.header = juce::Colour(0xffe6e8ec);

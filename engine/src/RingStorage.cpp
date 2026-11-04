@@ -48,7 +48,7 @@ RingStorage::RingStorage(int64_t frames, uint32_t maxBlockSize)
 void RingStorage::cascade(int64_t m) noexcept
 {
     GG_FP_CONTRACT_OFF
-    constexpr int64_t kCentre = kHalfbandHalf;
+    constexpr int64_t kCenter = kHalfbandHalf;
     const uint32_t count = std::min(levelCount_, kMaxLevels); // the arrays' bound, for GCC 13
     for (uint32_t n = 1; n < count; ++n)
     {
@@ -56,14 +56,14 @@ void RingStorage::cascade(int64_t m) noexcept
         // stored: the level above holds at least 2 × kMinLevelFrames of them.
         const float *const src = levelSlots_[n - 1];
         const int64_t srcCapacity = levelCapacity_[n - 1];
-        // decimateHalfband's sum, in its order: the taps at even k ascending, the centre tap
+        // decimateHalfband's sum, in its order: the taps at even k ascending, the center tap
         // (k = 27, the frame 2m itself) between k = 26 and k = 28, every other tap zero and
         // skipped, as are the frames before 0 (k below 27 − 2m); added from +0.
-        const int64_t centreSlot = (2 * m) % srcCapacity;
-        const int64_t firstEven = std::max<int64_t>(0, kCentre - 2 * m + 1); // even, frame >= 0
+        const int64_t centerSlot = (2 * m) % srcCapacity;
+        const int64_t firstEven = std::max<int64_t>(0, kCenter - 2 * m + 1); // even, frame >= 0
         float sumL = 0.0f;
         float sumR = 0.0f;
-        const int64_t first = centreSlot - kCentre; // tap 0's slot, unwrapped
+        const int64_t first = centerSlot - kCenter; // tap 0's slot, unwrapped
         if (first >= 0 && first + kHalfbandTaps <= srcCapacity)
         {
             // Every tap's slot is first + k, none wrapped: the same products and sums, in the same
@@ -71,7 +71,7 @@ void RingStorage::cascade(int64_t m) noexcept
             // sanitizer builds, where every live-ring test pays this per frame written, most).
             const float *const at = src + 2 * first;
             const float *const h = kHalfband.data();
-            for (int64_t k = firstEven; k < kCentre; k += 2)
+            for (int64_t k = firstEven; k < kCenter; k += 2)
             {
                 const float productL = h[k] * at[2 * k];
                 const float productR = h[k] * at[2 * k + 1];
@@ -79,12 +79,12 @@ void RingStorage::cascade(int64_t m) noexcept
                 sumR = sumR + productR;
             }
             {
-                const float productL = h[kCentre] * at[2 * kCentre];
-                const float productR = h[kCentre] * at[2 * kCentre + 1];
+                const float productL = h[kCenter] * at[2 * kCenter];
+                const float productR = h[kCenter] * at[2 * kCenter + 1];
                 sumL = sumL + productL;
                 sumR = sumR + productR;
             }
-            for (int64_t k = kCentre + 1; k < kHalfbandTaps; k += 2)
+            for (int64_t k = kCenter + 1; k < kHalfbandTaps; k += 2)
             {
                 const float productL = h[k] * at[2 * k];
                 const float productR = h[k] * at[2 * k + 1];
@@ -95,7 +95,7 @@ void RingStorage::cascade(int64_t m) noexcept
         else
         {
             const auto add = [&](int64_t k) noexcept {
-                int64_t s = centreSlot + (k - kCentre);
+                int64_t s = centerSlot + (k - kCenter);
                 s += s < 0 ? srcCapacity : (s >= srcCapacity ? -srcCapacity : 0);
                 const float h = kHalfband[static_cast<std::size_t>(k)];
                 const float productL = h * src[2 * s];
@@ -103,12 +103,12 @@ void RingStorage::cascade(int64_t m) noexcept
                 sumL = sumL + productL;
                 sumR = sumR + productR;
             };
-            for (int64_t k = firstEven; k < kCentre; k += 2)
+            for (int64_t k = firstEven; k < kCenter; k += 2)
             {
                 add(k);
             }
-            add(kCentre);
-            for (int64_t k = kCentre + 1; k < kHalfbandTaps; k += 2)
+            add(kCenter);
+            for (int64_t k = kCenter + 1; k < kHalfbandTaps; k += 2)
             {
                 add(k);
             }
@@ -124,11 +124,11 @@ void RingStorage::cascade(int64_t m) noexcept
             dst[2 * (capacity + slot) + 1] = sumR;
         }
         // Level n + 1's frame m' completes with level n's frame 2m' + 27.
-        if (m < kCentre || ((m - kCentre) & 1) != 0)
+        if (m < kCenter || ((m - kCenter) & 1) != 0)
         {
             return;
         }
-        m = (m - kCentre) >> 1;
+        m = (m - kCenter) >> 1;
     }
 }
 

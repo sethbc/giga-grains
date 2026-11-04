@@ -16,13 +16,13 @@
 namespace gg::ui
 {
 /// The XY morph pad (M2 sub-project 6's spec §6.3), component ID "pad": Morph X across, Morph Y
-/// up, in the largest square the component holds, centred. The four quadrants are shaded in their
-/// layers' colours by morphWeights at the pad's position (with the layers' On switches), and the
+/// up, in the largest square the component holds, centered. The four quadrants are shaded in their
+/// layers' colors by morphWeights at the pad's position (with the layers' On switches), and the
 /// corners carry the layers' letters, A bottom-left, B bottom-right, C top-left, D top-right.
 ///
 /// **Edits.** A drag is one gesture on both parameters: beginGesture(MorphX), beginGesture
 /// (MorphY), the pair of values at each move, endGesture of both, and one undo entry ("Morph")
-/// when the editor has an undo stack. A double-click returns the pad to the centre, (0.5, 0.5),
+/// when the editor has an undo stack. A double-click returns the pad to the center, (0.5, 0.5),
 /// and the arrow keys move it by 1/100 (1/1000 with Shift), each press a gesture of its own.
 ///
 /// Message thread only. The context is the editor's (see EditorContext): read at each use.

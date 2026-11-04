@@ -108,7 +108,7 @@ void flushParams(const gg::test::PluginUnderTest &plugin,
     plugin.flush(list.list());
 }
 
-// A stub host that offers only clap.log, and counts the host-misbehaviour reports it receives.
+// A stub host that offers only clap.log, and counts the host-misbehavior reports it receives.
 class LoggingHost
 {
   public:
@@ -149,7 +149,7 @@ class LoggingHost
 };
 // A stub host that offers clap.tail and counts its tail.changed calls, which must never come
 // (ruling R-T7a: the tail is a constant per product). It also offers clap.log, so that a test
-// querying the tail before activation (which clap-helpers reports as host misbehaviour) logs
+// querying the tail before activation (which clap-helpers reports as host misbehavior) logs
 // nothing to the console.
 class TailHost
 {
@@ -1195,12 +1195,12 @@ TEST_CASE("midi controls and velocity reach the processor", "[plugin]")
     auto clapOn = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
     clapOn.velocity = 0.5;
     const auto wheel = gg::test::midiEvent(0xB0, 1, 64, 0);
-    const auto bendCentre = gg::test::midiEvent(0xE0, 0x00, 0x40, 0);
+    const auto bendCenter = gg::test::midiEvent(0xE0, 0x00, 0x40, 0);
     const auto pressure = gg::test::midiEvent(0xD3, 100, 0, 0);
     gg::test::InputEvents first;
     first.add(&clapOn.header);
     first.add(&wheel.header);
-    first.add(&bendCentre.header);
+    first.add(&bendCenter.header);
     first.add(&pressure.header);
     REQUIRE(plugin.process(256, in.data(), out.data(), first.list()) == CLAP_PROCESS_CONTINUE);
     CHECK(source(ModSource::ModWheel) == 64.0f / 127.0f);
@@ -1711,7 +1711,8 @@ TEST_CASE("a spectral layer renders through the factory in both products", "[plu
     }
     REQUIRE(plugin.activate(48000.0, 512));
     const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
-    float peak = 0.0f;
+    double settledSquares = 0.0; // blocks 64 to 191, after the STFT and the grains settle
+    float firstBlockPeak = 0.0f;
     bool finite = true;
     for (int b = 0; b < 192; ++b)
     {
@@ -1729,12 +1730,25 @@ TEST_CASE("a spectral layer renders through the factory in both products", "[plu
             for (const float v : *ch)
             {
                 finite = finite && std::isfinite(v);
-                peak = std::max(peak, std::abs(v));
+                if (b == 0)
+                {
+                    firstBlockPeak = std::max(firstBlockPeak, std::abs(v));
+                }
+                if (b >= 64)
+                {
+                    settledSquares += static_cast<double>(v) * v;
+                }
             }
         }
     }
+    const double rms = std::sqrt(settledSquares / (128.0 * 512.0 * 2.0));
+    INFO("settled RMS " << rms << " (" << 20.0 * std::log10(rms) << " dBFS)");
     CHECK(finite);
-    CHECK(peak > 1e-4f);
+    CHECK(rms > 0.05); // measured 0.222 (instrument) and 0.314 (FX), about 13 dB of margin
+    if (isFx)
+    {
+        CHECK(firstBlockPeak == 0.0f); // one block is shorter than the first STFT window
+    }
 }
 
 TEST_CASE("ui ring commands apply at the next process call", "[plugin]")

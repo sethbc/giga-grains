@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -47,7 +48,7 @@ float ceilingGain(float dB)
     return static_cast<float>(gg::exp2Det(static_cast<double>(dB) * kLog2Of10 / 20.0));
 }
 
-// Four Sample layers over four sines at the pad's centre, Mix 1, hot (Level +12 dB): the wet sum
+// Four Sample layers over four sines at the pad's center, Mix 1, hot (Level +12 dB): the wet sum
 // is well past 0.5 and the reverb idle.
 void hotLayers(Processor &p)
 {
@@ -656,4 +657,101 @@ TEST_CASE("the delay and limiter do not allocate", "[core][fx][rt]")
             REQUIRE(allocations == 0);
         }
     }
+}
+
+TEST_CASE("the delay's echo through the processor moves without a step", "[core][fx]")
+{
+    // Row 369. The same render with Delay Amount 1 and 0 (no reverb, no feedback): the difference
+    // is the delay's return alone. Delay Time moves from 100 ms to 50 ms mid-render; the read
+    // glides at half a sample a sample, so the echo's slope is at most 1.5 times the wet's, and no
+    // step of it after the move is more than 1.6 times the Amount 0 render's own largest.
+    constexpr int64_t kFrames = 24000, kMove = 12000;
+    const auto renderWith = [&](float amount) {
+        Processor p({kRate, 4096, 41, Mode::Fx});
+        hotLayers(p);
+        p.setBase(ParamSlot::ReverbAmount, 0.0f);
+        p.setBase(ParamSlot::DelayAmount, amount);
+        p.setBase(ParamSlot::DelayFeedback, 0.0f);
+        p.setBase(ParamSlot::DelayTime, -3.3219281f); // 100 ms
+        const std::vector<TimedEvent> events{{kMove, ParamSlot::DelayTime, false, -4.3219281}};
+        Stereo out = silence(kFrames);
+        render(p, nullptr, 0, kFrames, {256}, events, out);
+        return out;
+    };
+    const Stereo dry = renderWith(0.0f);
+    const Stereo wet = renderWith(1.0f);
+    REQUIRE(peakIn(dry.left, 0, kFrames) > 0.1f);
+    std::vector<float> echo(kFrames);
+    for (size_t i = 0; i < echo.size(); ++i)
+    {
+        echo[i] = wet.left[i] - dry.left[i];
+    }
+    REQUIRE(allFinite(echo));
+    CHECK(peakIn(echo, kMove, kFrames) > 0.05f);
+    const float own = largestStep(dry.left, 0, kFrames);
+    CHECK(largestStep(echo, kMove, kFrames) <= 1.6f * own);
+}
+
+TEST_CASE("a bus filter's type change back during a fade turns the fade", "[core][fx][buses]")
+{
+    // Row 370 (extremes spec §6.3). Low-pass to high-pass at cell 0 and back at cell 5, 160
+    // samples into the 480-sample fade: the fade turns from where it stands, so no step is larger
+    // than the fade's own slope allows, and 160 samples later (the weight back to zero) the
+    // low-pass instance, never reset, is the no-change render's bits. A third type waits.
+    constexpr uint32_t kRamp = 480;
+    constexpr int64_t kFrames = 2400;
+    const auto sineAt = [](int64_t i) {
+        return 0.5f * static_cast<float>(std::sin(2.0 * std::numbers::pi * 300.0 *
+                                                  static_cast<double>(i) / kRate));
+    };
+    using gg::core::BusFilterType;
+    const auto run = [&](const std::vector<std::pair<int64_t, BusFilterType>> &requests) {
+        gg::core::fx::BusFilter f;
+        f.prepare(kRate, kRamp);
+        f.jump(BusFilterType::LowPass);
+        std::vector<float> out(kFrames);
+        BusFilterType want = BusFilterType::LowPass;
+        for (int64_t i = 0; i < kFrames; ++i)
+        {
+            if (i % 32 == 0)
+            {
+                for (const auto &[at, type] : requests)
+                {
+                    if (at == i)
+                    {
+                        want = type;
+                    }
+                }
+                f.setCell(want, 2000.0f, 0.0f);
+            }
+            float l = sineAt(i), r = l;
+            f.process(l, r);
+            out[static_cast<size_t>(i)] = l;
+        }
+        return out;
+    };
+    const std::vector<float> steady = run({});
+    const std::vector<float> turned =
+        run({{0, BusFilterType::HighPass}, {160, BusFilterType::LowPass}});
+    REQUIRE(allFinite(turned));
+    const float slope = largestStep(steady, 0, kFrames);
+    CHECK(largestStep(turned, 0, kFrames) <= 1.05f * slope);
+    // The high-pass was really heard (a 300 Hz sine is far under its 2 kHz cutoff).
+    bool differs = false;
+    for (int64_t i = 100; i < 320; ++i)
+    {
+        differs = differs || turned[static_cast<size_t>(i)] != steady[static_cast<size_t>(i)];
+    }
+    CHECK(differs);
+    for (int64_t i = 321; i < kFrames; ++i)
+    {
+        REQUIRE(turned[static_cast<size_t>(i)] == steady[static_cast<size_t>(i)]);
+    }
+
+    // A third type asked during the fade waits: the fade to the high-pass completes, then
+    // the band-pass fades in, all finite and without a step beyond the sine's own.
+    const std::vector<float> third =
+        run({{0, BusFilterType::HighPass}, {160, BusFilterType::BandPass}});
+    REQUIRE(allFinite(third));
+    CHECK(largestStep(third, 0, kFrames) <= 1.05f * slope);
 }

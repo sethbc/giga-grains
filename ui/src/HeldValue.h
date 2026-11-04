@@ -9,9 +9,19 @@
 
 namespace gg::ui
 {
-/// Wall time in seconds, from any steady origin: the UI's clock for holds and extrapolation.
+/// The tests' clock seam (carry-over row 388 (f)): while set, wallSeconds() returns what it
+/// returns, so a test steps the time between key presses instead of racing the real clock. Null
+/// (the steady clock) in the product. Message thread only.
+inline double (*wallClockForTests)() noexcept = nullptr;
+
+/// Wall time in seconds, from any steady origin: the UI's clock for holds, extrapolation and the
+/// undo history's nudge merging.
 inline double wallSeconds() noexcept
 {
+    if (wallClockForTests != nullptr)
+    {
+        return wallClockForTests();
+    }
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }

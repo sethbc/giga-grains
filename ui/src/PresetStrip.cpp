@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "PresetColours.h"
+#include "PresetColors.h"
 
 namespace gg::ui
 {
@@ -55,7 +55,7 @@ void PresetStrip::applyPalette()
     const Palette &palette = paletteOf(*this);
     for (juce::TextButton *button : {&prev_, &name_, &next_})
     {
-        colourButton(*button, palette);
+        colorButton(*button, palette);
     }
     name_.setColour(juce::TextButton::textColourOffId, palette.text);
 }

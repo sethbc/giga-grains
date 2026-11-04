@@ -635,7 +635,7 @@ void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, u
 
 /// Instrument and FX mode: the plugin's Processor, fed as a host feeds it.
 gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::string> *eventLines,
-                                       const RenderOptions &options)
+                                       const RenderOptions &options, RenderReport *report)
 {
     const bool fx = spec.mode == RenderMode::Fx;
     const gg::core::Mode mode = fx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
@@ -1064,6 +1064,19 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
             throw BadInput(fmt::format("nothing to capture at {} s: layer {}'s ring is empty",
                                        op.timeSeconds, letterOf(op.layer)));
         }
+        if (op.into)
+        {
+            // Refused before anything is allocated: the capture's cost (what setSource will
+            // charge for it) less the source it replaces.
+            const uint64_t cost =
+                gg::media::sampleBytes(w.frames, 2, true, gg::RingStorage::levelCountFor(w.frames));
+            const uint64_t freed = sourceCost[*op.into];
+            const uint64_t need = cost > freed ? cost - freed : 0;
+            if (!budget.fits(need))
+            {
+                throw BadInput(budget.refusal(need));
+            }
+        }
         const auto buffer = ringBuffer(processor, op.layer, w, spec.sampleRate);
         if (!op.file.empty())
         {
@@ -1166,6 +1179,10 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     {
         saveSession(processor, spec, capMiB, sampleEntries, captured, options);
     }
+    if (report != nullptr)
+    {
+        *report = processor.faultCounts();
+    }
     return out;
 }
 } // namespace
@@ -1184,8 +1201,12 @@ std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset)
 }
 
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines,
-                              const RenderOptions &options)
+                              const RenderOptions &options, RenderReport *report)
 {
+    if (report != nullptr)
+    {
+        *report = {};
+    }
     if (spec.mode == RenderMode::Sample)
     {
         if (!options.saveStatePath.empty())
@@ -1195,6 +1216,6 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
         }
         return renderSample(spec, eventLines);
     }
-    return renderProcessor(spec, eventLines, options);
+    return renderProcessor(spec, eventLines, options, report);
 }
 } // namespace gg::render

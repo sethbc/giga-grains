@@ -10,14 +10,17 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Delay.h"
 #include "gg/core/Diffuser.h"
+#include "gg/core/EnableFault.h"
 #include "gg/core/GrainQueue.h"
 #include "gg/core/LatestValue.h"
 #include "gg/core/LivePeaks.h"
@@ -99,7 +102,7 @@ struct ControlEvent
     uint32_t offset;  ///< Frames from the start of the call. A call's controls are sorted by it.
     ControlKind kind; ///< Out of range: the event is ignored.
     int16_t channel;  ///< 0..15 or −1 (any); other values make it ignored. Not otherwise read yet.
-    float value;      ///< 0..1, clamped to it (pitch bend's centre is 0.5); NaN or ±∞ ignored.
+    float value;      ///< 0..1, clamped to it (pitch bend's center is 0.5); NaN or ±∞ ignored.
 };
 
 /// What a CommandEvent does to its layer's ring (M2 sub-project 2's spec §6.4).
@@ -107,23 +110,32 @@ enum class CommandKind : uint8_t
 {
     AddSplice,    ///< Marks the ring `value` seconds behind the window's end.
     ClearSplices, ///< Removes every mark.
+    AddSpliceAt,  ///< Marks ring frame `value` itself (the editor's click; carry-over row 388 (m)).
 };
 
 /// A ring command inside one process() call (spec §6.4): what a parameter can't carry. It joins
 /// the control grid as a parameter event does, and applies at its boundary b: AddSplice marks
 /// ring time anchorAt(b) − value × sampleRate (LiveSource::anchorAt: the head, or a selected
 /// splice's end), clamped into the window [max(0, its oldest frame), anchorAt(b)]; a mark on an
-/// existing one, or a 33rd, is ignored (LiveSource::addSplice). ClearSplices empties the layer's
-/// marks. A command on a layer that reads a sample, on a layer past kLayers, of an unknown kind,
-/// or an AddSplice whose value isn't finite is ignored, and takes no place in its group; every
-/// command after a group's Processor::kMaxGroupCommands-th valid one is ignored too (the cap
-/// counts the valid commands alone).
+/// existing one, or a 33rd, is ignored (LiveSource::addSplice). AddSpliceAt marks ring frame
+/// llround(value) itself, whatever the head has done since the editor chose it: it is ignored
+/// outside the storage [max(0, R − N), R] at its boundary, on an existing mark or as a 33rd
+/// (LiveSource::addSplice), and its value must be finite and in [0, 2^53], where a double holds
+/// every frame exactly. ClearSplices empties the layer's marks. A command on a layer whose ring
+/// nothing reads (readsRing: a Sample layer, or a Spectral one with a sample; a Spectral layer
+/// smearing its ring takes them), on a layer past kLayers, of an unknown kind, an AddSplice whose
+/// value isn't finite or an AddSpliceAt whose value is out of its range is ignored, and takes no
+/// place in its group; every command after a group's Processor::kMaxGroupCommands-th valid one is
+/// ignored too (the cap counts the valid commands alone).
 struct CommandEvent
 {
     uint32_t offset; ///< Frames from the start of the call. A call's commands are sorted by it.
     CommandKind kind;
     uint8_t layer; ///< 0..3, A to D.
-    float value;   ///< AddSplice: seconds behind the anchor (negative counts as 0).
+    /// AddSplice: seconds behind the anchor (negative counts as 0). AddSpliceAt: the ring frame.
+    /// A double, so a frame is exact to 2^53; gg-render's and the tests' float seconds widen to it
+    /// exactly, as Processor::applyCommands took them before.
+    double value;
 };
 
 /// What the main thread needs to read a layer's ring without stopping the audio thread (spec
@@ -166,6 +178,9 @@ struct RingMeta
     std::array<int64_t, kMaxSplices> splices{};
     bool frozen{false};
     int64_t framesInUse{0};
+    /// The oldest ring frame the storage holds (LiveSource::oldestHeld): after a grow, frames
+    /// between it and head − N are in the window but were never copied (carry-over row 385).
+    int64_t oldestHeld{0};
 };
 
 /// What both plugins and gg-render run: the instance, real-time safe (spec §5, §6.1–§6.4; M2
@@ -764,6 +779,13 @@ class Processor
     /// its spawn, so the sinks see the steal without it; no schedule the engine admits gets there,
     /// and the dropped spawn is counted in droppedGrainEvents().
     void setStealSink(GrainStealSink sink, void *ctx) noexcept;
+    /// A test's hook into a ring adoption (carry-over row 351), for tests only, never set on a
+    /// host's path: called on the audio thread inside an adoption (the class comment's ring
+    /// exchange), after the new storage is published and before the storage it replaced is
+    /// retired, so a test can read and collect there, where the two threads' order would
+    /// otherwise put a read only by chance. Empty, as it is unless a test sets one, it costs a
+    /// branch per adoption. Call it while process() isn't running.
+    void setAdoptRingHook(std::function<void()> hook) { adoptRingHook_ = std::move(hook); }
 
     /// Turns publishing on or off (the class comment): the editor's, on the main thread, as it
     /// opens and closes. It takes effect from the next process() call's start. Turning it off
@@ -776,8 +798,9 @@ class Processor
     GrainQueue &grainQueue() noexcept { return *grainQueue_; }
     /// The latest UiSnapshot, for the editor (the buffer's consumer).
     SnapshotBuffer &snapshot() noexcept { return snapshot_; }
-    /// The peak strip of layer `layer`'s live ring (`layer` below kLayers), kLiveSeconds long
-    /// (ceil(kLiveSeconds × sampleRate) frames), written on every call whether or not publishing
+    /// The peak strip of layer `layer`'s live ring (`layer` below kLayers), as long as the longest
+    /// ring (ringFramesFor(kRingMaxSeconds, sampleRate) frames: about 0.9 MB a layer at 48 kHz),
+    /// so it holds a whole ring of any Ring Length; written on every call whether or not publishing
     /// is on, and whether or not the layer is on (the class comment), in both products. Any
     /// thread may read it. livePeaks() is layer A's.
     const LivePeaks &livePeaks(uint8_t layer) const noexcept { return layerAt(layer).peaks; }
@@ -815,6 +838,33 @@ class Processor
     /// §6.5): since construction or the last reset().
     uint64_t loweredGrains() const noexcept;
     uint64_t stolenGrains() const noexcept;
+
+    /// Carry-over row 234's diagnostic (a fault seen only in CI's x86_64 slice under Rosetta): the
+    /// layer enable flips since construction (reset() keeps the count) that broke either of two
+    /// invariants. The flip's `renders` (rendering_, fixed before any task runs) must agree with
+    /// its on ramp re-evaluated from state no task writes: if not, one expression gave two answers
+    /// from unchanged state (the machine, or with a pool a missing happens-before). And a flip
+    /// falls on the control grid, where a ramp off reaches 0 (on.start + the ramp length) or after
+    /// a jump (setBase, setBases, reset: start 0): if not, the on ramp itself moved off the grid,
+    /// a code fault. 0 in every correct render. Debug builds also assert both; this counts them
+    /// in every build, Release included. A relaxed load: any thread may read it.
+    uint32_t enableFaults() const noexcept { return enableFaults_.load(std::memory_order_relaxed); }
+
+    /// The first flip enableFaults() counted (gg::core::EnableFault: its layer, its piece's first
+    /// frame, and which invariant it broke). All zero and false while enableFaults() is 0. Read it
+    /// on the audio thread, or on a thread that synchronizes with the process() call that wrote it
+    /// (tests read it after process() returns).
+    using EnableFault = gg::core::EnableFault;
+    EnableFault firstEnableFault() const noexcept { return firstEnableFault_; }
+    /// The four engines' Engine::gateFaults(), summed: row 234's other side, a grain an engine
+    /// spawned with its gate requested off (a path enableFaults() does not see). 0 in every
+    /// correct render. Read it on the audio thread or after process() returns.
+    uint32_t engineGateFaults() const noexcept;
+    /// The three above together, for describeFaults() (gg/core/EnableFault.h).
+    FaultCounts faultCounts() const noexcept
+    {
+        return {enableFaults(), firstEnableFault(), engineGateFaults()};
+    }
     /// Layer `layer`'s Engine::activeGrains() (`layer` below kLayers), for tests.
     uint32_t layerActiveGrains(uint8_t layer) const noexcept
     {
@@ -845,6 +895,17 @@ class Processor
         int64_t first{-1};
         int64_t last{-1};
     };
+    /// The span of the last process() call, as sample offsets into it, over which the limiter's
+    /// mode crossfade toward Peak was running (the director's K-2: entering Peak mid-sound over
+    /// hot material clicks, part of Peak's zero-attack law): [first, last], or first = -1 when
+    /// there was none. For the sweep harness's kLimiterDrive (tests only); reset every call.
+    struct PeakFadeSpan
+    {
+        int64_t first{-1};
+        int64_t last{-1};
+    };
+    PeakFadeSpan peakFadeSpan() const noexcept { return {tapPeakFadeFirst_, tapPeakFadeLast_}; }
+
     DelayGlideSpan delayGlideSpan() const noexcept { return {tapGlideFirst_, tapGlideLast_}; }
 
   private:
@@ -1156,6 +1217,7 @@ class Processor
     void *externalSinkCtx_{nullptr};
     GrainStealSink externalStealSink_{nullptr};
     void *externalStealSinkCtx_{nullptr};
+    std::function<void()> adoptRingHook_; // setAdoptRingHook's; empty unless a test sets one
     std::atomic<bool> publishing_{false};
     bool publishingThisCall_{false};
     std::unique_ptr<GrainQueue> grainQueue_; // heap: 128 KB
@@ -1164,10 +1226,22 @@ class Processor
     static_assert(std::atomic<bool>::is_always_lock_free);
     static_assert(std::atomic<int64_t>::is_always_lock_free);
 
+    // Row 234's diagnostic (enableFaults()): incremented in renderLayerPiece's flip branch alone,
+    // so a correct render never touches it. Layer tasks may run there at once, so the count is a
+    // fetch_add, and only the increment that finds 0 writes the first fault.
+    std::atomic<uint32_t> enableFaults_{0};
+    EnableFault firstEnableFault_{};
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+
     // Space (sub-project 4's spec §6.1): the effective values in SpaceReverb's terms, and the
     // reverb (heap: about 14.5 MB, 16-byte aligned).
     SpaceParams space_{};
     std::unique_ptr<SpaceReverb> reverb_;
+    // The send's onset fade (row 302): whether the last control chunk was active, the sample
+    // where the latest idle-to-active chunk (at t > 0) began (-1 for none). The reverb's input is
+    // multiplied by the rising half of a Hann window (sin^2) over kRampSeconds from there.
+    bool reverbPrevActive_{false};
+    int64_t reverbOnsetAt_{-1};
 
     // The delay and the limiter (sub-project 4's spec §6.4–§6.6), the serial tail after the
     // layers' sum. The parameters below are the effective values at the last boundary; the six
@@ -1183,6 +1257,8 @@ class Processor
     bool tapSoftDriven_{false};
     int64_t tapGlideFirst_{-1};
     int64_t tapGlideLast_{-1};
+    int64_t tapPeakFadeFirst_{-1};
+    int64_t tapPeakFadeLast_{-1};
     DelayParams delayParams_{};
     LimiterParams limiterParams_{};
     float delayDampCoeff_{1.0f};      ///< The damper's one-pole coefficient for Delay Damping.

@@ -52,3 +52,9 @@ target_link_libraries(gg-core
         PUBLIC gg::engine sst-basic-blocks fmt::fmt clap
         PRIVATE sst-plugininfra::patchbase sst-effects sst-filters gg::compiler-options
         )
+# fmt 12.2.0 made <fmt/core.h> <fmt/base.h> alone, without fmt::format. sst-basic-blocks'
+# ParamMetadata.h includes <fmt/core.h> and calls fmt::format (still so at its upstream head on
+# 2026-11-03), and reaches gg-core's sources and, through ParamIds.h, everything that links
+# gg-core; fmt's own opt-in to the heavy core.h goes with it (INTENT §23 #90). Our sources include
+# <fmt/format.h>.
+target_compile_definitions(gg-core PUBLIC FMT_DEPRECATED_HEAVY_CORE)

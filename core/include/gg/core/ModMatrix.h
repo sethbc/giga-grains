@@ -128,7 +128,7 @@ constexpr bool isModulatorControl(LayerParam p) noexcept
 /// modulators' own controls (isModulatorControl, in every layer) and Ring Length, which is
 /// neither automatable nor modulatable (M2 sub-project 2's spec §6.3: the main thread resizes the
 /// ring from its base value, so a route to it would do nothing). Every other layer parameter is
-/// one, wave 2's included (the programme manager's ruling PM-1, 2026-10-30; M2 sub-project 3's
+/// one, wave 2's included (the program manager's ruling PM-1, 2026-10-30; M2 sub-project 3's
 /// spec §6.1). A per-layer kind is named by layer A's slot (Level and Layer A On for the per-layer
 /// globals), so layers B to D's slots, Level B to D and Layer B to D On are refused: a route
 /// reaches them through its targetLayer.

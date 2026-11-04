@@ -80,7 +80,7 @@ std::vector<double> bandProfileDb(const std::vector<double> &mono, double sample
         return profile;
     }
 
-    // Which band each bin's centre frequency falls in, or -1 if below 20 Hz.
+    // Which band each bin's center frequency falls in, or -1 if below 20 Hz.
     const double nyquist = sampleRate / 2.0;
     std::array<double, kBandCount + 1> edges{};
     for (int b = 0; b <= kBandCount; ++b)

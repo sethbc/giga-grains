@@ -22,7 +22,7 @@ namespace gg::ui
 /// accumulator, each at its own top; M1's one lane is the lane at top 0.
 ///
 /// - **The vertical axis is pitch** (D1): a grain at rate r lies 12·log2(r) semitones from the
-///   lane's centre, ±kLaneSemitones across its height less the capsule's radius, higher pitches
+///   lane's center, ±kLaneSemitones across its height less the capsule's radius, higher pitches
 ///   higher up (pitchY).
 /// - **Live (FX) lane:** the layer's ring, with the write head fixed at the right edge as "now".
 ///   A ring frame `pos` with the head at `head` lies at x = width × (1 − behind / ringSeconds),
@@ -42,14 +42,14 @@ struct LaneGeometry
     float top{0.0f};      ///< The lane's top in pixels: where it sits in the stacked canvas.
 };
 
-/// The semitones either side of a lane's centre that its height spans (D1): Pitch's ±24 plus
+/// The semitones either side of a lane's center that its height spans (D1): Pitch's ±24 plus
 /// Pitch Spread's ±24.
 inline constexpr float kLaneSemitones = 48.0f;
 
 /// The y of a grain at rate `rate` (frames read per output sample) on `g`'s lane, for a capsule
 /// of radius `radius`: top + height/2 − 12·log2(rate) × (height/2 − radius) / kLaneSemitones,
 /// clamped to [top + radius, top + height − radius], so the capsule stays on its lane. A rate
-/// that isn't positive and finite (a reverse grain, 0, NaN or infinity) draws centred, as does
+/// that isn't positive and finite (a reverse grain, 0, NaN or infinity) draws centered, as does
 /// any rate on a lane shorter than two radii. A top or height that isn't finite gives 0.
 float pitchY(float rate, const LaneGeometry &g, float radius) noexcept;
 
@@ -79,7 +79,7 @@ struct Capsule
 ///
 /// - x0 .. x1 span the grain's read extent, startPos .. startPos + rate × durationSamples.
 /// - y = pitchY(rate, geometry, radius): its pitch, clamped to [top + radius, top + height −
-///   radius], so the capsule stays on its own lane; a reverse grain draws centred. Pan is no
+///   radius], so the capsule stays on its own lane; a reverse grain draws centered. Pan is no
 ///   longer drawn (D1).
 /// - radius = max(1.5, 3 × pixelScale).
 /// - intensity = clamp(gain, 0, 1) (NaN draws dark).
@@ -105,7 +105,7 @@ struct Window
 ///   clamped to 0 .. livePositionMax(geometry), not 0..1: its range runs past 1 to kPositionMax
 ///   (300 s), and a lane spanning more than 16 s reaches past 1.
 /// - Instrument: ±Spray around Position, as the engine spreads a sample grain's spray either
-///   side. Position is the fraction of the file, so the centre is at width × v.
+///   side. Position is the fraction of the file, so the center is at width × v.
 Window scanWindow(float positionValue, float sprayValue, const LaneGeometry &geometry) noexcept;
 
 /// Position and Spray's CLAP values, as one UiSnapshot field pair (gg-core's; copied in by the
@@ -132,7 +132,7 @@ std::optional<Window> ghostWindow(const ScanValues &base, const ScanValues &effe
 float livePositionMax(const LaneGeometry &geometry) noexcept;
 
 /// The Position value whose window is anchored at x, scanWindow's inverse, for a body drag: the
-/// window's right edge (x1) on the FX lane, its centre on the instrument's. Clamped to 0..1 on
+/// window's right edge (x1) on the FX lane, its center on the instrument's. Clamped to 0..1 on
 /// the instrument's lane and to 0 .. livePositionMax on the FX lane, so a drag past either end of
 /// the lane pins Position to that end (left of the FX lane is its span's Position, the oldest
 /// audio, 1 on the 16 s lane; left of the instrument lane is 0), infinities included. A NaN x or
@@ -141,7 +141,7 @@ float positionValueAtX(float x, const LaneGeometry &geometry) noexcept;
 
 /// The Spray value whose window has the extent extentPx, scanWindow's inverse, for an edge drag:
 /// on the FX lane the window's full width (x1 − x0, from Position to the dragged older edge), on
-/// the instrument's its half-width (the dragged edge's distance from the centre). Clamped to
+/// the instrument's its half-width (the dragged edge's distance from the center). Clamped to
 /// 0..1; a NaN or negative extent, or a degenerate lane, gives 0.
 float sprayValueForExtent(float extentPx, const LaneGeometry &geometry) noexcept;
 
@@ -190,7 +190,7 @@ struct WindowRect
 /// is Pitch ± Pitch Spread semitones on the lane's pitch axis, placed as pitchY places a grain
 /// at that pitch (with the capsules' radius, max(1.5, 3 × pixelScale)), so a grain at Pitch's
 /// rate lies on the rectangle's middle. Pitch is clamped to −24..24 and the spread to 0..24 first
-/// (NaN to 0), so Pitch 0 with no spread is a band of no height at the lane's centre and the
+/// (NaN to 0), so Pitch 0 with no spread is a band of no height at the lane's center and the
 /// rectangle never leaves the lane. A lane that can't place anything gives all zeros, as
 /// scanWindow does.
 WindowRect scanRect(const ScanRectValues &v, const LaneGeometry &g) noexcept;
@@ -208,7 +208,7 @@ std::optional<WindowRect> ghostRect(const ScanRectValues &base, const ScanRectVa
 ///
 /// - x by M1's rules (hitTest, both lanes' kinds included): the FX's right side is the body.
 /// - y by the minimum body (ruling VW-T2b): the body is the rectangle's height less
-///   edgeTolerancePx at each edge, but never less than 2 × edgeTolerancePx high, centred on the
+///   edgeTolerancePx at each edge, but never less than 2 × edgeTolerancePx high, centered on the
 ///   rectangle, so a band thinner than that (Pitch Spread 0, the default, or a small spread) is
 ///   grown to it for hit-testing. The top edge grabs from edgeTolerancePx above the higher of
 ///   w.y0 and the body's top down to the body, never inside the body; the bottom edge mirrored.
@@ -224,14 +224,14 @@ std::optional<WindowRect> ghostRect(const ScanRectValues &base, const ScanRectVa
 DragTarget hitTestRect(float x, float y, const WindowRect &w, float edgeTolerancePx,
                        const LaneGeometry &g) noexcept;
 
-/// The Pitch value, in semitones, whose rectangle is centred at y: scanRect's inverse for a
+/// The Pitch value, in semitones, whose rectangle is centered at y: scanRect's inverse for a
 /// vertical body drag. Clamped to −24..24, so a drag past the lane's edges pins Pitch to its
 /// range. A NaN y, or a lane that can't place a pitch (one shorter than two radii included),
 /// gives 0.
 float pitchValueAtY(float y, const LaneGeometry &g) noexcept;
 
-/// The Pitch Spread, in semitones, whose rectangle reaches extentPx from its centre: scanRect's
-/// inverse for a top or bottom edge drag (the dragged edge's distance from the centre; the
+/// The Pitch Spread, in semitones, whose rectangle reaches extentPx from its center: scanRect's
+/// inverse for a top or bottom edge drag (the dragged edge's distance from the center; the
 /// spread is symmetric). Clamped to 0..24; a NaN or negative extent, or a lane that can't place
 /// a pitch, gives 0.
 float pitchSpreadForExtent(float extentPx, const LaneGeometry &g) noexcept;
@@ -278,6 +278,13 @@ RingSpan spliceSpan(const RingView &ring, bool loop, int64_t loopFrames, uint32_
 
 /// Whether any of `ring`'s marks (the first min(spliceCount, kMaxSplices)) lies in [from, to).
 bool anyMarkIn(const RingView &ring, int64_t from, int64_t to) noexcept;
+
+/// The splice the engine plays with the Splice parameter at `k` (LiveSource::spliceAt; ruling
+/// SP-T1a/b): numbered from the first mark still in storage, [head − ringFrames, head), Loop
+/// ignored, a k past the count the last, which runs to the head (spliceSpan(ring, false, 0, k)).
+/// None when k is 0 or no mark is in storage: the engine then plays the window (the loop's while
+/// Loop is on). What the lane outlines and numbers (carry-over row 386).
+std::optional<RingSpan> playedSplice(const RingView &ring, uint32_t k) noexcept;
 
 /// The anchor of an AddSplice on `ring` with Splice `k` selected, as the engine takes it
 /// (LiveSource::anchorAt, windowEnd and spliceAt): the head when k is 0 or no mark is in

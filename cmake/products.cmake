@@ -157,8 +157,10 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             )
 elseif (WIN32)
     # giga-grains-<v>-windows-x64.zip always, by a CMake script (no shell on the Windows side), and
-    # giga-grains-<v>-windows-x64.exe when Inno Setup 6's compiler is found (spec §6.5). The
-    # release job requires the .exe (GG_ISCC, a cache variable, says whether it can be built).
+    # giga-grains-<v>-windows-x64.exe when Inno Setup's compiler is found (spec §6.5): Inno Setup
+    # 7's, which CI installs (7.1.1, pinned) and names with -DGG_ISCC, else Inno Setup 6's (the
+    # script needs 6.3 or later). The release job requires the .exe (GG_ISCC, a cache variable,
+    # says whether it can be built).
     set(gg_windows_installer_dir ${CMAKE_SOURCE_DIR}/installer/windows)
     add_custom_command(TARGET gg-installer POST_BUILD
             COMMAND ${CMAKE_COMMAND} -DPRODUCTS=${GG_PRODUCT_DIR} -DOUT=${GG_INSTALLER_DIR}
@@ -167,8 +169,10 @@ elseif (WIN32)
             -P ${gg_windows_installer_dir}/make-zip.cmake
             VERBATIM USES_TERMINAL
             )
-    find_program(GG_ISCC ISCC PATHS "C:/Program Files (x86)/Inno Setup 6"
-            DOC "Inno Setup 6's command-line compiler, ISCC.exe, which builds the Windows installer")
+    find_program(GG_ISCC ISCC
+            PATHS "C:/Program Files/Inno Setup 7" "C:/Program Files (x86)/Inno Setup 7"
+            "C:/Program Files (x86)/Inno Setup 6"
+            DOC "Inno Setup's command-line compiler, ISCC.exe, which builds the Windows installer")
     if (GG_ISCC)
         message(STATUS "gg-installer: the zip, and the installer with Inno Setup's ${GG_ISCC}")
         # ISCC takes Windows paths; its own log names its version (giga-grains.iss prints it).

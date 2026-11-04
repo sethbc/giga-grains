@@ -29,11 +29,12 @@
 namespace
 {
 std::atomic<uint64_t> allocations{0};
-// How many Scopes are alive on this thread. constinit: reading it from operator new must not
-// run an initializer.
-constinit thread_local int armedDepth = 0;
 
 #if !GG_SANITIZE
+// How many Scopes are alive on this thread (only the replaced operator new reads it, so it exists
+// only where they are). constinit: reading it from operator new must not run an initializer.
+constinit thread_local int armedDepth = 0;
+
 /// The live AllocPeak's state: the blocks allocated on its thread and not yet freed, in a fixed
 /// table so recording never allocates. Only that thread touches it, through `measuring`.
 struct PeakState
@@ -164,8 +165,13 @@ std::size_t value(std::align_val_t alignment) noexcept
 
 namespace gg::test
 {
+#if GG_SANITIZE
+AllocTripwire::Scope::Scope() = default;
+AllocTripwire::Scope::~Scope() = default;
+#else
 AllocTripwire::Scope::Scope() { ++armedDepth; }
 AllocTripwire::Scope::~Scope() { --armedDepth; }
+#endif
 
 bool AllocTripwire::available() noexcept { return !GG_SANITIZE; }
 uint64_t AllocTripwire::count() noexcept { return allocations.load(std::memory_order_relaxed); }

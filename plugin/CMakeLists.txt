@@ -21,6 +21,7 @@ add_library(gg-plugin-core STATIC
         src/MediaSession.cpp
         src/PresetCatalog.cpp
         src/PresetDiscovery.cpp
+        src/RingReader.cpp
         src/SampleLoader.cpp
         src/SearchCache.cpp
         )

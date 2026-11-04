@@ -12,6 +12,7 @@
 
 #include <clap/clap.h>
 #include <clapwrapper/auv2.h>
+#include <clapwrapper/wrapper_host.h>
 
 #include "gg/plugin/Identity.h"
 #include "PluginHarness.h"
@@ -24,6 +25,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -587,6 +589,39 @@ TEST_CASE("the instrument's editor context outlines its sample", "[plugin]")
     CHECK(waveform.seconds == 4.0);
 }
 
+TEST_CASE("the editor's captures folder is the session's", "[plugin]")
+{
+    // Carry-over row 384: the editor has no rule of its own for the captures folder; it asks the
+    // media session, whose rule is the settings file's folder, else the default.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    const std::filesystem::path dir = gg::test::useMediaScratch("gui-captures-folder");
+    gg::test::PluginUnderTest fx("org.sethbc.giga-grains-fx");
+    REQUIRE(fx.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&fx.impl());
+    REQUIRE(plugin != nullptr);
+    const auto editor = plugin->createEditor();
+    REQUIRE(editor != nullptr);
+    const gg::ui::EditorContext &context = plugin->editorContext();
+    REQUIRE(context.capturesFolder);
+    CHECK(plugin->media().capturesFolder() == dir / "captures");
+    CHECK(context.capturesFolder() == gg::test::utf8(dir / "captures"));
+
+    // A settings file that names no captures folder: the default.
+    const std::filesystem::path empty = dir / "no-folder" / "settings.xml";
+    std::filesystem::remove(empty);
+    gg::test::useSettingsFile(empty);
+    gg::test::PluginUnderTest other("org.sethbc.giga-grains-fx");
+    REQUIRE(other.valid());
+    auto *second = dynamic_cast<gg::plugin::EditorPlugin *>(&other.impl());
+    REQUIRE(second != nullptr);
+    const auto secondEditor = second->createEditor();
+    REQUIRE(secondEditor != nullptr);
+    const gg::ui::EditorContext &defaults = second->editorContext();
+    REQUIRE(defaults.capturesFolder);
+    CHECK(second->media().capturesFolder() == gg::media::defaultCapturesFolder());
+    CHECK(defaults.capturesFolder() == gg::test::utf8(gg::media::defaultCapturesFolder()));
+}
+
 TEST_CASE("the perform view has a header, a canvas and eight macros", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -721,11 +756,11 @@ TEST_CASE("a macro knob writes the base value with a gesture", "[plugin]")
     auto *freeze =
         dynamic_cast<sst::jucegui::components::ToggleButton *>(findDeep(*editor, "macro.6"));
     REQUIRE(freeze != nullptr);
-    const juce::Point<float> centre = freeze->getLocalBounds().getCentre().toFloat();
+    const juce::Point<float> center = freeze->getLocalBounds().getCentre().toFloat();
     for (int click = 0; click < 2; ++click)
     {
-        freeze->mouseDown(mouseAt(*freeze, centre.x, centre.y, centre, false));
-        freeze->mouseUp(mouseAt(*freeze, centre.x, centre.y, centre, false));
+        freeze->mouseDown(mouseAt(*freeze, center.x, center.y, center, false));
+        freeze->mouseUp(mouseAt(*freeze, center.x, center.y, center, false));
     }
     REQUIRE(recording.kinds() == "bvebve");
     CHECK(recording.calls[1].slot == ParamSlot::Macro6);
@@ -892,6 +927,72 @@ TEST_CASE("the loader strip shows every sample state", "[plugin]")
     CHECK(status->getTooltip().isEmpty());
 }
 
+TEST_CASE("a narrow loader strip's ... menu holds Sample folder and Collect", "[plugin]")
+{
+    // Row 388 (l): below kNarrowWidth the two buttons fold into "loader.more"; each item does
+    // what its button does, through the context.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditorContext &context = recording.context;
+    std::vector<std::string> folders, collected, notices;
+    context.setSampleFolder = [&folders](const std::string &path) {
+        folders.push_back(path);
+        return gg::ui::SampleFolderResult{true, {}};
+    };
+    context.collectSamples = [&collected](const std::string &path) {
+        collected.push_back(path);
+        return std::string("Collected 3 files");
+    };
+    context.notice = [&notices](const std::string &text) { notices.push_back(text); };
+    gg::ui::LoaderStrip strip(context, 0, gg::ui::Compact::No);
+    std::vector<gg::ui::LoaderStrip::Browse> asked;
+    const juce::File chosen =
+        juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("gg-more-menu");
+    strip.browse = [&asked, &chosen](const gg::ui::LoaderStrip::Browse &b,
+                                     std::function<void(const juce::File &)> done) {
+        asked.push_back(b);
+        done(chosen);
+    };
+    std::vector<juce::PopupMenu> shown;
+    strip.showMenu = [&shown](juce::PopupMenu menu) { shown.push_back(std::move(menu)); };
+    strip.setSize(gg::ui::LoaderStrip::kNarrowWidth - 300, 28);
+    auto *more = dynamic_cast<juce::Button *>(findDeep(strip, "loader.more"));
+    REQUIRE(more != nullptr);
+    CHECK(more->isVisible());
+    CHECK_FALSE(findDeep(strip, "sampleFolder")->isVisible());
+    CHECK_FALSE(findDeep(strip, "loader.collect")->isVisible());
+    REQUIRE(more->onClick);
+    more->onClick();
+    REQUIRE(shown.size() == 1);
+    std::vector<juce::String> items;
+    for (juce::PopupMenu::MenuItemIterator it(shown[0]); it.next();)
+    {
+        items.push_back(it.getItem().text);
+    }
+    const juce::String ellipsis = juce::String::charToString(0x2026);
+    REQUIRE(items == std::vector<juce::String>{"Sample folder" + ellipsis, "Collect" + ellipsis});
+    const auto invoke = [&](int index) {
+        juce::PopupMenu::MenuItemIterator it(shown[0]);
+        for (int i = 0; i <= index; ++i)
+        {
+            REQUIRE(it.next());
+        }
+        REQUIRE(it.getItem().action);
+        it.getItem().action();
+    };
+    invoke(0);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0].folders);
+    CHECK(folders == std::vector<std::string>{chosen.getFullPathName().toStdString()});
+    CHECK(collected.empty());
+    invoke(1);
+    REQUIRE(asked.size() == 2);
+    CHECK(asked[1].folders);
+    CHECK(collected == std::vector<std::string>{chosen.getFullPathName().toStdString()});
+    CHECK(notices == std::vector<std::string>{"Collected 3 files"});
+    CHECK(folders.size() == 1);
+}
+
 TEST_CASE("the loader strip refuses other files and opens at the last folder", "[plugin]")
 {
     // Carry-over row 198: a drop the decoder can't read is refused with a message, and the
@@ -923,7 +1024,7 @@ TEST_CASE("the loader strip refuses other files and opens at the last folder", "
     auto *load = dynamic_cast<juce::Button *>(findDeep(*editor, "sampleLoad"));
     REQUIRE(load != nullptr);
 
-    // At first, the settings' last load folder; cancelled (no file), nothing loads.
+    // At first, the settings' last load folder; canceled (no file), nothing loads.
     load->onClick();
     REQUIRE(opened.size() == 1);
     CHECK(opened[0] == start);
@@ -939,6 +1040,16 @@ TEST_CASE("the loader strip refuses other files and opens at the last folder", "
     CHECK(labelText(*editor, "sampleStatus") ==
           "can't load notes.txt: not a WAV, AIFF, FLAC or MP3 file");
     target->filesDropped({dir.getChildFile("noextension").getFullPathName()}, 0, 0);
+    CHECK(loads.empty());
+    // A folder, its path ending in a separator, is named by its own name (row 388 (q)).
+    for (const juce::String &folder :
+         {dir.getFullPathName() + "/", dir.getFullPathName() + "\\", dir.getFullPathName() + "//"})
+    {
+        INFO(folder);
+        target->filesDropped({folder}, 0, 0);
+        CHECK(labelText(*editor, "sampleStatus") ==
+              "can't load drops: not a WAV, AIFF, FLAC or MP3 file");
+    }
     CHECK(loads.empty());
 
     // An upper-case extension is one of them: it loads, and the next chooser opens there.
@@ -1154,7 +1265,7 @@ TEST_CASE("Collect asks for a folder and posts the summary", "[plugin]")
     CHECK(collected == folder.getFullPathName().toStdString());
     CHECK(labelText(*editor, "header.notice") == "Collected 2 files; 1 missing");
 
-    // Cancelled: nothing collected.
+    // Canceled: nothing collected.
     collected.clear();
     strip->browse = [](const gg::ui::LoaderStrip::Browse &, auto done) { done(juce::File()); };
     button->onClick();
@@ -1332,6 +1443,57 @@ TEST_CASE("a refused drop is told in the header when the strip is hidden", "[plu
           "can't load more.txt: not a WAV, AIFF, FLAC or MP3 file");
 }
 
+TEST_CASE("a gui created and destroyed without a parent, then created again, holds one editor",
+          "[plugin]")
+{
+    // Row 232: sst-clap-helpers' shim destroys its editor in guiDestroy only once a parent was
+    // attached, so a host that creates and destroys the GUI without set_parent left it in the
+    // shim, and the next create replaced it (the shim's jassert(!editor)). guiDestroy now
+    // replaces the shim, which destroys the editor then.
+#if defined(__APPLE__)
+    const char *const api = CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+    const char *const api = CLAP_WINDOW_API_WIN32;
+#else
+    const char *const api = CLAP_WINDOW_API_X11;
+#endif
+    gg::test::PluginUnderTest instance("org.sethbc.giga-grains-fx");
+    REQUIRE(instance.valid());
+    auto *plugin = dynamic_cast<gg::plugin::EditorPlugin *>(&instance.impl());
+    REQUIRE(plugin != nullptr);
+    const auto *gui = static_cast<const clap_plugin_gui *>(
+        instance.clap()->get_extension(instance.clap(), CLAP_EXT_GUI));
+    REQUIRE(gui != nullptr);
+    CHECK(plugin->liveEditors() == 0);
+    for (int round = 0; round < 2; ++round)
+    {
+        INFO("round " << round);
+        REQUIRE(gui->create(instance.clap(), api, false));
+        CHECK(plugin->liveEditors() == 1);
+        CHECK(plugin->publishing());
+        // The second round's shim is the new one, resizable as the first was.
+        CHECK(gui->can_resize(instance.clap()));
+        gui->destroy(instance.clap());
+        // The editor's destructor ran in destroy, before the next create.
+        CHECK(plugin->liveEditors() == 0);
+        CHECK_FALSE(plugin->publishing());
+    }
+
+    // The host's scale is carried to the replacing shim: create, set_scale(2), destroy (the shim
+    // replaced), create: still 2 (where the shim takes a scale at all: not on Linux).
+    REQUIRE(gui->create(instance.clap(), api, false));
+    const bool taken = gui->set_scale(instance.clap(), 2.0);
+    CHECK(plugin->guiScale() == (taken ? 2.0 : 1.0));
+    gui->destroy(instance.clap());
+    REQUIRE(gui->create(instance.clap(), api, false));
+    CHECK(plugin->guiScale() == (taken ? 2.0 : 1.0));
+    CHECK(plugin->liveEditors() == 1);
+    gui->destroy(instance.clap());
+#if defined(__APPLE__) || defined(_WIN32)
+    CHECK(taken);
+#endif
+}
+
 TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
 {
     // Task 10's minor (a): the shim destroys its editor in guiDestroy only once a parent was
@@ -1356,8 +1518,9 @@ TEST_CASE("publishing follows gui destroy without a parent", "[plugin]")
         CHECK(plugin->publishing());
         gui->destroy(fx.clap());
         CHECK_FALSE(plugin->publishing());
-        // The editor the shim kept goes with the plugin, and counts nothing closed again. (A
-        // second create would replace it, which the shim asserts against in a debug build.)
+        // The editor the shim would have kept is gone (row 232), and counted nothing closed
+        // again.
+        CHECK(plugin->liveEditors() == 0);
     }
 
     // The size a host offers is held at the minimum, and any larger size is taken as it is.
@@ -1521,6 +1684,35 @@ TEST_CASE("a narrow strip draws the Source kinds' short forms and keeps their na
     }
 }
 
+TEST_CASE("a theme switch lays a narrow strip out again", "[plugin]")
+{
+    // Row 388 (i): LayerStrip measures its menus in resized() and relies on lookAndFeelChanged
+    // (which a theme switch sends to every component) to run it again for a new sheet's fonts.
+    // Pinned in the editor at its smallest: a stale layout is put right by the switch, in both
+    // directions, and the Source button still fits its short form.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    const auto editor = gg::ui::makeEditor(recording.context);
+    editor->setSize(gg::ui::kEditorMinWidth, gg::ui::kEditorMinHeight);
+    REQUIRE(gg::ui::selectView(*editor, gg::ui::View::Perform));
+    juce::Component *perform = findDeep(*editor, "view.perform");
+    REQUIRE(perform != nullptr);
+    auto *source = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(*perform, controlId(ParamSlot::B_Source).toRawUTF8()));
+    REQUIRE(source != nullptr);
+    const juce::Rectangle<int> laidOut = source->getBounds();
+    REQUIRE_FALSE(laidOut.isEmpty());
+    CHECK(source->labelFits());
+    for (const gg::ui::ThemeChoice theme : {gg::ui::ThemeChoice::Light, gg::ui::ThemeChoice::Dark})
+    {
+        INFO((theme == gg::ui::ThemeChoice::Light ? "light" : "dark"));
+        source->setBounds(laidOut.withWidth(4)); // stale: as an old sheet's fonts left it
+        REQUIRE(gg::ui::setTheme(*editor, theme));
+        CHECK(source->getBounds() == laidOut);
+        CHECK(source->labelFits());
+    }
+}
+
 TEST_CASE("selecting a layer in the strip", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -1573,11 +1765,11 @@ TEST_CASE("the pad's drag is one gesture on both morphs", "[plugin]")
     REQUIRE(f.value(ParamSlot::MorphX) == 0.5f);
     REQUIRE(f.value(ParamSlot::MorphY) == 0.5f);
 
-    const juce::Point<float> centre{100.0f, 100.0f};
-    pad.mouseDown(mouseAt(pad, 100.0f, 100.0f, centre, false));
-    pad.mouseDrag(mouseAt(pad, 150.0f, 50.0f, centre, true));
-    pad.mouseDrag(mouseAt(pad, 260.0f, -40.0f, centre, true)); // past the corner: pinned
-    pad.mouseUp(mouseAt(pad, 260.0f, -40.0f, centre, true));
+    const juce::Point<float> center{100.0f, 100.0f};
+    pad.mouseDown(mouseAt(pad, 100.0f, 100.0f, center, false));
+    pad.mouseDrag(mouseAt(pad, 150.0f, 50.0f, center, true));
+    pad.mouseDrag(mouseAt(pad, 260.0f, -40.0f, center, true)); // past the corner: pinned
+    pad.mouseUp(mouseAt(pad, 260.0f, -40.0f, center, true));
 
     const auto &calls = f.recording.calls;
     REQUIRE(calls.size() >= 6);
@@ -1599,7 +1791,7 @@ TEST_CASE("the pad's drag is one gesture on both morphs", "[plugin]")
     CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(1.0, 1e-3));
     CHECK_THAT(f.value(ParamSlot::MorphY), Catch::Matchers::WithinAbs(1.0, 1e-3));
 
-    // One undo group: a single entry, labelled "Morph", whose undo restores both.
+    // One undo group: a single entry, labeled "Morph", whose undo restores both.
     CHECK(f.undo.size() == 1);
     CHECK(f.undo.undoLabel() == "Morph");
     f.undo.undo();
@@ -1617,10 +1809,10 @@ TEST_CASE("the pad works without an undo stack", "[plugin]")
     RecordingContext recording(gg::core::Mode::Fx);
     gg::ui::MorphPad pad(recording.context);
     pad.setSize(200, 100); // the square is the 100 x 100 in the middle
-    const juce::Point<float> centre{100.0f, 50.0f};
-    pad.mouseDown(mouseAt(pad, 100.0f, 50.0f, centre, false));
-    pad.mouseDrag(mouseAt(pad, 50.0f, 100.0f, centre, true)); // the square's bottom-left corner
-    pad.mouseUp(mouseAt(pad, 50.0f, 100.0f, centre, true));
+    const juce::Point<float> center{100.0f, 50.0f};
+    pad.mouseDown(mouseAt(pad, 100.0f, 50.0f, center, false));
+    pad.mouseDrag(mouseAt(pad, 50.0f, 100.0f, center, true)); // the square's bottom-left corner
+    pad.mouseUp(mouseAt(pad, 50.0f, 100.0f, center, true));
     CHECK(recording.kinds() == "bbvvvvee");
     CHECK_THAT(recording.values[static_cast<std::size_t>(ParamSlot::MorphX)],
                Catch::Matchers::WithinAbs(0.0, 1e-3));
@@ -1628,7 +1820,7 @@ TEST_CASE("the pad works without an undo stack", "[plugin]")
                Catch::Matchers::WithinAbs(0.0, 1e-3));
 }
 
-TEST_CASE("double-click centres the pad", "[plugin]")
+TEST_CASE("double-click centers the pad", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     PadFixture f;
@@ -1642,7 +1834,7 @@ TEST_CASE("double-click centres the pad", "[plugin]")
     CHECK(f.undo.size() == 1);
 }
 
-TEST_CASE("a real double-click sequence centres the pad in one undo entry", "[plugin]")
+TEST_CASE("a real double-click sequence centers the pad in one undo entry", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     PadFixture f;
@@ -1704,8 +1896,10 @@ TEST_CASE("held arrow keys make one undo entry on the pad", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     PadFixture f;
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed (row 388 (f))
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(f.pad->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK_THAT(f.value(ParamSlot::MorphX), Catch::Matchers::WithinAbs(0.7, 1e-5));
@@ -1812,6 +2006,90 @@ TEST_CASE("LayerStrip refresh follows the base values", "[plugin]")
     CHECK(recording.calls.empty()); // following the base values is no gesture
 }
 
+namespace
+{
+// A host for formatOf: get_extension offers clap-wrapper's host information when `offer` is set,
+// whose get_wrapper_flavor returns `flavor` (which may be null).
+struct FormatHost
+{
+    static inline const char *flavor = nullptr;
+    static inline bool offer = false;
+    static inline bool offerFlavor = true;
+    static inline clap_wrapper_host_information_t info{};
+
+    clap_host host{};
+
+    FormatHost()
+    {
+        host.clap_version = CLAP_VERSION;
+        host.name = "format host";
+        host.vendor = "giga-grains tests";
+        host.url = "";
+        host.version = "1";
+        host.get_extension = [](const clap_host *, const char *id) -> const void * {
+            if (!offer || std::strcmp(id, CLAP_WRAPPER_HOST_INFORMATION) != 0)
+            {
+                return nullptr;
+            }
+            // An if, not ?: (GCC 13 refuses a lambda and nullptr as the two arms).
+            info.get_wrapper_flavor = nullptr;
+            if (offerFlavor)
+            {
+                info.get_wrapper_flavor = [](const clap_host *) { return flavor; };
+            }
+            return &info;
+        };
+    }
+};
+} // namespace
+
+TEST_CASE("the editor's ring commands map to the Processor's", "[plugin]")
+{
+    // Row 388 (k): the mapping, out of the ring context's lambda.
+    CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::AddSplice) ==
+          gg::core::CommandKind::AddSplice);
+    CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::ClearSplices) ==
+          gg::core::CommandKind::ClearSplices);
+    CHECK(gg::plugin::toCommandKind(gg::ui::RingCommand::AddSpliceAt) ==
+          gg::core::CommandKind::AddSpliceAt);
+    // A stray value maps to a kind validCommand rejects (past AddSpliceAt), not to a destructive
+    // one.
+    const auto stray = gg::plugin::toCommandKind(static_cast<gg::ui::RingCommand>(0x7F));
+    CHECK(stray > gg::core::CommandKind::AddSpliceAt);
+}
+
+TEST_CASE("formatOf names each wrapper flavor", "[plugin]")
+{
+    // Row 383 (row 326's remainder): the About box's format, from clap-wrapper's host
+    // information, without a wrapper host.
+    CHECK(gg::plugin::formatOf(nullptr).empty());
+    FormatHost fake;
+    FormatHost::offer = false;
+    CHECK(gg::plugin::formatOf(&fake.host) == "CLAP"); // no extension: the CLAP itself
+    FormatHost::offer = true;
+    FormatHost::offerFlavor = false;
+    CHECK(gg::plugin::formatOf(&fake.host) == "CLAP"); // the extension without its function
+    FormatHost::offerFlavor = true;
+    FormatHost::flavor = nullptr;
+    CHECK(gg::plugin::formatOf(&fake.host) == "CLAP");
+    const std::array<std::pair<const char *, const char *>, 6> flavors{{
+        {CLAP_WRAPPER_HOST_FLAVOR_VST3, "VST3"},
+        {CLAP_WRAPPER_HOST_FLAVOR_AUV2, "AU"},
+        {CLAP_WRAPPER_HOST_FLAVOR_AUV3, "AU"},
+        {CLAP_WRAPPER_HOST_FLAVOR_STANDALONE, "Standalone"},
+        {CLAP_WRAPPER_HOST_FLAVOR_AAX, ""},
+        {"something-else", ""},
+    }};
+    for (const auto &[flavor, name] : flavors)
+    {
+        INFO(flavor);
+        FormatHost::flavor = flavor;
+        CHECK(gg::plugin::formatOf(&fake.host) == name);
+    }
+    FormatHost::offer = false;
+    FormatHost::flavor = nullptr;
+}
+
 TEST_CASE("the About box lists the license set", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
@@ -1866,6 +2144,26 @@ TEST_CASE("the About box lists the license set", "[plugin]")
     box.setPlainText(true);
     CHECK(box.shownText().startsWith(
         juce::String::fromUTF8(first.data(), static_cast<int>(first.size()))));
+}
+
+TEST_CASE("the About box shows each notice once", "[plugin]")
+{
+    // Row 388 (d), row 326's fix: the constructor shows the first notice once, and a selection
+    // shows its notice once, though selecting the list's row calls selectNotice again.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    REQUIRE(gg::ui::noticeTexts().size() > 1);
+    gg::ui::AboutBox box("Giga Grains FX", "VST3");
+    box.setBounds(0, 0, 800, 520);
+    CHECK(box.shows() == 1);
+    box.selectNotice(1);
+    CHECK(box.shows() == 2);
+    box.selectNotice(0);
+    CHECK(box.shows() == 3);
+    box.selectNotice(-1); // out of range: nothing
+    box.selectNotice(1000);
+    CHECK(box.shows() == 3);
+    box.setPlainText(true);
+    CHECK(box.shows() == 4);
 }
 
 TEST_CASE("Escape closes the About box", "[plugin]")

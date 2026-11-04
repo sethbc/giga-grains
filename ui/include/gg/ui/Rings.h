@@ -14,7 +14,7 @@
 namespace gg::ui
 {
 /// One route's ring on a control (M2 sub-project 6's spec §6.5): framework-free, so the Edit view
-/// turns it into a ParamControl::Ring with its palette's colour.
+/// turns it into a ParamControl::Ring with its palette's color.
 struct RingSpec
 {
     uint8_t slot;  ///< the route's matrix slot, 1 to 48

@@ -5,7 +5,7 @@
   "blockSize": 128,
   "seed": 1,
   "sample": {"kind": "sweep", "startHz": 100, "endHz": 4000, "seconds": 4.0, "amplitude": 0.5},
-  "samples": {"B": {"kind": "sine", "frequencyHz": 330, "seconds": 4.0, "amplitude": 0.5}, "C": {"kind": "noise", "seconds": 4.0, "amplitude": 0.5}, "D": {"kind": "sweep", "startHz": 50, "endHz": 2000, "seconds": 4.0, "amplitude": 0.5}},
+  "samples": {"B": {"kind": "sine", "frequencyHz": 330, "seconds": 4.0, "amplitude": 0.5}, "C": {"kind": "sine", "frequencyHz": 550, "seconds": 4.0, "amplitude": 0.5}, "D": {"kind": "sweep", "startHz": 50, "endHz": 2000, "seconds": 4.0, "amplitude": 0.5}},
   "params": {"Position": 0.25, "Layer B On": 1, "Layer C On": 1, "Layer D On": 1, "B Position": 0.25, "C Position": 0.25, "D Position": 0.25, "Level": -6.0},
   "notes": [{"time": 0.0, "key": 60, "duration": 10.5}],
   "automation": [

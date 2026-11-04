@@ -19,7 +19,7 @@
 #     configure preset getting a summary line, with the next preset still run;
 #   - the summary of real ctest output, CTest 3.31.6's and 4.4.5's (ctest-output/), recorded from
 #     a project of four tests (one passes, "fails one" and fails_two fail, skipped is skipped;
-#     passes and "fails one" are labelled core and rt) with a test preset like ours: all of it
+#     passes and "fails one" are labeled core and rt) with a test preset like ours: all of it
 #     (fail), -L core -E fails (pass) and -L nosuchlabel (none).
 # update-goldens.sh runs in the same fake tree with a stub gg-render: its per-case WAV SHA-256s,
 # and the cases changed, new or gone since the previous run; and the preset goldens' folder
@@ -272,7 +272,8 @@ run_update() { # sets $out and $status
     out="$(cd "$repo" && PATH="$work/bin:$PATH" REAL_CMAKE="$real_cmake" FAKE_LOG="$log" \
         scripts/update-goldens.sh 2>&1)" || status=$?
 }
-echo "audio of a" >"$work/expected-a.wav"
+# The main cases are rendered with --content-dir <media folder>, as ctest does (row 349).
+echo "audio of a content build/dev/golden-media" >"$work/expected-a.wav"
 hash_a="$("$real_cmake" -E sha256sum "$work/expected-a.wav")"
 hash_a="${hash_a%% *}"
 
@@ -360,7 +361,9 @@ check "fetch-content, a wrong hash: no content" \
 printf 'tag v1\nsha256 %s\n' "$content_hash" >"$work/pin-no-url.txt"
 fetch_content "$work/content-cache-no-url" "$work/pin-no-url.txt"
 check "fetch-content, a pin without a url: fails" "$((status != 0 ? 0 : 1))"
-expect_in "fetch-content, a pin without a url: says so" "$out" "no url line"
+# CMake wraps a FATAL_ERROR message at a space, so under a long path the words split across
+# lines: join the lines before matching.
+expect_in "fetch-content, a pin without a url: says so" "$(tr -s '\n ' ' ' <<<"$out")" "no url line"
 
 # A stale .gg-pin (an older release's) is fetched over, and the stamp is then the pin's.
 printf 'v0 %s\n' "$(printf 'f%.0s' {1..64})" >"$dest/content/.gg-pin"

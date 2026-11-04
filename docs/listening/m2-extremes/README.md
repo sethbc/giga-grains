@@ -1,6 +1,6 @@
 # Listening pack: M2 sub-project 4 (Extremes)
 
-This pack is rendered for the record now and heard at M2's close (sub-project 7; the programme
+This pack is rendered for the record now and heard at M2's close (sub-project 7; the program
 design's decision 1). It has two parts:
 
 - renders from `gg-render`, to hear offline, one per item of the spec's table (§11);
@@ -58,8 +58,14 @@ The instrument files hold one note over the whole file, at Position 0.25 to 0.5 
 - **The delay and the limiter** (`09` to `12`, `13`): the delay sits after the layers' sum, the
   limiter after the delay.
 
-The peaks and RMS levels below were measured on the `release` renders, over both channels and the
-whole file unless a span is given. No file peaks above −3.9 dBFS.
+The peaks and RMS levels below were measured on the `release` renders, over both channels (the
+samples' own RMS, not the mono mix's envelope: the Spectral kind decorrelates the channels, and
+the mono mix of `04` reads 3 dB lower) and the whole file unless a span is given. No file peaks
+above −3.9 dBFS. **Re-rendered on `release` at `df1c3ae` (the M2 close, Task 16),** which moves the Spectral renders
+(`03`, `04`, `05`, `13`) by the DC and Nyquist change (row 365: DC and Nyquist at unity) and the
+ring window (row 381): every peak and RMS figure matched to 0.1 dB, and the spectrograms show no
+artifact (`03`'s one scanning line, `04`'s pulses then a steady pad, `05`'s flat line). `07`'s
+spans are 0.5–2, 2.5–4, … 10.5–12 s.
 
 | File | Length | What it is | Listen for |
 |---|---|---|---|
@@ -83,9 +89,12 @@ whole file unless a span is given. No file peaks above −3.9 dBFS.
 
 Five behaviors of the build are sound choices the reviews left to the close's sitting:
 
-1. **Peak's own click score.** On hot material the Peak limiter scores 15 to 18 by the click
-   metric, from its instant gain steps (zero lookahead, D5 option 1). Hear `12` from 8 s: is it
-   clean enough?
+1. **Peak's own click score.** On hot material the Peak limiter clicks by the metric, from its
+   instant gain steps (zero lookahead, D5 option 1): carry-over row 378 measured 16.24 to 42.05
+   for Peak, and up to 19.77 for Soft, at the bottom ceilings, over hot noise, and D5b (the
+   director, 2026-10-31) kept the law; a mode change into Peak mid-sound is part of it (K-2,
+   INTENT §23 #79). Hear `12` from 8 s: is it clean enough, or should the law be revisited after
+   M2?
 2. **The Spectral kind is wide.** Each channel's phases are keyed apart, so the smear fully
    decorrelates the channels and center content comes out wide (`03`, `04`, `05`). Is that the
    width wanted, or should a mono source stay nearer the center?

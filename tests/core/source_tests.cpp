@@ -70,7 +70,7 @@ struct TimedCommand
     int64_t time;
     CommandKind kind;
     uint8_t layer;
-    float value;
+    double value; // CommandEvent's
 };
 
 // Renders [from, to) of `input` (null: none) through p in calls of `blocks` in turn, each given
@@ -664,6 +664,43 @@ TEST_CASE("a splice command marks the ring", "[core][source]")
     meta = p.ringMeta(0);
     CHECK(meta.spliceCount == 0);
     CHECK(meta.windowFrames == kRing); // no mark: the whole window
+}
+
+TEST_CASE("an AddSpliceAt command marks its frame at any block size", "[core][source]")
+{
+    // Row 388 (m): AddSpliceAt marks ring frame llround(value) itself, wherever the head is when
+    // it applies; outside the storage (past the head included), on a Sample layer, or with a
+    // value that isn't a frame (NaN, negative, past 2^53) it is ignored. The same marks at every
+    // block size.
+    const Stereo input = noise(49000, 0.5f, 97);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<TimedCommand> commands{
+        {48010, CommandKind::AddSpliceAt, 0, 30001.0},
+        {48011, CommandKind::AddSpliceAt, 0, 30001.0},  // on the first: ignored
+        {48012, CommandKind::AddSpliceAt, 0, 47123.4},  // llround: 47123
+        {48013, CommandKind::AddSpliceAt, 0, 60000.0},  // past the head: ignored
+        {48014, CommandKind::AddSpliceAt, 2, 30001.0},  // a Sample layer: ignored
+        {48015, CommandKind::AddSpliceAt, 1, nan},      // ignored
+        {48015, CommandKind::AddSpliceAt, 1, -1.0},     // ignored
+        {48015, CommandKind::AddSpliceAt, 1, 0x1.0p54}, // ignored
+        {48016, CommandKind::AddSpliceAt, 1, 0.0},      // frame 0, in storage
+    };
+    for (const std::vector<uint32_t> &blocks :
+         {std::vector<uint32_t>{512}, std::vector<uint32_t>{1}, std::vector<uint32_t>{37, 500, 3}})
+    {
+        INFO("blocks " << blocks[0]);
+        Processor p({kRate, 512, 29, Mode::Fx});
+        p.setBase(slotOf(LayerParam::Source, 2), 0.0f); // C Sample
+        Stereo out = silence(49000);
+        renderCmd(p, &input, 0, 48100, blocks, {}, commands, out);
+        const auto a = p.engine(0).live().splices();
+        const auto b = p.engine(1).live().splices();
+        CHECK(std::vector<int64_t>(a.begin(), a.end()) == std::vector<int64_t>{30001, 47123});
+        CHECK(std::vector<int64_t>(b.begin(), b.end()) == std::vector<int64_t>{0});
+        CHECK(p.engine(2).live().spliceCount() == 0);
+        CHECK(p.ringMeta(0).spliceCount == 2);
+        CHECK(p.ringMeta(0).splices[0] == 30001);
+    }
 }
 
 TEST_CASE("a group keeps its first 64 commands", "[core][source]")

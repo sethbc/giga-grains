@@ -3,7 +3,7 @@
   "name": "Shimmer Veil",
   "author": "Giga Grains",
   "description": "Grains an octave and a twelfth above feed back into a bright, modulated hall: instant shimmer for chords and drones.",
-  "tags": ["texture", "bright", "reverb", "wide", "live-input"],
+  "tags": ["texture", "bright", "reverb", "wide"],
   "params": {
     "Mix": 0.55,
     "Size": -1.943416,

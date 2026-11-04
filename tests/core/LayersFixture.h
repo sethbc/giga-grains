@@ -520,6 +520,8 @@ struct LayersRender
     uint64_t lowered{0};
     uint64_t stolen{0};
     std::array<uint64_t, 4> dropped{};
+    // Carry-over row 234's diagnostic after the render: Processor::faultCounts().
+    gg::core::FaultCounts faults{};
     // Every mod source's value on every layer after the render (Processor::sourceValue).
     std::array<std::array<float, static_cast<std::size_t>(gg::core::ModSource::Count)>, 4>
         sources{};
@@ -542,8 +544,8 @@ struct LayersSetup
 };
 
 // The Spectral variant's setup (the extremes' final review): FX layers with no sample, all four
-// Spectral, so each smears its own live ring, the FX's default material. Render it with
-// layerAutomationKeepingKinds(), which leaves Source alone.
+// Spectral, so each smears its own live ring, the FX's default material, B and D in a loop.
+// Render it with layerAutomationKeepingKinds(), which leaves Source alone.
 inline LayersSetup spectralRingSetup(gg::TaskRunner *runner = nullptr)
 {
     LayersSetup s;
@@ -554,6 +556,14 @@ inline LayersSetup spectralRingSetup(gg::TaskRunner *runner = nullptr)
         {
             p.setBase(gg::core::layerSlot(gg::core::LayerParam::Source, L), 3.0f);
             p.setBase(gg::core::layerSlot(gg::core::LayerParam::Smear, L), 0.5f);
+        }
+        // Layers B and D loop (row 381: the window steers their analysis), 0.5 s and 1 s; A and
+        // C read their whole rings.
+        for (const uint8_t L : {uint8_t{1}, uint8_t{3}})
+        {
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::Loop, L), 1.0f);
+            p.setBase(gg::core::layerSlot(gg::core::LayerParam::LoopLength, L),
+                      L == 1 ? -1.0f : 0.0f);
         }
     };
     return s;
@@ -588,6 +598,7 @@ inline void renderLayers(const Stereo &input, const std::vector<TimedEvent> &eve
            setup.controls);
     r.lowered = p.loweredGrains();
     r.stolen = p.stolenGrains();
+    r.faults = p.faultCounts();
     for (uint8_t L = 0; L < 4; ++L)
     {
         r.heads[L] = p.engine(L).liveWriteHead();

@@ -26,37 +26,59 @@ uint64_t ceilDiv(uint64_t a, uint64_t b) { return (a + b - 1) / b; }
 TEST_CASE("sampleBytes counts the planar buffer, the pairs and the levels", "[media]")
 {
     using gg::media::sampleBytes;
-    // Planar, then the interleaved copy of a stereo source: twice the planar bytes.
-    REQUIRE(sampleBytes(48000, 2, true, 1) == uint64_t{48000} * 2 * 4 * 2);
+    // The pairs and every level carry 3 guard frames before and after (6 in all).
+    constexpr uint64_t kGuards = 6;
+    // Planar, then the interleaved copy of a stereo source: (frames + 6) pairs.
+    REQUIRE(sampleBytes(48000, 2, true, 1) == uint64_t{48000} * 2 * 4 + (48000 + kGuards) * 2 * 4);
     REQUIRE(sampleBytes(48000, 2, false, 1) == uint64_t{48000} * 2 * 4);
     REQUIRE(sampleBytes(48000, 1, false, 1) == uint64_t{48000} * 4);
 
-    // Levels 1 to 4 add ceil(frames / 2^n) frames of `channels` floats each.
+    // Levels 1 to 4 add ceil(frames / 2^n) + 6 frames of `channels` floats each.
     uint64_t levels = 0;
     for (uint32_t n = 1; n < 5; ++n)
     {
-        levels += ceilDiv(48000, uint64_t{1} << n) * 8;
+        levels += (ceilDiv(48000, uint64_t{1} << n) + kGuards) * 8;
     }
-    REQUIRE(sampleBytes(48000, 2, true, 5) == uint64_t{48000} * 2 * 4 * 2 + levels);
+    REQUIRE(sampleBytes(48000, 2, true, 5) ==
+            uint64_t{48000} * 2 * 4 + (48000 + kGuards) * 2 * 4 + levels);
     // An odd count rounds each level up.
-    REQUIRE(sampleBytes(7, 1, false, 3) == 7 * 4 + 4 * 4 + 2 * 4);
+    REQUIRE(sampleBytes(7, 1, false, 3) == 7 * 4 + (4 + kGuards) * 4 + (2 + kGuards) * 4);
     REQUIRE(sampleBytes(0, 2, false, 1) == 0);
     REQUIRE(sampleBytes(-5, 2, true, 3) == 0);
 }
 
-TEST_CASE("sourceBytes derives a source's bytes from its buffer, pairs and levels", "[media]")
+TEST_CASE("sourceBytes is what a prepared source holds", "[media]")
 {
     const auto stereo = gg::PreparedSource::make(std::make_shared<gg::SampleBuffer>(2, 4800, 48e3));
-    REQUIRE(gg::media::sourceBytes(*stereo) ==
-            gg::media::sampleBytes(4800, 2, true, stereo->levelCount()));
+    REQUIRE(gg::media::sourceBytes(*stereo) == stereo->bytes());
     // Since M2 sub-project 3 a source carries its pyramid: levels 1 to 4 of 2,400, 1,200, 600
-    // and 300 frames, each one copy of the channels.
+    // and 300 frames, each one copy of the channels, with 6 guard frames a copy.
     REQUIRE(stereo->levelCount() == 5);
     REQUIRE(gg::media::sourceBytes(*stereo) ==
-            uint64_t{4800} * 2 * 4 * 2 + uint64_t{2400 + 1200 + 600 + 300} * 2 * 4);
+            (uint64_t{4800} * 2 + (4800 + 6) * 2 + uint64_t{2400 + 1200 + 600 + 300 + 4 * 6} * 2) *
+                4);
 
     const auto mono = gg::PreparedSource::make(std::make_shared<gg::SampleBuffer>(1, 4800, 48e3));
-    REQUIRE(gg::media::sourceBytes(*mono) == uint64_t{4800 + 2400 + 1200 + 600 + 300} * 4);
+    REQUIRE(gg::media::sourceBytes(*mono) == uint64_t{4800 + 2400 + 1200 + 600 + 300 + 4 * 6} * 4);
+}
+
+TEST_CASE("sampleBytes is what a prepared source holds", "[media]")
+{
+    // The estimate made before building equals the built source's own count, mono and stereo,
+    // short (a single level) and long (several).
+    for (const uint32_t channels : {1u, 2u})
+    {
+        for (const int64_t frames : {int64_t{1}, int64_t{2}, int64_t{7}, int64_t{100},
+                                     int64_t{4800}, int64_t{48000}, int64_t{200001}})
+        {
+            INFO("channels " << channels << ", frames " << frames);
+            const auto source = gg::PreparedSource::make(
+                std::make_shared<gg::SampleBuffer>(channels, frames, 48e3));
+            REQUIRE(source != nullptr);
+            REQUIRE(gg::media::sampleBytes(frames, channels, channels == 2, source->levelCount()) ==
+                    source->bytes());
+        }
+    }
 }
 
 TEST_CASE("ringBytes is the ring storage's bytes", "[media]")

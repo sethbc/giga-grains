@@ -51,7 +51,7 @@ TEST_CASE("the pad maps pixels to Morph X and Y with Y up", "[ui]")
              Case{0.0f, 200.0f, 0.0f, 0.0f, "bottom-left (A)"},
              Case{200.0f, 200.0f, 1.0f, 0.0f, "bottom-right (B)"},
              Case{200.0f, 0.0f, 1.0f, 1.0f, "top-right (D)"},
-             Case{100.0f, 100.0f, 0.5f, 0.5f, "the centre"},
+             Case{100.0f, 100.0f, 0.5f, 0.5f, "the center"},
              Case{50.0f, 150.0f, 0.25f, 0.25f, "a quarter in from A"},
              Case{-30.0f, 260.0f, 0.0f, 0.0f, "outside, past A"},
              Case{1.0e9f, -1.0e9f, 1.0f, 1.0f, "far outside, past D"},
@@ -64,7 +64,7 @@ TEST_CASE("the pad maps pixels to Morph X and Y with Y up", "[ui]")
         CHECK_THAT(v.x, WithinAbs(c.x, 1e-6));
         CHECK_THAT(v.y, WithinAbs(c.y, 1e-6));
     }
-    // A pad of no size can't place a value: the centre.
+    // A pad of no size can't place a value: the center.
     for (const float bad : {0.0f, -10.0f, kNaN})
     {
         const PadPoint v = gg::ui::padValueAt(10.0f, 10.0f, bad);
@@ -91,13 +91,13 @@ TEST_CASE("the pad maps pixels to Morph X and Y with Y up", "[ui]")
             CHECK_THAT(back.y, WithinAbs(v.y, 1e-6));
         }
     }
-    // Values are clamped to 0..1 first, NaN to the centre.
+    // Values are clamped to 0..1 first, NaN to the center.
     const auto clamped = gg::ui::padPixelOf({2.0f, -1.0f}, side);
     CHECK(clamped[0] == 200.0f);
     CHECK(clamped[1] == 200.0f);
-    const auto centred = gg::ui::padPixelOf({kNaN, kNaN}, side);
-    CHECK(centred[0] == 100.0f);
-    CHECK(centred[1] == 100.0f);
+    const auto centered = gg::ui::padPixelOf({kNaN, kNaN}, side);
+    CHECK(centered[0] == 100.0f);
+    CHECK(centered[1] == 100.0f);
 }
 
 TEST_CASE("the pad's weights equal the Processor's morph law", "[ui]")
@@ -174,7 +174,7 @@ TEST_CASE("the pad's weights follow D1's law", "[ui]")
 {
     constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
     const std::array<bool, kLayers> all{true, true, true, true};
-    // The centre: a quarter each.
+    // The center: a quarter each.
     for (const float w : gg::ui::morphWeights(0.5f, 0.5f, all))
     {
         CHECK(w == 0.25f);
@@ -196,7 +196,7 @@ TEST_CASE("the pad's weights follow D1's law", "[ui]")
     const auto cornerA = gg::ui::morphWeights(0.0f, 0.0f, all);
     CHECK_THAT(cornerA[0], WithinAbs(0.999 * 0.999, 1e-6));
     CHECK_THAT(cornerA[3], WithinAbs(1.0e-6, 1e-9));
-    // A NaN coordinate is the centre's.
+    // A NaN coordinate is the center's.
     const auto nan = gg::ui::morphWeights(kNaN, kNaN, all);
     for (const float w : nan)
     {

@@ -1,6 +1,6 @@
 # Listening pack: M2 sub-project 2 (Sources and persistence)
 
-This pack is rendered for the record now and heard at M2's close (sub-project 7; the programme
+This pack is rendered for the record now and heard at M2's close (sub-project 7; the program
 design's decision 1). It has two parts:
 
 - renders from `gg-render`, to hear offline, one per item of the spec's table (§11);
@@ -40,7 +40,9 @@ same commit gives the same bytes. `03` is 130 s long and takes the longest to re
 
 The FX files run at Mix 100%. Most read a sweep at amplitude 0.5, 110 Hz to 1760 Hz, as long as
 the input they name, so a grain from further back sits lower on the spectrogram. The peaks and RMS
-levels below were measured on the `release` renders at `489d85e` (Task 13), over both channels and the whole file. No
+levels below were measured on the `release` renders at `489d85e` (Task 13), over both channels and the whole file.
+**Re-rendered on `release` at `df1c3ae` (the M2 close, Task 16):** every peak and RMS figure matched to 0.1 dB, and `08a` and `08b` still
+hash alike (`c60c0a19…`, the SHA-256 below). No
 file peaks above -0.7 dBFS.
 
 | File | Length | What it is | Listen for |
@@ -54,7 +56,7 @@ file peaks above -0.7 dBFS.
 | `07-capture-to-layer.wav` | 20.0 s | `06` with splice 2 captured into layer B at 8.2 s (B Source Sample, Pitch +7, Position 0.2 s) while layer A steps through the splices as in `06`. Peak -4.5 dBFS. RMS -19.6 dBFS. | The capture plays as a sample under the ring: the second span of the sweep, a fifth up, beside whatever span A is on. |
 | `08a-ring-restore-a.wav`, `08b-ring-restore-b.wav` | 6.0 s each | `a`: `frozen-ring.ggst` (a generated 20 s sweep ring, frozen, with two splices) restored with Freeze on and scanned for 6 s (Position 0.5 stepped to 1.1 each second); the state at the end of the render goes to `08-saved.ggst`. (A deviation from spec §11, which saves it at 0 s of the scan; harmless, because the ring is frozen.) `b`: that saved state restored and the same 6 s rendered. Peak -4.0 dBFS. RMS -13.8 dBFS. SHA-256 of both: `c60c0a190f28f73c0eb264551b1c97dc94646fad7be78ef051ecb81376848e2e`. | Identical files: the reopened pad is the saved one, from its first sample. The check is the hash, not the ear. |
 | `09-resize-live.wav` | 20.0 s | The FX with a 60 s ring over a 19.5 s sweep, scanning 3 s behind. Peak -4.3 dBFS. RMS -13.9 dBFS. `gg-render` sets a ring's length before the render and can't resize one mid-render, so this file is the 60 s ring's steady state, not the resize. | A steady scan from a ring that holds the whole file. The resize itself (16 s to 60 s to 8 s while scanning) is heard only in a host: see the checklist. |
-| `10-fx-sample-layer.wav` | 8.0 s | The FX over a stereo sweep, layer B on with Source Sample, loaded with `loop-48k.wav` (Position 0.25, Density 16 Hz, Size 125 ms), the pad at the centre. Peak -5.9 dBFS. RMS -19.5 dBFS. | A sample layer inside the effect: the loop's bursts re-grained by layer B beside layer A's grains of the input. |
+| `10-fx-sample-layer.wav` | 8.0 s | The FX over a stereo sweep, layer B on with Source Sample, loaded with `loop-48k.wav` (Position 0.25, Density 16 Hz, Size 125 ms), the pad at the center. Peak -5.9 dBFS. RMS -19.5 dBFS. | A sample layer inside the effect: the loop's bursts re-grained by layer B beside layer A's grains of the input. |
 
 ## Host checklist
 
@@ -70,10 +72,13 @@ AU in Live. Note the host and format of anything that fails.
 - [ ] **A ring over 32 MB goes to the captures folder.** Make a ring longer than 32 MB (about
   2 minutes of stereo at 48 kHz), save: it is written to the captures folder, not embedded, and
   reopens.
-- [ ] **A long ring from the generic editor.** Set a Ring Length of 2 minutes from the generic
-  editor, while playing: nothing is cut or clicks at the resize, in both directions.
+- [ ] **A long ring from the Edit view.** Set a Ring Length of 2 minutes from the Edit view's
+  Ring panel (or the generic editor, where the host shows a non-automatable parameter), while
+  playing: nothing is cut or clicks at the resize, in both directions. Carry-over rows 385
+  (`LivePeaks` sized for the longest ring) and 386 (the lane follows the engine's splice
+  numbering) bear on this check and the lane's display.
 - [ ] **The cap's refusal.** Raise Ring Length until the memory cap refuses it: the status says
-  why (through sub-project 6's readout once it lands).
+  why (through the sample strip's memory readout, views PR 2).
 
 ### Sources
 

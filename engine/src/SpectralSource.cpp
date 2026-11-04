@@ -72,7 +72,9 @@ SpectralSource::SpectralSource(double sampleRate, uint32_t maxBlockSize)
     setup_.reset(pffft_new_setup(static_cast<int>(fftSize_), PFFFT_REAL));
     if (!setup_)
     {
-        throw std::bad_alloc();
+        // pffft returns no setup only for a size it rejects (below 0, past 2^26, or not a
+        // multiple of 32 for a real transform), never for want of memory.
+        throw std::logic_error("SpectralSource: pffft rejects the FFT size");
     }
     auto aligned = [n] {
         auto *p = static_cast<float *>(pffft_aligned_malloc(n * sizeof(float)));
@@ -122,6 +124,7 @@ void SpectralSource::reset() noexcept
         std::fill(a.begin(), a.end(), 0.0f);
     }
     pendingUntil_ = 0;
+    lastRingFrameStart_ = INT64_MIN;
 }
 
 void SpectralSource::setActive(bool active) noexcept
@@ -186,12 +189,18 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
 {
     const auto n = static_cast<int64_t>(fftSize_);
     const int64_t hopTime = k * (n / 4);
-    if (m.sample[0] != nullptr && m.sampleFrames > 0)
+    if (m.sample[0] != nullptr)
     {
-        // A fraction of the sample, its window centred there; NaN reads as 0.
+        // A sample, empty or not, is the material, as the Engine decides (D1): one without frames
+        // is silence, never the ring.
+        if (m.sampleFrames <= 0)
+        {
+            return;
+        }
+        // A fraction of the sample, its window centered there; NaN reads as 0.
         const double p = position > 0.0 ? (position < 1.0 ? position : 1.0) : 0.0;
-        const double centre = std::floor(p * static_cast<double>(m.sampleFrames - 1));
-        const int64_t start = static_cast<int64_t>(centre) - n / 2;
+        const double center = std::floor(p * static_cast<double>(m.sampleFrames - 1));
+        const int64_t start = static_cast<int64_t>(center) - n / 2;
         const bool mono = m.sampleMono || m.sample[1] == nullptr;
         for (uint32_t c = 0; c < (mono ? 1u : 2u); ++c)
         {
@@ -204,27 +213,43 @@ void SpectralSource::computeFrame(const SpectralMaterial &m, double position, ui
     {
         return; // no material: the frame is silent
     }
-    // Seconds behind the ring's head at the hop itself, R − 256 − N/2 being the newest centre.
+    // Seconds behind the window's end at the hop itself (the extremes spec §6.2, amended for row
+    // 381): the window steers where the frame starts, as it steers a Live grain's admission, and
+    // the reads are bounded by the storage (ruling SP-T12aa). E is the window's end, the head at
+    // Loop off with no splice, so the newest start is min(E, R − 256) − N.
     const LiveSource &ring = *m.ring;
     const int64_t head = ring.headAt(hopTime);
+    const int64_t windowEnd = ring.anchorAt(hopTime);
     // Through the read bound, as every live grain reads (ruling SP-T12ad): a shrink's read limit
     // lands at a sample the render decides, the smaller storage when the main thread offers it, so
     // reading frames() would make the frames analyzed depend on that time. With no limit set the
-    // two are the same.
+    // two are the same. The window's oldest frame is R − N at Loop off with no splice, and never
+    // below it; the admission limit N′ narrows it during a shrink, as it narrows a Live grain's.
     const int64_t ringFrames = ring.readFrames();
     double behind = position * sampleRate_;
     behind = behind == behind ? behind : 0.0; // NaN reads as 0
-    const auto oldestStart = static_cast<double>(head - ringFrames);
-    const auto newestStart = static_cast<double>(head - kNewestMargin - n);
+    const auto oldestStart =
+        static_cast<double>(std::max(ring.windowOldestAt(hopTime), head - ringFrames));
+    const auto newestStart = static_cast<double>(std::min(windowEnd, head - kNewestMargin) - n);
     double start = newestStart - behind;
-    start = std::min(std::max(start, oldestStart), newestStart); // the newest bound wins
+    // The newest bound wins: a window shorter than N + 256 frames leaves the frame at the newest
+    // start, reading before the window's oldest frame, as a Live grain admitted there does.
+    start = std::min(std::max(start, oldestStart), newestStart);
     const auto first = static_cast<int64_t>(std::floor(start));
     const int64_t oldest = std::max<int64_t>(0, head - ringFrames);
+    lastRingFrameStart_ = first;
     for (uint32_t c = 0; c < 2; ++c)
     {
         readRing(ring, c, first, oldest);
         smearInto(c, false, seed, layer, k);
     }
+}
+
+void SpectralSource::clearOutside(int64_t lo, int64_t hi) noexcept
+{
+    float *const frame = frame_.get();
+    std::fill(frame, frame + lo, 0.0f);
+    std::fill(frame + hi, frame + fftSize_, 0.0f);
 }
 
 void SpectralSource::readSample(const SpectralMaterial &m, uint32_t c, int64_t start) noexcept
@@ -235,12 +260,11 @@ void SpectralSource::readSample(const SpectralMaterial &m, uint32_t c, int64_t s
     // Window index i reads sample frame start + i, inside [0, frames) for i in [lo, hi).
     const int64_t lo = std::clamp<int64_t>(-start, 0, n);
     const int64_t hi = std::clamp<int64_t>(m.sampleFrames - start, lo, n);
-    std::fill(frame, frame + lo, 0.0f);
+    clearOutside(lo, hi);
     for (int64_t i = lo; i < hi; ++i)
     {
         frame[i] = src[start + i] * analysis_[static_cast<std::size_t>(i)];
     }
-    std::fill(frame + hi, frame + n, 0.0f);
 }
 
 void SpectralSource::readRing(const LiveSource &ring, uint32_t c, int64_t start,
@@ -252,7 +276,7 @@ void SpectralSource::readRing(const LiveSource &ring, uint32_t c, int64_t start,
     // Window index i reads ring frame start + i; frames below oldest (before frame 0, or out of
     // the ring's window) read 0. The window ends 256 frames before the head, so none is newer.
     const int64_t lo = std::clamp<int64_t>(oldest - start, 0, n);
-    std::fill(frame, frame + lo, 0.0f);
+    clearOutside(lo, n);
     if (lo == n)
     {
         return;
@@ -273,8 +297,12 @@ void SpectralSource::smearInto(uint32_t c, bool mono, uint64_t seed, uint32_t la
     float *const spectrum = spectrum_.get();
     pffft_transform_ordered(setup_.get(), frame, spectrum, work_.get(), PFFFT_FORWARD);
 
-    // Ordered layout: spectrum[0] is DC and spectrum[1] Nyquist, both real and kept; bin b in
-    // 1 … N/2 − 1 is (spectrum[2b], spectrum[2b + 1]).
+    // Ordered layout: spectrum[0] is DC and spectrum[1] Nyquist, both real; bin b in
+    // 1 … N/2 − 1 is (spectrum[2b], spectrum[2b + 1]). DC and Nyquist keep their phase, so the
+    // overlapping frames add them in amplitude, not in power as the redrawn bins: scaled by
+    // kOverlapGain here, they too come out at unity once the synthesis divides it out (row 365).
+    spectrum[0] *= static_cast<float>(kOverlapGain);
+    spectrum[1] *= static_cast<float>(kOverlapGain);
     const uint64_t firstIndex = static_cast<uint64_t>(k) * (n / 2 + 1);
     for (std::size_t b = 1; b < n / 2; ++b)
     {

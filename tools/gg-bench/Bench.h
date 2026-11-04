@@ -13,7 +13,7 @@
 //   1. builds every configuration once, and warms each up once;
 //   2. then, for round r in [0, rounds), times every configuration once for runSeconds, in
 //      roundOrder(configurations, r): a fixed order rotated by r, and reversed in odd rounds, so
-//      drift over a round (thermal state, a noisy neighbour on a VM) doesn't land on the same
+//      drift over a round (thermal state, a noisy neighbor on a VM) doesn't land on the same
 //      configurations every round, and each configuration follows different ones.
 // Each configuration keeps its own state from one round to the next.
 //
@@ -288,7 +288,7 @@ EngineCaseSettings engineCaseSettings(const std::string &engineCase, uint32_t gr
 /// The order round `round` (r) runs `configurations` (n) configurations in. Even rounds run
 /// 0, 1, ..., n - 1 rotated left by r: order[i] = (i + r) mod n. Odd rounds run that order's
 /// reverse, rotated: order[i] = (r + n - 1 - i) mod n. Each configuration's predecessor thus
-/// alternates between its two neighbours, and for n >= 2 the last of one round is never the first
+/// alternates between its two neighbors, and for n >= 2 the last of one round is never the first
 /// of the next, so no configuration runs twice back to back across a round seam.
 std::vector<uint32_t> roundOrder(uint32_t configurations, int round);
 
@@ -343,7 +343,8 @@ SpaceReport runSpace(const SpaceOptions &options, const Progress &progress = {})
 
 /// The report as its own JSON document, apart from schema 2: {"benchmark": "space", machine,
 /// compiler, commit, sampleRate, runSeconds, rounds, the settings, "runs" (nsPerSample),
-/// "nsPerSample" (the median), "min", "iqr", "cpuPctOneCoreAt48k"}.
+/// "nsPerSample" (the median), "min", "iqr", "cpuPctOneCoreAt48k", "spectral": {"settings",
+/// "runs", "nsPerSample", "min", "iqr", "cpuPctOneCoreAt48k"}}.
 std::string toJson(const SpaceReport &report);
 
 /// gg-bench --space: runs runSpace(options), puts the text gg-bench prints in `out` and, when
@@ -359,12 +360,26 @@ int spaceMain(const SpaceOptions &options, const std::string &jsonPath, std::str
 // bus, their sum through the Delay (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and
 // the Limiter (Peak, ceiling 0.5, release 100 ms). Like --space it has one configuration, so no
 // round order, ratio or baseline; it takes --space's options and has its own JSON.
+//
+// A second stage, "spectral" (carry-over 372), times one SpectralSource at the Spectral kind's
+// defaults, active, analyzing looped stereo noise as a sample at Position 0.5 with no grain
+// reading its ring (256-frame blocks, seed 1, layer 0): the STFT a Spectral-capable layer runs
+// even while switched off (INTENT 23 #69, ruling 3), in ns per stereo sample and % of one core at
+// 48 kHz. It is timed in the same rounds, after the chain, and is as report-only.
 
 struct ChainOptions
 {
     double runSeconds{2.0};        // --seconds; --quick = 0.2
     int rounds{5};                 // --rounds
     std::string commit{"unknown"}; // --commit
+};
+
+/// One stage's rounds: ns per stereo sample, one run per round, and their summary.
+struct StageStats
+{
+    std::vector<double> runs{};             // one per round, in round order
+    double median{0.0}, min{0.0}, iqr{0.0}; // of runs
+    double cpuPctOneCoreAt48k{0.0};         // from the median
 };
 
 struct ChainReport
@@ -374,6 +389,7 @@ struct ChainReport
     std::vector<double> nsPerSample{};      // one per round, in round order
     double median{0.0}, min{0.0}, iqr{0.0}; // of nsPerSample
     double cpuPctOneCoreAt48k{0.0};         // from the median
+    StageStats spectral{};                  // the Spectral Smear's STFT alone (below)
 };
 
 /// Throws std::invalid_argument for a run length that isn't in (0, 3600] seconds or fewer than
@@ -422,8 +438,14 @@ struct CanvasReport
     std::vector<CanvasResult> results; // 4,096, 8,192 and 16,384 grains
 };
 
-/// Times `frames` frames (after a 20-frame warm-up) at each of the three grain counts.
+/// Times `frames` frames (after a 20-frame warm-up) at each of the three grain counts, then
+/// checks the report (checkCanvasReport).
 CanvasReport runCanvas(int frames);
+
+/// Throws std::runtime_error ("the canvas bench timed no resolve at N grains") for the first
+/// result whose resolveMs isn't positive (0, negative or NaN): a resolve the compiler removed, or
+/// one that never ran.
+void checkCanvasReport(const CanvasReport &report);
 
 /// The report as JSON: {"benchmark": "canvas", machine, compiler, width, height, pixelScale,
 /// "lanes": 4, "resolve": "banded", frames, budgetMs, "results": [...]}.

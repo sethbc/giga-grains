@@ -308,7 +308,11 @@ TEST_CASE("the header's preset strip keeps the label's place", "[plugin][ui]")
     auto &strip = *find(*f.editor, "header.preset");
     CHECK(strip.getX() == 162);
     CHECK(strip.getWidth() == 90);
-    CHECK(strip.getParentComponent() == f.editor.get());
+    // In the header (row 331), which spans the editor's top from its left edge.
+    REQUIRE(strip.getParentComponent() != nullptr);
+    CHECK(strip.getParentComponent()->getComponentID() == "header");
+    CHECK(strip.getParentComponent()->getParentComponent() == f.editor.get());
+    CHECK(strip.getParentComponent()->getPosition() == juce::Point<int>(0, 0));
     CHECK(find(strip, "preset.mutate") == nullptr); // Mutate is the browser's (spec §6.9)
     CHECK(find(strip, "preset.prev") != nullptr);
     CHECK(find(strip, "preset.next") != nullptr);
@@ -549,7 +553,7 @@ TEST_CASE("the edited dot follows a macro drag and clears on reload", "[plugin][
     CHECK_FALSE(f.impl->presetEdited());
 }
 
-TEST_CASE("the strip's arrows load the neighbours in the filtered list", "[plugin][ui]")
+TEST_CASE("the strip's arrows load the neighbors in the filtered list", "[plugin][ui]")
 {
     const Machine machine("arrows");
     putPresets(machine);
@@ -1095,7 +1099,7 @@ TEST_CASE("the arrows step through the list without rescanning, the poll rescans
     CHECK_FALSE(f.impl->editorContext().presetFoldersChanged());
 }
 
-TEST_CASE("the strip's Left and Right keys load the neighbours", "[plugin][ui]")
+TEST_CASE("the strip's Left and Right keys load the neighbors", "[plugin][ui]")
 {
     const Machine machine("strip-keys");
     putPresets(machine);
@@ -1182,15 +1186,15 @@ juce::Rectangle<int> lastMacroLabel(Fixture &f)
     return bounds.withTop(bounds.getBottom() - 20).reduced(2);
 }
 
-/// The pixels of `area` in `image` that aren't `colour`.
-int pixelsNot(const juce::Image &image, juce::Rectangle<int> area, juce::Colour colour)
+/// The pixels of `area` in `image` that aren't `color`.
+int pixelsNot(const juce::Image &image, juce::Rectangle<int> area, juce::Colour color)
 {
     int n = 0;
     for (int y = area.getY(); y < area.getBottom(); ++y)
     {
         for (int x = area.getX(); x < area.getRight(); ++x)
         {
-            n += image.getPixelAt(x, y).getARGB() != colour.getARGB() ? 1 : 0;
+            n += image.getPixelAt(x, y).getARGB() != color.getARGB() ? 1 : 0;
         }
     }
     return n;
@@ -1357,7 +1361,7 @@ const gg::ui::Palette &paletteFor(ThemeChoice theme)
     return theme == ThemeChoice::Light ? gg::ui::Palette::light() : gg::ui::Palette::dark();
 }
 
-/// A button's text against its ground, off and on (the on ground: buttonOn over buttonColour).
+/// A button's text against its ground, off and on (the on ground: buttonOn over buttonColor).
 void checkButton(const juce::TextButton &button)
 {
     INFO(button.getComponentID());

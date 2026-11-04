@@ -3,7 +3,7 @@
   "name": "Shard Storm",
   "author": "Giga Grains",
   "description": "Tiny grains at random pitches through a jumping resonant band-pass: the input shredded into glitter and noise; wild on pads and held notes.",
-  "tags": ["extreme", "glitch", "noise", "live-input"],
+  "tags": ["extreme", "glitch", "noise"],
   "params": {
     "Mix": 0.8,
     "Size": -5.643856,

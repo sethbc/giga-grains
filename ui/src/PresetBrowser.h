@@ -68,7 +68,7 @@ class PresetBrowser final : public juce::Component,
     /// again; else when a load moved
     /// presetLoads (the host loaded a preset), lists again without a rescan.
     void refresh();
-    /// Loads the neighbour of the loaded preset in the filtered list as it stands (`direction` +1
+    /// Loads the neighbor of the loaded preset in the filtered list as it stands (`direction` +1
     /// or -1, wrapping; the first or last when the loaded one isn't listed). No rescan (M3): the
     /// list is made once if it never was, and marked again if a load since moved presetLoads.
     /// False if the list is empty or the load failed.

@@ -156,7 +156,7 @@ Diffusion's ID belongs to sub-project 4 (Space).
 
   > **Amended by ruling PU-T13a (2026-10-29):** the 16-sample floor applies to the gated anchor only,
   > `aMin = min(0.5, max(0.05, 16 / d))`. For τ ≤ 0.5 the shape is Hann-like and its attack and release scale with the
-  > grain, as the default Hann always has: an 8-sample attack on a 16-sample grain at Texture 0 is M0's behaviour and stays
+  > grain, as the default Hann always has: an 8-sample attack on a 16-sample grain at Texture 0 is M0's behavior and stays
   > bit-identical. Every envelope is still continuous at both ends.
 - **The window is evaluated per grain,** at spawn, from the grain's latched Texture value, the same way gain is latched today.
   It is deterministic and needs no libm: polynomial and `exp2Det` forms only.
@@ -200,7 +200,7 @@ Diffusion's ID belongs to sub-project 4 (Space).
 
 ### 6.1 Layout
 
-- **A header row:** the product name, the preset name and Perform. Edit is greyed out until M2.
+- **A header row:** the product name, the preset name and Perform. Edit is grayed out until M2.
 - **The canvas** spans the full width: one lane in M1.
 - **The macro row** below it holds the eight macros in remote-control order. Freeze is a large toggle, and the rest are knobs.
 - The window is resizable with HiDPI support. Each macro takes keyboard focus, arrows adjust it, and Shift adjusts it finely.

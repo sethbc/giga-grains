@@ -26,7 +26,7 @@ struct PadPoint
 
 /// The values at pixel (px, py) of a side × side pad: x = px / side, y = 1 − py / side, each
 /// clamped to 0..1, so a drag past the pad pins the handle to its edge. A NaN coordinate gives
-/// 0.5 for its value, and a side that isn't positive and finite gives the centre, (0.5, 0.5).
+/// 0.5 for its value, and a side that isn't positive and finite gives the center, (0.5, 0.5).
 PadPoint padValueAt(float px, float py, float side) noexcept;
 
 /// The pixel (x, y) of `value` on a side × side pad, padValueAt's inverse: where the handle is

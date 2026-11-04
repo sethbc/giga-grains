@@ -12,7 +12,7 @@ the GPU; Metal: about 0.1 ms on the UI thread and 0.4 ms on the GPU, against abo
 UI-thread time for the CPU path under this session's load), so each beats the CPU path on the
 §16 budget by 6.6× to 45× depending on the column (6.6× for GL and 12.5× for Metal on
 whole-process CPU, 20× and 45× on the rendering thread), measured at one load; but neither clears the
-criterion's other half, *no new platform risk*: OpenGL is deprecated on macOS and its behaviour
+criterion's other half, *no new platform risk*: OpenGL is deprecated on macOS and its behavior
 in the hosts, under Rosetta, on Linux compositors and on Windows drivers could not be ruled in
 within the timebox, and Metal is macOS-only, so it would be a second renderer beside the CPU one.
 The CPU renderer is expected to hold the budget idle: the only idle figure, 2.87 ms (§23 #60),
@@ -23,7 +23,7 @@ run; the absolute figures below must still be re-read idle.
 
 ## The criterion
 
-Spec §6.11's words, which it quotes from programme design §6.6: **the CPU renderer stays unless
+Spec §6.11's words, which it quotes from program design §6.6: **the CPU renderer stays unless
 the spike beats it on the §16 UI budget with no new platform risk.** §16's budget: at most 3 ms of UI-thread time
 per frame with 8,000 visible grains. A risk the spike cannot rule out counts against the
 candidate.
@@ -94,7 +94,7 @@ accumulator back once, at frame 120, and logs per-lane sums, compared with the C
 | C | 88,585.4 | 445,374 | 88,436.8 | 444,519 | 88,538.9 | 445,365 |
 | D | 92,391.5 | 450,630 | 92,582.4 | 452,338 | 92,343.0 | 450,635 |
 
-Metal matches within 0.06% (its pixel-centre rule is the CPU renderer's); GL within 0.3% on the
+Metal matches within 0.06% (its pixel-center rule is the CPU renderer's); GL within 0.3% on the
 sums and 0.6% on lit pixels (half-float accumulation and pixel-coverage rounding at the
 splats' rims). Both resolve with `1 − exp(−a)` and the lane tints, as `resolveToArgb` does.
 

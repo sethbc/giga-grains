@@ -16,7 +16,7 @@
 namespace gg::ui
 {
 /// One mod source's chip (M2 sub-project 6's spec §6.6; component ID "source.<ModSource index>"),
-/// coloured by its family (the palette's sourceFamilies). A drag from it carries the description
+/// colored by its family (the palette's sourceFamilies). A drag from it carries the description
 /// "modsource:<ModSource index>" for a ParamControl to take.
 class SourceChip final : public juce::TextButton
 {

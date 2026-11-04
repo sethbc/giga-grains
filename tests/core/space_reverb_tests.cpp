@@ -1157,7 +1157,7 @@ double measureT60(const SpaceParams &p)
 
 TEST_CASE("SpaceReverb tail decays per Decay", "[space]")
 {
-    // Impulses at Damping 0 and Decay 0, 1 and 2 (labelled 1, 2 and 4 s). Two steps of Decay
+    // Impulses at Damping 0 and Decay 0, 1 and 2 (labeled 1, 2 and 4 s). Two steps of Decay
     // scale the T60 by the label's 4, less what the loop loses whatever the Decay: the fixed LF
     // damping (0.2) and the dampers' clamped minimum (0.01) take a larger share of a longer
     // tail. Measured, 2.95 (3.21 with LF damping 0). So the window is 2.5-5: a lost Decay

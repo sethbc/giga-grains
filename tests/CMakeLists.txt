@@ -69,6 +69,7 @@ add_executable(gg-tests
         metrics/metrics_tests.cpp
         metrics/preset_goldens_tests.cpp
         metrics/spectrogram_tests.cpp
+        sweep/SweepDriver.cpp
         sweep/sweep_bursts_tests.cpp
         sweep/sweep_extremes_tests.cpp
         sweep/sweep_keying_tests.cpp
@@ -266,6 +267,8 @@ set(bench_rejects_space_cases_args --space --cases reference)
 set(bench_rejects_space_cases_error "--cases doesn't apply with --space")
 set(bench_rejects_chain_grains_args --chain --grains 10)
 set(bench_rejects_chain_grains_error "--grains doesn't apply with --chain")
+set(bench_rejects_space_chain_args --space --chain)
+set(bench_rejects_space_chain_error "--chain doesn't apply with --space")
 set(bench_rejects_canvas_seconds_args --canvas --seconds 1)
 set(bench_rejects_canvas_seconds_error "--seconds doesn't apply with --canvas")
 set(bench_rejects_make_baseline_quick_args --quick --make-baseline test out.json a.json b.json)
@@ -275,6 +278,7 @@ set(bench_rejects_space_seconds_error "the run length must be more than 0")
 set(bench_rejects_grains_too_many_args --grains 16337)
 set(bench_rejects_grains_too_many_error "there must be at most 16336 grains")
 foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_chain_grains
+        bench_rejects_space_chain
         bench_rejects_canvas_seconds
         bench_rejects_make_baseline_quick bench_rejects_space_seconds
         bench_rejects_grains_too_many)
@@ -285,6 +289,17 @@ foreach (test IN ITEMS bench_rejects_space_cases bench_rejects_chain_grains
             "-DEXPECTED_STDERR2=usage: gg-bench"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
     set_tests_properties(${test} PROPERTIES LABELS bench)
+endforeach ()
+# - bench_chain_unwritable_json, bench_space_unwritable_json: a --json path that can't be written
+#   is an error, exit 1, naming the path (carry-over 374).
+foreach (mode IN ITEMS chain space)
+    add_test(NAME bench_${mode}_unwritable_json
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-bench>
+            "-DARGS=--${mode};--seconds;0.001;--rounds;1;--json;${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/x.json"
+            -DEXPECTED_CODE=1
+            "-DEXPECTED_STDERR=error: couldn't write ${CMAKE_CURRENT_BINARY_DIR}/no-such-dir/x.json"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+    set_tests_properties(bench_${mode}_unwritable_json PROPERTIES LABELS bench)
 endforeach ()
 # - bench_make_baseline_invalid: --make-baseline from a run whose ratio has a median of 0 (which
 #   would make a tolerance of 0/0, NaN) must exit 1 with the error and write no file.
@@ -352,6 +367,12 @@ if (NOT WIN32)
             COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/release_scripts_tests.sh
             ${CMAKE_CURRENT_BINARY_DIR}/release-scripts-tests)
     set_tests_properties(scripts_release PROPERTIES LABELS scripts)
+    # The bootstrap scripts (M2 close spec §6.3) against stub brew, apt-get and git, and the
+    # README's one-liners against the scripts.
+    add_test(NAME scripts_bootstrap
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bootstrap_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/bootstrap-tests)
+    set_tests_properties(scripts_bootstrap PROPERTIES LABELS scripts)
 endif ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
@@ -452,6 +473,19 @@ add_test(NAME render_preset_sample_mode
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
 set_tests_properties(render_preset_sample_mode PROPERTIES LABELS render
         FIXTURES_REQUIRED packed_presets)
+# render_capture_over_cap (carry-over 347): a capture into a layer that the memory cap can't hold
+# is refused before gg-render allocates its buffer (exit 2, the cap's refusal): a 30 s ring in a
+# 64 MiB cap, captured whole into layer B.
+set(render_capture_over_cap_args
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render/render-capture-over-cap.json
+        -o ${CMAKE_BINARY_DIR}/render_capture_over_cap.wav)
+add_test(NAME render_capture_over_cap
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_capture_over_cap_args}" -DEXPECTED_CODE=2
+        "-DEXPECTED_STDERR=gg-render: "
+        "-DEXPECTED_STDERR2=over the memory cap: needs 32 MB, 10 MB free of 64 MB"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_capture_over_cap PROPERTIES LABELS render)
 # --pack-preset takes only -o and --content-dir: another option is refused (exit 2); and a source
 # that doesn't parse (here a render spec) is bad input, with the parser's message.
 add_test(NAME render_pack_preset_alone
@@ -834,8 +868,10 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
             -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli
             -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap.cmake)
-    # About 66 s in Debug: `slow`, so -LE slow leaves it out.
-    set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 300)
+    # About 66 s in Debug: `slow`, so -LE slow leaves it out. Under ASan with the editor it took
+    # about 250 s alone and timed out at 300 s beside seven others (row 388 (o)): 900 s, and two
+    # processors' room in ctest's schedule.
+    set_tests_properties(snap_cli PROPERTIES LABELS "plugin;slow" TIMEOUT 900 PROCESSORS 2)
     # Bad usage (an unknown option, no folder, a malformed size) exits 2 with the usage; fast.
     add_test(NAME snap_cli_usage
             COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gg-snap>
@@ -998,8 +1034,9 @@ endforeach ()
 
 # The embed script (cmake/embed-text.cmake, carry-over row 319): its escaping over a fixture of a
 # quote, a backslash, control characters, UTF-8, a 40,000-byte line and an empty file, and its
-# refusal of unpaired lists. A mismatch reports the first differing byte offset.
-foreach (case IN ITEMS escapes long-line empty unpaired)
+# refusal of unpaired lists, and the fixtures' CR LF detection, byte-aligned (row 388 (r)). A
+# mismatch reports the first differing byte offset.
+foreach (case IN ITEMS escapes long-line empty unpaired newline-aligned)
     add_test(NAME embed_text_${case}
             COMMAND ${CMAKE_COMMAND} -DGG_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/embed_text_${case}

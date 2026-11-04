@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Built** (Tasks 1 to 12b, 2026-10-30; the amendments below are marked). Approved by the programme manager 2026-10-30** against the programme design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the programme manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Built in part first, 2026-10-30 (PR #19; INTENT §23 #68; the plan is `docs/superpowers/plans/2026-10-30-m2-sources.md`): everything in §6 but the ring pyramids (§6.9, Task 12, after sub-project 3 merges and this branch rebases onto it), with the goldens and listening pack (Task 10) in parallel with the documentation; then the final review and its fix wave. The ring pyramids followed as Task 12 and Task 12b closed the build. Amended in place, each marked **Amended**, by the build's rulings (INTENT §23 #68 names them SP-…): §6.1 (the splices' numbering and per-sample aging, SP-T1a and SP-T1b; the ring parameters on every kind, SP-T5c), §6.3 (`kPositionMax` and typing 100% on a Sample layer, SP-T2a and SP-T2b), §6.4 (the `AddSplice` anchor and the commands per group, SP-T5d; the ring read's check and order, SP-T5a; a capture's window, SP-T8a), §6.5 (draining sources not counted, SP-T7b; no ring adoption in `params.flush`, SP-T7a; `Engine::ringResized`, SP-T5b), §6.6 (the `<ring>` attributes, SP-T3d; the WAV header, SP-T3c; a missing payload and a newer `MEDI`, SP-T3a and SP-T3b; the saved ring's window, SP-T8a, SP-T8b and SP-T7c; the fingerprint cache, SP-T7d; the restore, SP-T6a, SP-T6b, SP-T7e and SP-T7g), §6.10 (`gg-render`'s state keys, SP-T8c), §6.11 (the `--quick` warm-up cap, SP-T9a), §12 (the count rules retired) and §13 (as made); and by Task 12a, §6.1, §6.2 and §9 (no click at a window change or a Resample switch, SP-T12aa to SP-T12ac); and by Task 12 and Task 12b, §6.5 (a ring shrink waits for its grains, SP-T12ad) and §6.9 (the 55-tap half-band's lags, levels 1 to 3) |
+| **Status** | **Built** (Tasks 1 to 12b, 2026-10-30; the amendments below are marked). Approved by the program manager 2026-10-30** against the program design and INTENT, with the `AUDI` amendment confirmed (float32 WAV payloads, no libFLAC; INTENT §15 and §18 amended as §13 says) and three notes applied in place: this sub-project's §23 row takes the next free number at merge (sub-project 3 merges first; §13); the mod matrix's target rule for wave 2's layer parameters (refuse the modulators' controls by name, admit every other layer parameter) is sub-project 3's, so after the rebase Loop Length, Overdub and Splice are admitted and this sub-project tests that rather than implementing it (§6.3, §10); sub-project 5 adds `gg/media/ContentPaths.h` under `media/` as a new file only and passes the content roots to `findSample` (§6.7). **The director's decisions D1–D7, 2026-10-30, by forced choice, relayed by the program manager: every recommended option** (option 1 of each), recorded in §8 and applied in place. Built in part first, 2026-10-30 (PR #19; INTENT §23 #68; the plan is `docs/superpowers/plans/2026-10-30-m2-sources.md`): everything in §6 but the ring pyramids (§6.9, Task 12, after sub-project 3 merges and this branch rebases onto it), with the goldens and listening pack (Task 10) in parallel with the documentation; then the final review and its fix wave. The ring pyramids followed as Task 12 and Task 12b closed the build. Amended in place, each marked **Amended**, by the build's rulings (INTENT §23 #68 names them SP-…): §6.1 (the splices' numbering and per-sample aging, SP-T1a and SP-T1b; the ring parameters on every kind, SP-T5c), §6.3 (`kPositionMax` and typing 100% on a Sample layer, SP-T2a and SP-T2b), §6.4 (the `AddSplice` anchor and the commands per group, SP-T5d; the ring read's check and order, SP-T5a; a capture's window, SP-T8a), §6.5 (draining sources not counted, SP-T7b; no ring adoption in `params.flush`, SP-T7a; `Engine::ringResized`, SP-T5b), §6.6 (the `<ring>` attributes, SP-T3d; the WAV header, SP-T3c; a missing payload and a newer `MEDI`, SP-T3a and SP-T3b; the saved ring's window, SP-T8a, SP-T8b and SP-T7c; the fingerprint cache, SP-T7d; the restore, SP-T6a, SP-T6b, SP-T7e and SP-T7g), §6.10 (`gg-render`'s state keys, SP-T8c), §6.11 (the `--quick` warm-up cap, SP-T9a), §12 (the count rules retired) and §13 (as made); and by Task 12a, §6.1, §6.2 and §9 (no click at a window change or a Resample switch, SP-T12aa to SP-T12ac); and by Task 12 and Task 12b, §6.5 (a ring shrink waits for its grains, SP-T12ad) and §6.9 (the 55-tap half-band's lags, levels 1 to 3); and by the close (2026-11-02): goal 1 and §6.6's criterion (K-1, §23 #78), §6.2 (the tap's cost, SP-T12ac; the larger bound, D-bound), §6.3 (Ring Length refused, SP-T12c), §6.5 (the fixed costs' figure), D1 (K-5, §23 #82) and §10 (the window, the tap, the restore: SP-T12aa, SP-T12ac, SP-T7e) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 2 of 7; wave 2, merged second (after 3, before 4) |
-| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.2, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
+| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.2, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with a 16 s ring and two sample slots, the Source-kind parameter with `builtKind`, the per-layer `SourceExchange`, the 256-sample pieces and Feedback, the patch at version 2, the reserved index block `0x..40`–`0x..4F`; M1's `gg-media`, the `GGST` container, the loader and the search (§23 #48, #49, #53) |
 | **Waits on** | Sub-project 3's file pyramid and per-grain level selection, for the ring pyramids alone (§6.9): the last tasks, built after rebasing onto the merged 3 |
 | **Feeds** | Sub-project 4 (rebases onto this: the chain's tap point, `builtKind` with Resample built); 5 (`MEDI` v2's content-relative reference, the preset's `GGST` with no `AUDI`); 6 (the memory-cap readout, the per-layer loader strips, the freeze, record and capture gestures over this sub-project's operations and splices) |
@@ -18,7 +18,7 @@ session and managed with splices; §4 names the fourth source, resampling the in
 session keeps, a 600 s sample cap, one sample per instance, and a `MEDI` manifest with `AUDI`
 reserved. Sub-project 1 made every layer a complete engine with its own ring and sample slots, and
 defined the Source kind with Resample as an unbuilt value. This sub-project builds what those left
-open, the programme design's inventory items I8 to I13 and I38's operations:
+open, the program design's inventory items I8 to I13 and I38's operations:
 
 - **I8** the Resample source: a per-layer tap on the instance output, 256 samples late, that a
   layer granulates, giving the instrument a writable buffer and so Feedback on a Sample-default
@@ -33,7 +33,7 @@ open, the programme design's inventory items I8 to I13 and I38's operations:
   within the ring, splices saved with the ring, and capture into an embedded or filed capture a
   Sample layer can load;
 - and `MEDI` version 2, up to four samples each with its layer and a content-relative reference,
-  this sub-project being M2's one adder of chunks (programme design §7.5).
+  this sub-project being M2's one adder of chunks (program design §7.5).
 
 I9 (carry-over rows 118 and 119) was closed by sub-project 1 (its spec §6.4) and is no longer
 here.
@@ -46,8 +46,11 @@ sub-project 6 draws the lanes, the strips and the gestures.
 ## 2. Goals
 
 1. **A session keeps its sound.** A project saved with a frozen ring of any length reopens, on the
-   same machine or another with its captures folder, with that ring held, and renders
-   bit-identically to the saved session (every grain and every sample of audio the same).
+   same machine or another with its captures folder, with that ring held, and renders the same
+   on every restore, the saved frames restored bit for bit (**Amended**, the director, 2026-11-02,
+   INTENT §23 #78: the clock and the grain index restart, so a restored session is not the saved
+   session continuing; ruling SP-T7e). First written: "renders bit-identically to the saved
+   session (every grain and every sample of audio the same)".
 2. **Minutes, not seconds.** A layer's ring runs from 1 s to minutes long; a sample is bounded by
    memory alone; Position reaches the whole ring.
 3. **The instance can eat itself.** A Resample layer granulates the instance's own output, in both
@@ -96,12 +99,12 @@ sub-project 6 draws the lanes, the strips and the gestures.
 - CLAUDE.md's non-negotiables, the audio-thread rules first (this sub-project's main thread does
   more than M1's: every allocation, file and hash stays there); block-size invariance; 64-bit
   positions (ring time is int64, a 300 s ring at 192 kHz is 2^26 frames); randomness only from
-  the counter RNG (the operations draw nothing); no behaviour that adapts to CPU or to the
+  the counter RNG (the operations draw nothing); no behavior that adapts to CPU or to the
   worker's speed (ruling R18 stands: a restore is synchronous).
 - INTENT §8.3 (uniform source interface: Resample looks like Live to the grains), §8.6
   (deterministic), §8.8 (portable sessions) and §8.4 (real-time safety) shape the design; §8
   breaks ties.
-- The programme design's §7: the chain and the tap 256 samples late, never the host block (§7.2);
+- The program design's §7: the chain and the tap 256 samples late, never the host block (§7.2);
   the ring length as a per-layer parameter in this block, bounded by the cap, Position keeping its
   seconds and M1 values with its CLAP range widened (§7.2); the container at version 1, this
   sub-project alone adding chunks, no patch bump, absent → default (§7.5); the `AUDI` criterion
@@ -115,11 +118,11 @@ sub-project 6 draws the lanes, the strips and the gestures.
 - The process: spec → plan → subagent-driven build in parallel worktrees → fresh review → fix
   wave; `scripts/check.sh` over `dev,asan,rtsan`; CI through a draft PR;
   `scripts/update-goldens.sh` before and after each DSP change; the carry-over counted at start
-  and end; a rebase onto the merged sub-project 3 before the final verification.
+  and end (the policy then in force; retired by §23 #67); a rebase onto the merged sub-project 3 before the final verification.
 
 ## 5. Approaches
 
-**The `AUDI` codec** (the programme design leaves it to this spec, §7.5). Two were weighed.
+**The `AUDI` codec** (the program design leaves it to this spec, §7.5). Two were weighed.
 
 1. **Uncompressed float32, as canonical WAV bytes (chosen).** Each embedded payload is the bytes of
    a float32 WAV file, the same bytes the captures folder would hold. *Gains:* the restore is
@@ -137,11 +140,11 @@ sub-project 6 draws the lanes, the strips and the gestures.
 
 INTENT §8.6 and §8.8 decide it: exactness is what the project promises, and the size difference
 moves only where a long ring lives. §6.6 records the choice; INTENT §18's "as FLAC" and §15's
-planned libFLAC row are amended (§13), and the programme design's exit "libFLAC is pinned" is
-met by its reason: no FLAC encoder is needed. The programme manager confirms the amendment at this
+planned libFLAC row are amended (§13), and the program design's exit "libFLAC is pinned" is
+met by its reason: no FLAC encoder is needed. The program manager confirms the amendment at this
 spec's approval.
 
-**Where the ring's length is decided.** The ring length is a CLAP parameter (programme design
+**Where the ring's length is decided.** The ring length is a CLAP parameter (program design
 §7.2), but its storage can't be allocated on the audio thread. Three ways:
 
 1. **The main thread provides the storage; the audio thread adopts it (chosen).** A change of
@@ -153,7 +156,7 @@ spec's approval.
    is part of a block-size-invariant render"); Ring Length is therefore not automatable (§6.3).
 2. *Allocate every ring at the maximum.* Rejected: 300 s rings in four layers are about 0.9 GB at
    48 kHz before samples; the memory cap exists to prevent exactly that.
-3. *Make Ring Length a per-instance setting outside the parameters.* Rejected by the programme
+3. *Make Ring Length a per-instance setting outside the parameters.* Rejected by the program
    design, which makes it a per-layer parameter so the state and `gg-render` carry it like any
    other.
 
@@ -234,7 +237,7 @@ control grid, and at its default is the identity on M1's bits.
 > window's ends over a ramp of the fade's length, which still steps a grain the ramp outruns (a
 > jump of D frames over M samples fades a grain in M²/D samples) and delays the new window.
 
-### 6.2 The Resample source (I8; programme design §7.2)
+### 6.2 The Resample source (I8; program design §7.2)
 
 - **The tap.** The `Processor` keeps the instance output, `out` as the host hears it (the mix with
   the dry signal and the reverb's return, and after sub-project 4's limiter once it lands; D4),
@@ -243,9 +246,9 @@ control grid, and at its default is the identity on M1's bits.
   first sample, in place of the instance input. Pieces are at most 256 samples and `out` of a
   piece is computed after its tasks join, so every sample a piece's tap needs was rendered before
   it: the same argument as Feedback's. One output channel: the mono output feeds both sides. The
-  history is written only while some layer's kind is Resample; the first 256 samples after the
-  first layer turns Resample read as silence (deterministic: the switch is on the grid). While no
-  layer is Resample the tap costs nothing, and it never adds latency.
+  history is two stores a sample whatever the kinds (**Amended**, SP-T12ac, §23 #68; first written
+  as "only while some layer's kind is Resample"); the first 256 samples after the first layer turns
+  Resample read as silence (deterministic: the switch is on the grid). The tap never adds latency.
 - **In the engine,** a Resample layer is a Live-mode engine: `builtKind(Resample, mode)` returns
   `SourceMode::Live` in both products, and the `Processor` routes the tap to its ring. Position
   and Spray read seconds behind the head; Freeze, Loop, Overdub, splices, capture and the pyramid
@@ -253,7 +256,7 @@ control grid, and at its default is the identity on M1's bits.
   layer's ring, so the instrument's Macro 7 and Feedback act on a Resample layer, the writable
   buffer the instrument lacked (its layers default to Sample). The text rule (FR-6) and the text
   rescan treat Resample as Live.
-- **Stability:** the tap is bounded (`|out| ≤ 2 + |d|`), the ring clamps at ±2^20, Overdub ≤ 1,
+- **Stability:** the tap is bounded (`|out| ≤ 2 + |d|`; 3 + |d| with the global delay engaged, D-bound, §23 #69, which the stability argument below uses), the ring clamps at ±2^20, Overdub ≤ 1,
   Feedback ≤ 0.95 and the soft limiter keeps `|limited| < 1`. A Resample layer at Pitch 0, Position
   256 samples behind and Overdub 1 is a comb that can grow by the layer's Level per pass; the
   `[slow]` test of §10 renders the worst case for 60 s and requires it finite and bounded, as
@@ -272,13 +275,13 @@ control grid, and at its default is the identity on M1's bits.
 > the first layer turns Resample read as silence" and "while no layer is Resample the tap costs
 > nothing" no longer hold. A layer Resample from the start, or never, renders as before.
 
-### 6.3 Parameters: the reserved block (programme design §7.1, §7.2)
+### 6.3 Parameters: the reserved block (program design §7.1, §7.2)
 
 Five per-layer parameters at `0x..40`–`0x..44` in each of scopes 1 to 4, appended to
 `GG_LAYER_PARAMS` as `GG_LAYER_PARAMS_M2_SOURCES`, displayed with the layer's letter, module
 "Layer A" to "Layer D"; `0x45`–`0x4F` stay unused; scope 0's block takes nothing (the memory cap
 is a setting, §6.5). No patch version bump: a state without them loads them at their defaults
-(programme design §7.5).
+(program design §7.5).
 
 | Index | Name | Range | Default | Flags |
 |---|---|---|---|---|
@@ -292,7 +295,7 @@ is a setting, §6.5). No patch version bump: a state without them loads them at 
   Its CLAP value is log2 seconds, as Size's is. The ring in effect may lag the value, or stay
   where it was when the cap refuses (§6.5): the status says so, and sub-project 6 shows it.
   `gg-render` sizes every ring before the render from the spec's values.
-- **Position's range widens** to the longest ring without moving any M1 value (programme design
+- **Position's range widens** to the longest ring without moving any M1 value (program design
   §7.2): the Live mapping `(16/255)(2^(8v) − 1)` seconds stays, and the CLAP maximum rises from
   1 to `vmax = log2(kRingMaxSeconds × 255 / 16 + 1) / 8` (1.528 for 300 s), where the mapping
   gives `kRingMaxSeconds`. A Sample layer's Position is still the fraction of its file, clamped
@@ -308,9 +311,13 @@ is a setting, §6.5). No patch version bump: a state without them loads them at 
   > of the range is reached by dragging, or by typing seconds on a Live layer.
 - Loop Length, Overdub and Splice are routes' targets like any layer parameter (sub-project 1's
   rule: any parameter but a macro or a modulator's control). The target rule that admits wave 2's
-  layer parameters is sub-project 3's (the programme manager, 2026-10-30): after the rebase onto
+  layer parameters is sub-project 3's (the program manager, 2026-10-30): after the rebase onto
   it, a `[core][mod]` test checks the three are admitted and Ring Length, which is not automatable,
   is refused as a target there too, or named in the report if 3's rule admits it.
+
+  > **Amended (ruling SP-T12c, §23 #68):** Ring Length is refused as a route's target
+  > (`core/include/gg/core/ModMatrix.h`: `ref->param != LayerParam::RingLength`), and the matrix
+  > admits every other layer parameter but the modulators' controls.
 
 ### 6.4 Commands and capture (I38)
 
@@ -382,8 +389,9 @@ Two things a parameter can't carry: adding a splice mark, and capturing the ring
   allocations** of the instance: every layer's ring storage with its levels, every sample source
   the instance holds (planar, interleaved and sub-project 3's levels; the one playing, the one
   draining, one waiting and one offered each count), a capture in flight and a decoded buffer
-  waiting for `activate()`. The fixed costs (the pools, the reverb, the event buffers, about
-  65 MB at 48 kHz with sub-project 1's and 3's figures) are documented, not counted. A shared
+  waiting for `activate()`. The fixed costs (the pools, the reverb, the event buffers, and
+  sub-project 4's Spectral and delay buffers; INTENT §14 states the figure, computed from the
+  components' sizes, the first "about 65 MB" having no itemized source) are documented, not counted. A shared
   pool entry (below) counts in full in every instance that holds it: the cap is per instance, and
   conservative.
 
@@ -645,7 +653,7 @@ empty by construction (an FX with no sample still writes an empty one).
   27, 81, 189 and 405, so the rule keeps levels 1 to 3 and `levelCount()` = 4; the 31-tap design's
   `h` = 15 and 225 ≤ 256 for five levels is superseded), so every level is complete over any sample's window, which the admission clamp
   keeps `M` behind the head. Frozen, the levels freeze with level 0. A write costs `Σ 1/2ⁿ × h`
-  multiplies per frame, about 15, less than one grain's (**amended:** about 51 with the 55-tap half-band, the centre tap's 0.5 included, both channels, over three levels).
+  multiplies per frame, about 15, less than one grain's (**amended:** about 51 with the 55-tap half-band, the center tap's 0.5 included, both channels, over three levels).
 - **A resize or restore** fills the levels of the copied frames on the thread that copies (the
   main thread for the stable part, the audio thread for the bounded newest part), by the same
   function, so a restored ring's levels are bit for bit the ones the saved ring had.
@@ -663,7 +671,7 @@ empty by construction (an FX with no sample still writes an empty one).
 > ±lag frames, on the restored frame 0's decimation grid. The ring builds levels 1 to 3 with the
 > 55-tap half-band (SP-T12b; the figures above are the 31-tap design's).
 
-### 6.10 `gg-render` (programme design §6.2: "`gg-render` loads `AUDI` from a spec")
+### 6.10 `gg-render` (program design §6.2: "`gg-render` loads `AUDI` from a spec")
 
 - **Parameters by name:** `"A Ring Length"` (log2 seconds) and the four others, in `params` and
   `automation`; the rings are sized before the render.
@@ -695,9 +703,9 @@ empty by construction (an FX with no sample still writes an empty one).
 
 ### 6.11 `gg-bench`
 
-One case, report-only beside X (programme design §7.6): **`engine-live-long`**, `engine-live`'s
+One case, report-only beside X (program design §7.6): **`engine-live-long`**, `engine-live`'s
 stream over a 300 s ring instead of 16 s, with its positions spread over the ring (Spray the
-ring's length), so the cache behaviour of a minutes-long buffer is measured; its baseline
+ring's length), so the cache behavior of a minutes-long buffer is measured; its baseline
 entries come from `--make-baseline --merge` after three full CI runs, at the close. The ring's
 write with the levels on is measured by `engine-live` itself once the pyramid lands (its ratio
 moves by the levels' cost, named in that commit); `engine-sample`, X, is untouched by anything
@@ -742,7 +750,7 @@ here.
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**The director's answers, 2026-10-30, relayed by the programme manager:** option 1 of every
+**The director's answers, 2026-10-30, relayed by the program manager:** option 1 of every
 decision, D1 to D7. Each is marked below and applied in §6.
 
 **D1. Which rings a session saves** (§6.6; what "the ring saved and restored" means for a ring
@@ -755,7 +763,10 @@ that isn't held). **Decided: option 1.**
    > **Amended** (2026-10-31, the final review): option 2's figures corrected, 6.1 MB and 23 MB
    > of WAV, not 3 MB and 11 MB as first written; the decision stands. A held ring is saved only
    > on a layer whose base Source builds to Live (Live or Resample: option 2's "every Live and
-   > Resample layer's ring" bounds option 1 too), since no grain of a Sample layer reads its ring.
+   > Resample layer's ring" bounds option 1 too), since no grain of a Sample layer reads its ring. **Ratified by the director, 2026-11-02** (the
+   consistency review's K-5; INTENT §23 #82; the controller's narrowing of D1's "a ring is saved
+   when it is held"): the cost, a frozen Sample layer's ring (still recording, SP-T5c) is lost on
+   reopen, so switching that layer to Live then gives an empty ring.
 
    > **Amended** (2026-11-01, M2 sub-project 4's integration review, I2; INTENT §23 #69, decided: the
    > director's D-specsave, option 1, 2026-11-01): the Spectral kind's analysis reads its layer's ring when the layer
@@ -827,8 +838,8 @@ Engineering choices, each with its reason.
 - **`AUDI` payloads are float32 WAV bytes, and libFLAC isn't added** (§5): the restore is exact,
   the ring's ±2^20 floats need no scaling, one representation serves embedded and filed audio, and
   a dependency that only encodes isn't worth building on three platforms. INTENT §15's planned row
-  and §18's "as FLAC" are amended (§13); the programme design's exit "libFLAC is pinned" is met by
-  not needing it, which the programme manager confirms.
+  and §18's "as FLAC" are amended (§13); the program design's exit "libFLAC is pinned" is met by
+  not needing it, which the program manager confirms.
 - **One `AUDI` chunk with ids, not a chunk per payload** (§5): the container's rule stays "one of
   each known ID".
 - **The memory cap in an `INST` chunk,** not in `PTCH`: no patch change (sub-project 1's is M2's
@@ -866,7 +877,7 @@ Engineering choices, each with its reason.
 - **Collect and save is a `gg-media` function plus a plugin command** (§6.7): testable headless,
   and sub-project 6 wires one button.
 - **Four loaders per instance in both products** (§6.8): the FX gets `MEDI` entries, as the
-  programme design says, and layer A's strip keeps working.
+  program design says, and layer A's strip keeps working.
 - **A restored ring arms Freeze; an unsaved one doesn't** (§6.6): the one case #40 deferred is
   fixed, and FR-8's rule is untouched where no ring came back.
 - **`gg-render` cuts its calls at an operation's frame** (§6.10): a capture then has a sample
@@ -875,15 +886,14 @@ Engineering choices, each with its reason.
 - **One benchmark case, `engine-live-long`** (§6.11): the long ring's cache cost is the one new
   thing X-like timing can show; the tap and the operations are per-sample arithmetic the
   `Processor`'s unmeasured cost already contains, for sub-project 7's idle run.
-- **One PR** (the brief), with the pyramid tasks last after the rebase onto 3; the programme
+- **One PR** (the brief), with the pyramid tasks last after the rebase onto 3; the program
   design's §10 split into two PRs is kept as the fallback if the plan exceeds M1's Perform UI,
-  decided at the plan with the programme manager.
+  decided at the plan with the program manager.
 
 ## 10. Verification
 
 **Unit tests** (Catch2, labels in brackets):
-- `[engine][live]`: the window `W` (Loop on narrows it; the admission clamp and the fade use it;
-  a grain past a narrowed window fades to 0 with no read outside it); Overdub (0 bit-identical to
+- `[engine][live]`: the window `W` (Loop on narrows it; the window steers admission; a grain admitted under a wider window finishes in its old span, SP-T12aa); Overdub (0 bit-identical to
   M1's write; the period with Loop on and off; the ramp; the clamp at ±2^20; with Feedback, the
   order of the sum); splices (add, clear, aging out, the 33rd ignored, the span's ends, Splice past
   the count); the storage swap (the window preserved frame for frame, longer and shorter, frozen and
@@ -891,7 +901,7 @@ Engineering choices, each with its reason.
   pyramid of the same frames; complete to `head − M` at every level; frozen with level 0; rebuilt
   identical after a swap).
 - `[core][source]`: the tap (256 late by absolute time; silence before the first; one channel;
-  written only while a Resample layer exists); a Resample layer's Feedback; `builtKind(Resample)`
+  written whatever the kinds, SP-T12ac); a Resample layer's Feedback; `builtKind(Resample)`
   in both products; the commands on the grid; a capture's wrap check (a mocked head that wraps
   forces a retry); the `[slow]` worst-case Resample loop for 60 s, finite and bounded.
 - `[core][patch]`: the five parameters pinned by (name, ID) in every layer scope, inside the
@@ -910,8 +920,8 @@ Engineering choices, each with its reason.
   settings' `capturesFolder`; the ring's rate conversion on restore.
 - `[plugin]`: four loaders in both products; the FX saves and restores a layer-B sample; a state
   with rings and captures round-trips through the CLAP state extension and renders bit for bit
-  after the restore (two restores identical; restore then render equals the saved session's
-  render from the save point); Freeze on a restored ring holds from the first sample, on an
+  after the restore (two restores identical, the ring's frames bit for bit; a restore is not the
+  saved session continuing, SP-T7e and §23 #78); Freeze on a restored ring holds from the first sample, on an
   unsaved one stays live until toggled; `captureRing`, `loadCapture`, `saveCapture`,
   `collectAndSave`; a Ring Length change resizes through the exchange while processing; the cap
   refuses a load with the status; `process` and `params.flush` under the tripwire with the above.
@@ -937,10 +947,10 @@ task, named in its commit):
 | `fx-loop-overdub` | fx | Loop on, Loop Length 1 s, Overdub 0.7 over a 2 s noise-burst pattern; Freeze at 4 s; Overdub to 0 at 6 s |
 | `fx-splice-capture` | fx | Freeze at 2 s; splices at 1.5 and 0.5 s behind; Splice 1 at 2.5 s, 2 at 3.5 s; capture of splice 2 into layer B at 4 s, layer B Sample at Pitch +7 |
 | `fx-ring-restore` | fx | `state: frozen-ring.ggst` (a generated 20 s ring frozen with two splices, embedded) restored with Freeze on; 4 s of scanning: the restore gate |
-| `inst-four-samples` | instrument | `state: four-samples.ggst`, four Sample layers by content-relative reference under `--content-dir`, one held note, the pad at the centre: `MEDI` v2 and the content reference |
+| `inst-four-samples` | instrument | `state: four-samples.ggst`, four Sample layers by content-relative reference under `--content-dir`, one held note, the pad at the center: `MEDI` v2 and the content reference |
 
 **Benchmarks:** `engine-live-long` from `release` with its figures in the report; `engine-sample`
-shows no `regressed` ratio on any CI model at the end (programme design §7.6); `engine-live`'s
+shows no `regressed` ratio on any CI model at the end (program design §7.6); `engine-live`'s
 ratio after the pyramid task named in its commit.
 
 **Validators:** clap-validator, pluginval, auval (three identities) and Steinberg's validator on
@@ -950,20 +960,20 @@ ratio after the pyramid task named in its commit.
 fresh reviewer's final review and its fix wave; the rebase onto the merged sub-project 3 and the
 same again.
 
-**Exit criteria** (programme design §6.2, each with its proof): a session with a frozen
+**Exit criteria** (program design §6.2, each with its proof): a session with a frozen
 minutes-long ring reopens and renders bit-identically on another machine with its captures folder
 (`fx-ring-restore`'s cross-platform event log and metrics, the `[plugin]` restore tests, the
 filed-ring round trip); a 16 s ring at Freeze renders bit-identically to M1 when nothing is
 embedded (the hash list: `fx-feedback` and `fx-note-freeze` unchanged); the memory cap refuses a
 load deterministically with a status (`[media]`, `[plugin]`); the RT tripwire covers the mode
 switch both ways (sub-project 1's test, kept, plus the Resample switch added to it); libFLAC
-(§9: not needed, by the programme manager's confirmation); new goldens cover resample feedback in
+(§9: not needed, by the program manager's confirmation); new goldens cover resample feedback in
 the instrument, a restored ring and a four-sample instrument (the table); `gg-render` loads `AUDI`
 from a spec (`state`, `fx-ring-restore`).
 
 ## 11. The listening pack: `docs/listening/m2-sources/`
 
-Rendered for the record, heard at sub-project 7 (programme design decision 1). A `README.md` in
+Rendered for the record, heard at sub-project 7 (program design decision 1). A `README.md` in
 the M1 and sub-project 1 packs' form (how to render; a table of files with length, what it is,
 measured peak and RMS, and what to listen for; a host checklist for the close) and `specs/`:
 
@@ -1030,7 +1040,7 @@ in the fix wave unless blocked outside our control or genuinely large (the polic
   `--save-state` and `operations`.
 - **§20:** nothing (the M2 row already names this sub-project).
 - **§21:** the memory risk's mitigation as built.
-- **§23, the next free row at merge** (after sub-project 3's; the programme manager's note): this sub-project's director decisions (D1–D7), the codec call and the libFLAC
+- **§23, the next free row at merge** (after sub-project 3's; the program manager's note): this sub-project's director decisions (D1–D7), the codec call and the libFLAC
   amendment, the §9 calls that amend Part II (the tap's content, the resize through the main
   thread, Ring Length not automatable, the restored ring arming Freeze), and the rulings made
   during the build.
@@ -1041,7 +1051,7 @@ and managed with splices like Morphagene" are what this sub-project builds.
 > **Amended (2026-10-30), as made (Task 11):** the changes above are in INTENT, with the build's
 > rulings, except §14's "Mipmaps" text for the ring's levels, which the ring pyramid's task
 > (Task 12) writes with them. The §23 row was #66 on this branch, marked to be renumbered; it
-> became #68 when `main` was merged in after sub-project 3 (a merge, not a rebase, the programme
+> became #68 when `main` was merged in after sub-project 3 (a merge, not a rebase, the program
 > manager's ruling), after sub-project 3's #66 and #67, the carry-over rules' retirement. §14 also
 > gained a determinism bullet for the
 > ring's operations and §15's Host robustness the `params.flush` rule (SP-T7a); §20 and Part I
@@ -1051,7 +1061,7 @@ and managed with splices like Morphagene" are what this sub-project builds.
 
 | Risk | Mitigation |
 |---|---|
-| The sub-project is the programme's largest after 1 (programme design §10) | The plan's waves run in parallel worktrees; the pyramid tasks are last and small; the two-PR split is the fallback (§9) |
+| The sub-project is the program's largest after 1 (program design §10) | The plan's waves run in parallel worktrees; the pyramid tasks are last and small; the two-PR split is the fallback (§9) |
 | A host saves state every few seconds and a 100 MB frozen ring is hashed and written each time | The fingerprint cache by (layer, head, epoch); a filed ring is skipped when its file exists |
 | A restore of a minutes-long ring blocks `stateLoad` for seconds | D8's accepted cost, as for a long sample; r8brain only when the rate differs; the README says so |
 | The resize's main-thread copy never converges on a starved main thread | The bound `kAdoptCopyFrames` is 8,192 frames (170 ms at 48 kHz) of audio-thread copy; a main thread that can't copy 3 MB in 170 ms isn't running the editor either; the status shows "resizing" meanwhile |

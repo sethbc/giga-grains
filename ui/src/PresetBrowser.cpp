@@ -8,7 +8,7 @@
 #include <initializer_list>
 #include <utility>
 
-#include "PresetColours.h"
+#include "PresetColors.h"
 
 namespace gg::ui
 {
@@ -27,14 +27,14 @@ void styleButton(juce::TextButton &button, const char *id, const juce::String &t
 {
     button.setComponentID(id);
     button.setButtonText(text);
-    colourButton(button, Palette::dark()); // the owner's palette replaces it (applyPalette)
+    colorButton(button, Palette::dark()); // the owner's palette replaces it (applyPalette)
 }
 
 void styleEditor(juce::TextEditor &editor, const char *id, const juce::String &placeholder)
 {
     editor.setComponentID(id);
     editor.setTextToShowWhenEmpty(placeholder, Palette::dark().dimText);
-    colourEditor(editor, Palette::dark()); // the owner's palette replaces it (applyPalette)
+    colorEditor(editor, Palette::dark()); // the owner's palette replaces it (applyPalette)
 }
 
 /// A toggle for the tag `word`.
@@ -102,7 +102,7 @@ struct PresetBrowser::Row final : juce::Component
     void applyPalette()
     {
         const Palette &palette = paletteOf(*this);
-        colourButton(star, palette);
+        colorButton(star, palette);
         star.setColour(juce::TextButton::textColourOffId,
                        favorite ? palette.accent : palette.dimText);
     }
@@ -200,13 +200,13 @@ class PresetBrowser::SavePanel final : public juce::Component
         const Palette &palette = paletteOf(*this);
         title_.setColour(juce::Label::textColourId, palette.text);
         message_.setColour(juce::Label::textColourId, palette.text);
-        colourEditor(name_, palette);
-        colourEditor(description_, palette);
-        colourButton(ok_, palette);
-        colourButton(cancel_, palette);
+        colorEditor(name_, palette);
+        colorEditor(description_, palette);
+        colorButton(ok_, palette);
+        colorButton(cancel_, palette);
         for (const auto &tag : tags_)
         {
-            colourButton(*tag, palette);
+            colorButton(*tag, palette);
         }
         repaint();
     }
@@ -413,13 +413,13 @@ void PresetBrowser::applyPalette()
     for (juce::TextButton *button :
          {&favorites_, &saveButton_, &mutateButton_, &deleteButton_, &folderButton_})
     {
-        colourButton(*button, palette);
+        colorButton(*button, palette);
     }
     for (const auto &tag : tagButtons_)
     {
-        colourButton(*tag, palette);
+        colorButton(*tag, palette);
     }
-    colourEditor(search_, palette);
+    colorEditor(search_, palette);
     status_.setColour(juce::Label::textColourId, palette.dimText);
     // The list sits on the header's ground: the lanes' (kLane) stay dark in both themes (D9).
     list_.setColour(juce::ListBox::backgroundColourId, palette.header);
@@ -755,7 +755,7 @@ void PresetBrowser::rebuildTags()
             }
             applyFilter();
         };
-        colourButton(*button, paletteOf(*this));
+        colorButton(*button, paletteOf(*this));
         addAndMakeVisible(*button);
         tagButtons_.push_back(std::move(button));
     }

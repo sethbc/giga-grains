@@ -24,7 +24,7 @@
 
 #include "Palette.h"
 #include "ParamValue.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 
 namespace gg::ui
 {
@@ -633,16 +633,16 @@ void ParamControl::paintOverChildren(juce::Graphics &g)
         {
             const float x = static_cast<float>(getWidth()) - 2.0f - kDotSize -
                             static_cast<float>(i) * kDotPitch;
-            g.setColour(m.rings[i].colour);
+            g.setColour(m.rings[i].color);
             g.fillEllipse(x, 2.0f, kDotSize, kDotSize);
         }
         return;
     }
-    const auto centre = circle.getCentre();
+    const auto center = circle.getCentre();
     const float radius = circle.getWidth() * 0.5f;
-    const auto arc = [&g, centre](float r, float from01, float to01, float stroke) {
+    const auto arc = [&g, center](float r, float from01, float to01, float stroke) {
         juce::Path p;
-        p.addCentredArc(centre.x, centre.y, r, r, 0.0f, angleOf(std::min(from01, to01)),
+        p.addCentredArc(center.x, center.y, r, r, 0.0f, angleOf(std::min(from01, to01)),
                         angleOf(std::max(from01, to01)), true);
         g.strokePath(p, juce::PathStrokeType(stroke));
     };
@@ -658,7 +658,7 @@ void ParamControl::paintOverChildren(juce::Graphics &g)
     {
         const Ring &ring = m.rings[i];
         const float d = ring.depth01;
-        g.setColour(ring.colour.withAlpha(m.dragRing == i ? 1.0f : 0.85f));
+        g.setColour(ring.color.withAlpha(m.dragRing == i ? 1.0f : 0.85f));
         if (ring.bipolar)
         {
             arc(m.ringRadius(i, radius), v0 - std::abs(d), v0 + std::abs(d), stroke);

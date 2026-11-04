@@ -343,7 +343,7 @@ void GigaGrainsPlugin::deactivate() noexcept
     checkKinds();
     checkRingLengths();
     // The rings D1 saves are kept for the next activation; the loaders' workers stop (a job under
-    // way is cancelled and queued again), and what they finished applies with nothing offered:
+    // way is canceled and queued again), and what they finished applies with nothing offered:
     // the next activate() gives it to the new processor.
     gg::core::ParamValues values{};
     for (std::size_t s = 0; s < kParamCount; ++s)

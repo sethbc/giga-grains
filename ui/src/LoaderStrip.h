@@ -68,6 +68,12 @@ class LoaderStrip final : public juce::Component
     /// dialog still open when the strip goes is dismissed and its callback never runs. Tests
     /// replace it.
     std::function<void(const Browse &, std::function<void(const juce::File &)>)> browse;
+    /// The "..." menu ("loader.more"): "Sample folder…" and "Collect…", each doing what its
+    /// button does. The tests take it here and invoke an item; nothing shows it but showMenu.
+    juce::PopupMenu moreMenu();
+    /// Shows the "..." menu. By default juce::PopupMenu::showMenuAsync at the button; tests
+    /// replace it (a menu shown is modal to the test).
+    std::function<void(juce::PopupMenu)> showMenu;
 
     LoaderStrip(const EditorContext &context, uint8_t layer, Compact compact);
     ~LoaderStrip() override;

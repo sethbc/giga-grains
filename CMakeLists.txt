@@ -27,7 +27,7 @@ project(GigaGrains VERSION 0.2.0 LANGUAGES C CXX)
 # pre-release suffix. A build from main reports 0.2.0-dev; a release commit sets beta.N, or empty
 # for the milestone release, and the nightly configures with dev.<yyyymmdd>.g<sha7>. Bundle
 # metadata takes GG_VERSION_NUMERIC alone; everything else reports GG_VERSION_STRING.
-set(GG_VERSION_PRERELEASE "dev" CACHE STRING "Pre-release suffix: dev on main, beta.N for a beta, empty for a release")
+set(GG_VERSION_PRERELEASE "" CACHE STRING "Pre-release suffix: dev on main, beta.N for a beta, empty for a release")
 include(cmake/version.cmake)
 gg_compose_version("${PROJECT_VERSION}" "${GG_VERSION_PRERELEASE}" GG_VERSION_STRING)
 set(GG_VERSION_NUMERIC "${PROJECT_VERSION}")
@@ -37,7 +37,7 @@ option(GG_BUILD_PLUGINS "Build the plugins: their core, and the formats with GG_
 # core and its [plugin] tests, without the editor, JUCE or clap-wrapper's CLAP/VST3/AUv2/standalone
 # targets. Nothing is downloaded then. The sanitizer presets build the plugin audio path this way.
 option(GG_BUILD_EDITOR "Build the JUCE editor and the clap-wrapper formats" ON)
-option(GG_SANITIZE "Build with clang/gcc address and undefined-behaviour sanitizers" OFF)
+option(GG_SANITIZE "Build with clang/gcc address and undefined-behavior sanitizers" OFF)
 option(GG_USE_RTSAN "Build with the LLVM RealtimeSanitizer" OFF)
 # RealtimeSanitizer is in upstream Clang 20 and newer; Apple clang and gcc have none.
 if (GG_USE_RTSAN AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
@@ -51,8 +51,8 @@ option(GG_COPY_PLUGIN_AFTER_BUILD "Copy plugins to the user plugin folders after
 set(GG_JUCE_PATH "${CMAKE_SOURCE_DIR}/libs/JUCE" CACHE PATH "JUCE checkout used for the UI")
 if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     # clients/clap-first signs every macOS bundle with this identity after building it, and the
-    # codesign_* tests verify the signatures. "-" signs ad hoc, locally and on every CI run but a
-    # tag's or the nightly's. A Developer ID signs with a real identity, and then also with the
+    # codesign_* tests verify the signatures. "-" signs ad hoc: locally, and on every CI run that
+    # builds no installer or has no signing secrets. A Developer ID signs with a real identity, and then also with the
     # hardened runtime and a secure timestamp, and the two standalone apps with their
     # entitlements (installer/macos/standalone.entitlements: the microphone). The installer is
     # notarized after that. See docs/superpowers/specs/2026-10-29-release-pipeline-design.md §6.2.

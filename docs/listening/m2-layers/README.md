@@ -1,6 +1,6 @@
 # Listening pack: M2 sub-project 1 (Layers and structure)
 
-This pack is rendered for the record now and heard at M2's close (sub-project 7; the programme
+This pack is rendered for the record now and heard at M2's close (sub-project 7; the program
 design's decision 1). It has two parts:
 
 - renders from `gg-render`, to hear offline, one per item of the spec's table (§11);
@@ -42,17 +42,19 @@ generated drum-like loop: a 30 ms noise burst every 250 ms for 4 s; `tone-44k1.w
 in slots 13 and up, on top of the factory routes (the macros' twelve, at rest).
 
 The peaks and RMS levels below were measured on the `release` renders, over both channels and the
-whole file unless a span is given. No file peaks above −5 dBFS.
+whole file unless a span is given. No file peaks above −5 dBFS. **Re-rendered on `release` at `df1c3ae` (the M2 close, Task 16),** after
+row 301's morph fix and the close's engine changes: every peak and every RMS span below matched
+to 0.1 dB, so `01`, `05` and `14` read as written.
 
-**Layers sum under one pad (D1).** With the pad at its centre, the weights of the layers that are
+**Layers sum under one pad (D1).** With the pad at its center, the weights of the layers that are
 on share 1 between them: two layers play at half amplitude each, four at a quarter. Layers that
 don't correlate (different pitches, sizes or sources) therefore add to *less* than one layer
 alone: about 3 dB less for two and 6 dB less for four. `01`, `05` and `14` measure it.
 
 | File | Length | What it is | Listen for |
 |---|---|---|---|
-| `01-four-layers.wav` | 4.5 s | The FX over `loop-48k.wav`, layer A alone (Density 32 Hz, Size 150 ms), then from 1.5 s layers B (+7, 60 ms), C (−12, 300 ms) and D (+12, 30 ms) too, every layer at 32 Hz; the pad at the centre. Peak −12.8 dBFS. RMS −38.2 dBFS over 0.5–1.5 s (A alone), −45.5 over 2–4 s (all four). The loop is short bursts and silence, so the file is quiet. | Four textures as one instrument: a fifth, an octave down and an octave up around the loop's bursts. Nothing is louder than one layer was in M1 (D1): the four together measure about 7 dB *below* layer A alone. Is that drop acceptable, or should the pad keep power rather than amplitude? |
-| `02-morph-square.wav` | 10.0 s | The instrument, four Sample layers (A a 100 Hz–4 kHz sweep, B a 330 Hz sine, C noise, D a 50 Hz–2 kHz sweep, each read at Position 0.25), one note held 0.25–9.75 s. The pad steps from the centre to layer A's corner, Morph X 0 and Y 0 (0.5–1.0 s), round the square's four edges, 2 s each in 1/32 steps every 1/16 s (1.0–9.0 s), and back to the centre. Peak −8.6 dBFS. RMS −23.1 dBFS at the centre (0.5–1.0 s), −21.0 over the square. | Smooth crossfades from one layer to the next, with no step at any corner or edge: the noise (layer C, whose corner is X 0, Y 1) fades in along the Y = 1 edge (5.0–7.0 s) and out along X = 0 (7.0–9.0 s), and is all but silent along the first two edges. Each pad move ramps over 10 ms. |
+| `01-four-layers.wav` | 4.5 s | The FX over `loop-48k.wav`, layer A alone (Density 32 Hz, Size 150 ms), then from 1.5 s layers B (+7, 60 ms), C (−12, 300 ms) and D (+12, 30 ms) too, every layer at 32 Hz; the pad at the center. Peak −12.8 dBFS. RMS −38.2 dBFS over 0.5–1.5 s (A alone), −45.5 over 2–4 s (all four). The loop is short bursts and silence, so the file is quiet. | Four textures as one instrument: a fifth, an octave down and an octave up around the loop's bursts. Nothing is louder than one layer was in M1 (D1): the four together measure about 7 dB *below* layer A alone. Is that drop acceptable, or should the pad keep power rather than amplitude? |
+| `02-morph-square.wav` | 10.0 s | The instrument, four Sample layers (A a 100 Hz–4 kHz sweep, B a 330 Hz sine, C noise, D a 50 Hz–2 kHz sweep, each read at Position 0.25), one note held 0.25–9.75 s. The pad steps from the center to layer A's corner, Morph X 0 and Y 0 (0.5–1.0 s), round the square's four edges, 2 s each in 1/32 steps every 1/16 s (1.0–9.0 s), and back to the center. Peak −8.6 dBFS. RMS −23.1 dBFS at the center (0.5–1.0 s), −21.0 over the square. | Smooth crossfades from one layer to the next, with no step at any corner or edge: the noise (layer C, whose corner is X 0, Y 1) fades in along the Y = 1 edge (5.0–7.0 s) and out along X = 0 (7.0–9.0 s), and is all but silent along the first two edges. Each pad move ramps over 10 ms. |
 | `03-pitch-spread-ladder.wav` | 10.5 s | One note over a 220 Hz sine (Position 0.25, Density 32 Hz), held 0.25–10.25 s. A Pitch Spread 0, then 2, 7, 12 and 24 semitones at 2.25, 4.25, 6.25 and 8.25 s. Peak −7.4 dBFS. RMS −19.4 dBFS. | From one line to a cluster: each grain's pitch is drawn uniformly within ±2, ±7, ±12 and ±24 semitones, so a narrow wobble, a band, two octaves' scatter and four octaves'. No clicks between the steps (the spread applies to each new grain). |
 | `04-size-spread-ladder.wav` | 8.5 s | One note over noise (Position 0.25, Size 100 ms, Density 32 Hz), held 0.25–8.25 s. A Size Spread 0, then 0.5, 1 and 2 octaves at 2.25, 4.25 and 6.25 s. Peak −5.3 dBFS. RMS −21.6 dBFS at 0 (0.5–2.25 s), −21.0 at 2 octaves (6.5–8.25 s). | Grains from one length to a scatter of lengths, drawn uniformly within ±2 octaves at the top (25 ms to 400 ms): the texture turns from an even hiss to a mix of ticks and swells. The level holds: 0.6 dB apart. |
 | `05-layer-on-off.wav` | 8.0 s | The FX over the sweep. Layer A at its defaults; layer B (+7, 60 ms, 32 Hz) on at 1.5 s, off at 3.0 s, on at 4.5 s, off at 6.0 s. Peak −9.4 dBFS. RMS −18.3 dBFS with A alone (0.5–1.5 s), −22.2 with both (2.0–3.0 s), −19.9 after B goes off (3.2–4.5 s). | The layer speaks at once when switched on (its forced onset), and no click either way: each switch ramps over 10 ms. A dips about 4 dB while B plays, D1's sharing (above). |
@@ -73,19 +75,19 @@ AU in Live. Note the host and format of anything that fails.
 
 ### Layers B to D
 
-**In the instrument, layers B to D are silent unless their Source is Live.** The sample loader
-feeds layer A alone until the session format's next version (MEDI v2; spec §6.4), so a layer B
-to D left at Sample, the instrument's default, has no sample to read. That silence is expected,
-not a bug: to hear one of them in the instrument, set its Source to Live and route audio into
-the sidechain (below). In the FX every layer is Live by default and sounds.
+**In the instrument, a layer B to D left at Sample is silent until it has a sample.** Since
+sub-project 2 (`MEDI` v2, INTENT §23 #68) and the views' PR 2, every layer has its own sample, loaded from
+the layer strip or by dropping a file on its lane; a layer with none is silent, which is expected,
+not a bug. To hear one of them in the instrument, load a sample on it, or set its Source to Live
+and route audio into the sidechain (below). In the FX every layer is Live by default and sounds.
 
 - [ ] **From the generic editor.** In each product, open the host's generic parameter view.
   Layers B to D's parameters are there as `B Position` … `D Step 16`, with `Layer B On` …
   `Layer D On`, `Level B` … `Level D`, `Morph X` and `Morph Y`. Switch layer B on (in the
-  instrument, with `B Source` at Live and the sidechain fed), set its Pitch and Size, and hear it
+  instrument, with a sample loaded on it or `B Source` at Live and the sidechain fed), set its Pitch and Size, and hear it
   join layer A.
-- [ ] **From the remote pages.** In Bitwig, step through the device's eight remote-control pages
-  (spec §6.9): "Perform", "Cloud" and "Space" as in M1, then "Layers" (the four Layer On
+- [ ] **From the remote pages.** In Bitwig, step through the first eight of the device's thirteen remote-control
+  pages (spec §6.9; the thirteen since sub-project 4, §23 #69): "Perform", "Cloud" and "Space" as in M1, then "Layers" (the four Layer On
   switches and the four Levels), "Morph" (Morph X and Y) and "Cloud B" to "Cloud D" (that
   layer's Position, Size, Density, Pitch, Spray, Stereo, Freeze and Level). Each control moves
   what its name says, on the right layer.

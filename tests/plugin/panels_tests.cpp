@@ -64,8 +64,8 @@ TEST_CASE("a ParamControl edits its parameter as a gesture", "[plugin]")
     REQUIRE(recording.kinds() == "bve");
     CHECK_THAT(recording.calls[1].value, WithinAbs(0.3 + 0.01 * (meta.maxVal - meta.minVal), 1e-5));
     recording.calls.clear();
-    const juce::Point<float> centre = knob->getLocalBounds().getCentre().toFloat();
-    knob->mouseDoubleClick(mouseAt(*knob, centre.x, centre.y, centre, false));
+    const juce::Point<float> center = knob->getLocalBounds().getCentre().toFloat();
+    knob->mouseDoubleClick(mouseAt(*knob, center.x, center.y, center, false));
     REQUIRE(recording.kinds() == "bve");
     CHECK(recording.calls[1].value == static_cast<double>(sizeDefault));
 
@@ -231,14 +231,14 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
     CHECK_FALSE(knobClicks);
     CHECK_FALSE(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
 
-    // A press on the knob's centre grabs no ring; one on the ring drags its depth.
-    const juce::Point<float> centre =
+    // A press on the knob's center grabs no ring; one on the ring drags its depth.
+    const juce::Point<float> center =
         knob->getBounds().toFloat().withHeight(static_cast<float>(knob->getWidth())).getCentre();
-    size.mouseDown(mouseAt(size, centre.x, centre.y, centre, false));
-    size.mouseDrag(mouseAt(size, centre.x, centre.y - 30.0f, centre, true));
-    size.mouseUp(mouseAt(size, centre.x, centre.y - 30.0f, centre, true));
+    size.mouseDown(mouseAt(size, center.x, center.y, center, false));
+    size.mouseDrag(mouseAt(size, center.x, center.y - 30.0f, center, true));
+    size.mouseUp(mouseAt(size, center.x, center.y - 30.0f, center, true));
     CHECK(drags.empty());
-    const juce::Point<float> onRing{centre.x, knob->getBounds().toFloat().getY() - 2.0f};
+    const juce::Point<float> onRing{center.x, knob->getBounds().toFloat().getY() - 2.0f};
     size.mouseDown(mouseAt(size, onRing.x, onRing.y, onRing, false));
     size.mouseDrag(mouseAt(size, onRing.x, onRing.y - 15.0f, onRing, true));
     size.mouseUp(mouseAt(size, onRing.x, onRing.y - 15.0f, onRing, true));
@@ -247,7 +247,7 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
     CHECK(drags.back().second > 0.25f);
     CHECK(recording.calls.empty()); // the parameter itself never moved
 
-    // The ring paints around the knob, in its colour.
+    // The ring paints around the knob, in its color.
     sst::jucegui::style::StyleSheet::initializeStyleSheets([] {});
     knob->setStyle(sst::jucegui::style::StyleSheet::getBuiltInStyleSheet(
         sst::jucegui::style::StyleSheet::DARK));
@@ -262,7 +262,7 @@ TEST_CASE("a ParamControl in mod mode drags its rings and not its value", "[plug
     CHECK(atRing.getRed() > atRing.getBlue());
 }
 
-TEST_CASE("the light palette's macro colour shows on its ground", "[plugin]")
+TEST_CASE("the light palette's macro color shows on its ground", "[plugin]")
 {
     // Okabe-Ito's yellow is about 1.2:1 on the light background, so light() darkens it.
     const gg::ui::Palette &light = gg::ui::Palette::light();
@@ -519,14 +519,14 @@ TEST_CASE("the Edit view draws rings from the routes and follows the base values
     REQUIRE(size.size() == 1);
     CHECK(size[0].slot == 1);
     CHECK(size[0].bipolar);
-    CHECK(size[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
+    CHECK(size[0].color == gg::ui::Palette::dark().sourceFamilies[0]);
     CHECK(ringsOf(ParamSlot::B_Density).size() == 2);
     CHECK(ringsOf(ParamSlot::B_PitchSpread).empty());
     // The spread knobs have rings too: the factory route Macro 4 to Spray is slot 6.
     const auto &spray = ringsOf(ParamSlot::B_Spray);
     REQUIRE(spray.size() == 1);
     CHECK(spray[0].slot == 6);
-    CHECK(spray[0].colour == gg::ui::Palette::dark().sourceFamilies[0]);
+    CHECK(spray[0].color == gg::ui::Palette::dark().sourceFamilies[0]);
 
     // A route's change reaches the ring at the next refresh; a route to layer C alone leaves B's.
     routes[0].targetLayer = 2;
@@ -607,6 +607,44 @@ TEST_CASE("a spread pair's band is its spread either side of the base value", "[
         const auto band = bandOn(ParamSlot::Position);
         REQUIRE(band.has_value());
         CHECK(*band == expected(ParamSlot::Position, 0.5f, 0.75f));
+    }
+}
+
+TEST_CASE("the instrument's Oscillator layer takes the Sample band", "[plugin]")
+{
+    // Row 388 (g): the unbuilt Oscillator falls back to the product's default kind, Sample in
+    // the instrument, so its Position band is two-sided there (the FX's, Live, is one-sided: the
+    // test above), and follows a switch to Live and back.
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Instrument);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    const auto set = [&](ParamSlot slot, float v) {
+        recording.values[static_cast<std::size_t>(slot)] = v;
+    };
+    const auto band = [&] {
+        view.refresh();
+        auto *control = dynamic_cast<gg::ui::ParamControl *>(
+            findDeep(view, controlId(ParamSlot::Position).toRawUTF8()));
+        REQUIRE(control != nullptr);
+        return control->spreadBand();
+    };
+    const auto &meta = gg::core::paramMeta(ParamSlot::Position, gg::core::Mode::Instrument);
+    const auto to01 = [&](float v) { return (v - meta.minVal) / (meta.maxVal - meta.minVal); };
+    set(ParamSlot::Position, 0.5f);
+    set(ParamSlot::Spray, 0.25f);
+    const auto twoSided = std::pair{to01(0.25f), to01(0.75f)};
+    const auto oneSided = std::pair{to01(0.5f), to01(0.75f)};
+    for (const auto &[kind, expected] : {std::pair{gg::core::SourceKind::Oscillator, twoSided},
+                                         std::pair{gg::core::SourceKind::Live, oneSided},
+                                         std::pair{gg::core::SourceKind::Oscillator, twoSided},
+                                         std::pair{gg::core::SourceKind::Sample, twoSided}})
+    {
+        INFO("kind " << int(kind));
+        set(ParamSlot::Source, static_cast<float>(kind));
+        const auto shown = band();
+        REQUIRE(shown.has_value());
+        CHECK(*shown == expected);
     }
 }
 
@@ -762,8 +800,10 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     auto *knob = childOfType<sst::jucegui::components::Knob>(size);
     REQUIRE(knob != nullptr);
     const float before = size.shownValue();
+    SteppedWallClock clock; // repeats 50 ms apart, whatever the machine's speed
     for (int i = 0; i < 20; ++i)
     {
+        clock.advance(0.05);
         REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
     }
     CHECK(recording.kinds().size() == 20 * 3); // each press is still a host gesture
@@ -774,12 +814,22 @@ TEST_CASE("held arrow keys make one undo entry", "[plugin]")
     CHECK(undone[0] == std::pair{ParamSlot::Size, before});
 
     // A press with a pause is its own entry, and a drag between presses splits them.
+    clock.advance(0.05);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 1); // redone history: a new entry, not merged into the undone one
+    clock.advance(gg::ui::UndoStack::kNudgeMergeSeconds + 0.5);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 2); // the pause
+    clock.advance(0.05);
+    REQUIRE(knob->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(undo.size() == 2); // within the merge time again
     knob->onBeginEdit();
     knob->continuous()->setValueFromGUI(0.5f);
     knob->onEndEdit();
-    CHECK(undo.size() == 1);
+    CHECK(undo.size() == 3);
+    clock.advance(0.05);
     CHECK(knob->keyPressed(juce::KeyPress(juce::KeyPress::upKey)));
-    CHECK(undo.size() == 2);
+    CHECK(undo.size() == 4);
 }
 
 TEST_CASE("a control destroyed mid commit-on-release gesture sends its value before the end",
@@ -870,14 +920,19 @@ TEST_CASE("Budget in the Output panel in both products", "[plugin]")
         auto *budget = dynamic_cast<gg::ui::ParamControl *>(
             findDeep(view, controlId(ParamSlot::Budget).toRawUTF8()));
         REQUIRE(budget != nullptr);
-        juce::Component *panel = budget->getParentComponent();
-        while (panel != nullptr && panel->getParentComponent() != &view)
-        {
-            panel = panel->getParentComponent();
-        }
-        REQUIRE(panel != nullptr);
-        CHECK(panel->isVisible());
-        CHECK(view.getLocalBounds().contains(panel->getBounds()));
+        // The Output panel, found below the view by its kind, not by walking up from the control
+        // to whatever sits under the view (the grid's viewport; row 388 (h)).
+        std::vector<gg::ui::ParamPanel *> panels;
+        collect(view, panels);
+        const auto output = std::find_if(panels.begin(), panels.end(), [](auto *p) {
+            return p->panel() == gg::ui::Panel::Output;
+        });
+        REQUIRE(output != panels.end());
+        gg::ui::ParamPanel &panel = **output;
+        CHECK(panel.isParentOf(budget));
+        CHECK(panel.isVisible());
+        CHECK(view.getLocalBounds().contains(
+            view.getLocalArea(panel.getParentComponent(), panel.getBounds())));
         CHECK(childOfType<sst::jucegui::components::Knob>(*budget) != nullptr);
         CHECK((findDeep(view, controlId(ParamSlot::Mix).toRawUTF8()) != nullptr) ==
               (mode == gg::core::Mode::Fx));

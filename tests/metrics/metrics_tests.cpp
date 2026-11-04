@@ -185,7 +185,7 @@ TEST_CASE("click score is local, so a loud passage does not hide a quiet click",
     REQUIRE(click.clickScore > limit);
 }
 
-TEST_CASE("click score leaves out the click's own neighbours and floors the level", "[metrics]")
+TEST_CASE("click score leaves out the click's own neighbors and floors the level", "[metrics]")
 {
     const double limit = gg::metrics::Tolerances{}.maxClickScore;
 

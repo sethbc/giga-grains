@@ -14,7 +14,7 @@
 
 #include "../Palette.h"
 #include "gg/core/ParamMap.h"
-#include "gg/ui/LayerColours.h"
+#include "gg/ui/LayerColors.h"
 #include "gg/ui/RouteEdits.h"
 #include "gg/ui/Rings.h"
 #include "gg/ui/UndoStack.h"
@@ -372,7 +372,7 @@ struct ParamPanel::Impl
         return std::equal(a.begin(), a.end(), b.begin(), b.end(),
                           [](const ParamControl::Ring &x, const ParamControl::Ring &y) {
                               return x.slot == y.slot && x.depth01 == y.depth01 &&
-                                     x.bipolar == y.bipolar && x.colour == y.colour;
+                                     x.bipolar == y.bipolar && x.color == y.color;
                           });
     }
 

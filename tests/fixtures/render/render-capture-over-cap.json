@@ -1,0 +1,14 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 40.0,
+  "blockSize": 256,
+  "seed": 1,
+  "input": {"kind": "noise", "seconds": 40.0, "amplitude": 0.25},
+  "channels": 2,
+  "memoryCapMiB": 64,
+  "params": {"A Ring Length": 4.906890595608519, "Mix": 1.0},
+  "operations": [
+    {"time": 39.0, "layer": "A", "op": "capture", "into": "B"}
+  ]
+}

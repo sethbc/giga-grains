@@ -106,6 +106,24 @@ bool sameBits(const std::vector<float> &a, const std::vector<float> &b)
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
+// Where two renders first differ, for an INFO (carry-over row 234): the first sample whose bits
+// differ, or the sizes if they differ.
+std::string firstDifference(const std::vector<float> &a, const std::vector<float> &b)
+{
+    if (a.size() != b.size())
+    {
+        return "sizes " + std::to_string(a.size()) + " and " + std::to_string(b.size());
+    }
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0)
+        {
+            return "first differs at sample " + std::to_string(i);
+        }
+    }
+    return "the same bits";
+}
+
 // An event sink is called on the audio thread, so this one records into preallocated storage
 // and never allocates (the RTSan build checks that). The capacity holds a grain per sample, the
 // density ceiling, for the 12,000 frames of "extreme and non-finite params stay finite".
@@ -131,7 +149,7 @@ struct SinkLog
     }
 };
 
-// Periodic (distribution 0) and centred (stereo 0), as M0's stream was.
+// Periodic (distribution 0) and centered (stereo 0), as M0's stream was.
 gg::CloudParams params(double densityHz, double durationSec, double position, double spray,
                        double pitch, float gain)
 {
@@ -525,7 +543,7 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
             gg::rng::uniform01(gg::rng::hash({7, 0, 0, gg::rng::Field::SignalNoise, counter++}));
         return lo + (hi - lo) * u;
     };
-    // Each field is drawn over twice the width of its legal range, centred on it, so about
+    // Each field is drawn over twice the width of its legal range, centered on it, so about
     // half the draws are out of range. Durations are "legal" over 0..1 s for this purpose.
     auto wide = [&draw](double lo, double hi) {
         const double w = hi - lo;
@@ -555,12 +573,12 @@ TEST_CASE("random param sweep stays finite and bounded", "[engine]")
 TEST_CASE("pan follows equal power with unity center", "[engine]")
 {
     // The law: gL = sqrt(1 - pan) and gR = sqrt(1 + pan), so gL^2 + gR^2 = 2. Both are exactly 1
-    // at the centre, so a centred grain's latched channel gains are its gain, and its output 0
+    // at the center, so a centered grain's latched channel gains are its gain, and its output 0
     // is the one-output render's bit for bit, as is its output 1 from a mono source (ruling
     // M1-d; spec §3).
-    const gg::PanGains centre = gg::panGains(0.0f);
-    REQUIRE(centre.left == 1.0f);
-    REQUIRE(centre.right == 1.0f);
+    const gg::PanGains center = gg::panGains(0.0f);
+    REQUIRE(center.left == 1.0f);
+    REQUIRE(center.right == 1.0f);
     bool onLaw = true;
     for (int i = -1000; i <= 1000; ++i)
     {
@@ -589,13 +607,13 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
             engine->setEventSink(&SinkLog::record, &log);
             return engine;
         };
-        SinkLog centreLog;
-        const auto centred = render(*makeEngine(0.0, centreLog), kFrames, 256);
+        SinkLog centerLog;
+        const auto centered = render(*makeEngine(0.0, centerLog), kFrames, 256);
         SinkLog wideLog;
         const auto wide = render(*makeEngine(1.0, wideLog), kFrames, 256);
-        REQUIRE(centreLog.grains.size() == 1);
+        REQUIRE(centerLog.grains.size() == 1);
         REQUIRE(wideLog.grains.size() == 1);
-        const gg::GrainSpec &g = centreLog.grains[0];
+        const gg::GrainSpec &g = centerLog.grains[0];
         REQUIRE(g.pan == 0.0f);
         REQUIRE_FALSE(std::signbit(g.pan)); // +0, never -0, so the event log reads "pan":0
 
@@ -628,8 +646,8 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         // Stereo 0: both channel gains are the grain's gain.
         const std::array<std::vector<float>, 2> unpannedOut = expected(g, {g.gain, g.gain});
         REQUIRE(peak(unpannedOut[0]) > 0.1f);
-        REQUIRE(sameBits(centred.left, unpannedOut[0]));
-        REQUIRE(sameBits(centred.right, unpannedOut[1]));
+        REQUIRE(sameBits(centered.left, unpannedOut[0]));
+        REQUIRE(sameBits(centered.right, unpannedOut[1]));
 
         // Stereo 1: the same grain, only its pan differs, and each channel's gain is the grain's
         // gain times its pan gain, latched once.
@@ -638,7 +656,7 @@ TEST_CASE("pan follows equal power with unity center", "[engine]")
         unpanned.pan = 0.0f;
         REQUIRE(unpanned == g);
         INFO("pan = " << pan);
-        REQUIRE(std::abs(pan) > 0.1f); // seed 17 puts the grain clearly off centre
+        REQUIRE(std::abs(pan) > 0.1f); // seed 17 puts the grain clearly off center
         const gg::PanGains gains = gg::panGains(pan);
         REQUIRE(std::abs(gains.left - std::sqrt(1.0 - pan)) <= 1e-7);
         REQUIRE(std::abs(gains.right - std::sqrt(1.0 + pan)) <= 1e-7);
@@ -757,7 +775,7 @@ TEST_CASE("a new source applies from the next onset and old grains finish on the
           "[engine]")
 {
     // Source A is all +0.5 and B all -0.5, so a grain's sign says which it read. 100 Hz of
-    // 200 ms grains, periodic and centred: about 20 overlap, and the grains started before the
+    // 200 ms grains, periodic and centered: about 20 overlap, and the grains started before the
     // swap at 0.5 s sound on for up to 200 ms after it. One onset falls on the swap sample
     // itself (24,000 = 50 x 480), and it belongs to the new source.
     constexpr int64_t kSwap = 24000;
@@ -1088,6 +1106,20 @@ std::vector<float> noiseInput(int64_t frames, uint64_t seed)
     return in;
 }
 
+// Calls fn(done, n) for consecutive blocks covering [0, frames), the block sizes cycled from
+// `sizes` and the last block cut short.
+template <class Fn> void forEachBlock(int64_t frames, const std::vector<uint32_t> &sizes, Fn &&fn)
+{
+    std::size_t next = 0;
+    for (int64_t done = 0; done < frames;)
+    {
+        const auto n =
+            static_cast<uint32_t>(std::min<int64_t>(sizes[next++ % sizes.size()], frames - done));
+        fn(done, n);
+        done += n;
+    }
+}
+
 // Renders input[from, from + frames) through the engine as a mono input, in blocks of
 // blockSize; the outputs start as NaN, as render()'s do.
 Render renderInput(gg::Engine &engine, const std::vector<float> &input, int64_t from,
@@ -1095,14 +1127,11 @@ Render renderInput(gg::Engine &engine, const std::vector<float> &input, int64_t 
 {
     Render r{std::vector<float>(static_cast<std::size_t>(frames), kUnwritten),
              std::vector<float>(static_cast<std::size_t>(frames), kUnwritten)};
-    for (int64_t done = 0; done < frames;)
-    {
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, frames - done));
+    forEachBlock(frames, {blockSize}, [&](int64_t done, uint32_t n) {
         const float *in[1] = {input.data() + from + done};
         float *out[2] = {r.left.data() + done, r.right.data() + done};
         engine.process(in, 1, out, 2, n);
-        done += n;
-    }
+    });
     return r;
 }
 
@@ -1190,6 +1219,7 @@ TEST_CASE("disabled, the engine spawns nothing but writes its ring", "[engine][l
     REQUIRE_FALSE(engine.enabled());
     REQUIRE(engine.sourceMode() == gg::SourceMode::Live);
     REQUIRE(log.grains.empty());
+    REQUIRE(engine.gateFaults() == 0);
     REQUIRE(engine.activeGrains() == 0);
     REQUIRE(engine.droppedGrains() == 0);
     REQUIRE(engine.sampleClock() == 48000);
@@ -1235,6 +1265,8 @@ TEST_CASE("enabling forces an onset at that frame", "[engine][layers]")
     CHECK(log.grains[1].onsetSample == 96000);
     CHECK(log.grains[1].onsetFrac == 0.0);
     CHECK(peak(on.left) > 0.05f);
+    // Carry-over row 234: two grains, both spawned with the gate requested on (gateFaults()).
+    REQUIRE(engine.gateFaults() == 0);
 
     // Not vacuous: never disabled, grain 1 waits for 4 s.
     gg::Engine always(gg::EngineConfig{});
@@ -1751,7 +1783,7 @@ struct OrderLog
     }
 };
 
-// 200 Hz of one-second grains, periodic and centred: an onset every 240 samples, each grain
+// 200 Hz of one-second grains, periodic and centered: an onset every 240 samples, each grain
 // sounding 48,002 samples (durationSamples 48,000), so 200 are wanted at once.
 gg::CloudParams overload() { return params(200.0, 1.0, 0.5, 0.0, 0.0, 0.25f); }
 } // namespace
@@ -2150,11 +2182,15 @@ void checkExitCase(const ExitCase &c)
     {
         INFO("blocks of " << blockSize);
         const ExitRender r = renderExit(c, source, blockSize);
+        // The counts first (carry-over row 234): counts that differ mean the ladder's decisions
+        // diverged (scheduling); the same counts with different samples mean the arithmetic did.
+        CHECK(r.dropped == ref.dropped);
+        CHECK(r.lowered == ref.lowered);
+        CHECK(r.stolen == ref.stolen);
+        INFO("left " << firstDifference(r.audio.left, ref.audio.left) << ", right "
+                     << firstDifference(r.audio.right, ref.audio.right));
         REQUIRE(sameBits(r.audio.left, ref.audio.left));
         REQUIRE(sameBits(r.audio.right, ref.audio.right));
-        REQUIRE(r.dropped == ref.dropped);
-        REQUIRE(r.lowered == ref.lowered);
-        REQUIRE(r.stolen == ref.stolen);
     }
 }
 
@@ -2275,7 +2311,7 @@ TEST_CASE("stealing a short grain keeps its end and does not fade", "[engine][bu
     REQUIRE(sameBits(r.left, expected.left));
     REQUIRE(sameBits(r.right, expected.right));
 
-    // The output: at most two grains sound at once, each of gain kGain at the centre, with a
+    // The output: at most two grains sound at once, each of gain kGain at the center, with a
     // window whose step per sample is at most π / D, reading a sine whose own step is at most
     // ω = 2π × 220 / 48,000. So no output sample moves by more than 2 × kGain × (π / D + ω): no
     // grain steps, at its steal or its end.
@@ -2366,7 +2402,7 @@ std::vector<EdgeCase> edgeCases()
     return cases;
 }
 
-// An engine over `source` playing 4 grains a second of the case, centred, periodic, at the case's
+// An engine over `source` playing 4 grains a second of the case, centered, periodic, at the case's
 // gain, each read starting `cross` samples (at the nominal rate) before the sample's last frame.
 std::unique_ptr<gg::Engine>
 edgeEngine(const EdgeCase &c, const std::shared_ptr<const gg::PreparedSource> &source, SinkLog *log)
@@ -2663,17 +2699,12 @@ BusRender renderBuses(gg::Engine &engine, const std::vector<float> &input, int64
     const auto size = static_cast<std::size_t>(frames);
     BusRender r{{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)},
                 {std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)}};
-    std::size_t next = 0;
-    for (int64_t done = 0; done < frames;)
-    {
-        const uint32_t want = blockSizes[next++ % blockSizes.size()];
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+    forEachBlock(frames, blockSizes, [&](int64_t done, uint32_t n) {
         const float *in[1] = {input.data() + done};
         float *out[2] = {r.out.left.data() + done, r.out.right.data() + done};
         float *bus2[2] = {r.bus2.left.data() + done, r.bus2.right.data() + done};
         engine.process(in, 1, out, 2, bus2, n);
-        done += n;
-    }
+    });
     return r;
 }
 
@@ -2683,16 +2714,11 @@ Render renderOneBus(gg::Engine &engine, const std::vector<float> &input, int64_t
 {
     const auto size = static_cast<std::size_t>(frames);
     Render r{std::vector<float>(size, kUnwritten), std::vector<float>(size, kUnwritten)};
-    std::size_t next = 0;
-    for (int64_t done = 0; done < frames;)
-    {
-        const uint32_t want = blockSizes[next++ % blockSizes.size()];
-        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, frames - done));
+    forEachBlock(frames, blockSizes, [&](int64_t done, uint32_t n) {
         const float *in[1] = {input.data() + done};
         float *out[2] = {r.left.data() + done, r.right.data() + done};
         engine.process(in, 1, out, 2, n);
-        done += n;
-    }
+    });
     return r;
 }
 
@@ -2794,6 +2820,25 @@ TEST_CASE("two buses share the grains", "[engine]")
         REQUIRE(twoBus->bus2Used());
         REQUIRE(oneBus->bus2Used()); // the flag follows admissions, whichever process() runs
     }
+}
+
+TEST_CASE("a source removal keeps bus 2's flag raised", "[engine][buses]")
+{
+    // Row 361: setSource(nullptr) is a hard cut of the pool but leaves bus2Used() raised, so a
+    // layer that sums bus 2 after its filter lets the filter's tail ring out; reset() lowers it.
+    const auto input = noiseInput(48000, 13);
+    auto engine = busEngine(gg::SourceMode::Sample, 0.5);
+    renderBuses(*engine, input, 4800, kBusBlocks);
+    REQUIRE(engine->bus2Used());
+    REQUIRE(engine->activeGrains() > 0);
+
+    engine->setSource(nullptr);
+    renderBuses(*engine, input, 64, kBusBlocks);
+    REQUIRE(engine->activeGrains() == 0);
+    REQUIRE(engine->bus2Used());
+
+    engine->reset();
+    REQUIRE_FALSE(engine->bus2Used());
 }
 
 TEST_CASE("bus2Used is sticky until a reset or the gate", "[engine]")

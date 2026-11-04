@@ -54,10 +54,10 @@ void PreparedSource::buildLevel(uint32_t n)
 std::shared_ptr<const PreparedSource>
 PreparedSource::make(std::shared_ptr<const SampleBuffer> buffer, const std::atomic<bool> *cancel)
 {
-    const auto cancelled = [cancel]() noexcept {
+    const auto canceled = [cancel]() noexcept {
         return cancel != nullptr && cancel->load(std::memory_order_relaxed);
     };
-    if (buffer == nullptr || cancelled())
+    if (buffer == nullptr || canceled())
     {
         return nullptr;
     }
@@ -84,7 +84,7 @@ PreparedSource::make(std::shared_ptr<const SampleBuffer> buffer, const std::atom
         const uint32_t count = mipLevelCount(b.frames());
         for (uint32_t n = 1; n < count; ++n)
         {
-            if (cancelled())
+            if (canceled())
             {
                 return nullptr;
             }

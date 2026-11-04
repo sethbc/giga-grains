@@ -315,7 +315,7 @@ PresetInfo fxInfo()
                       Mode::Fx,
                       "Giga Grains",
                       "A held, glassy freeze \xc3\xa4.",
-                      {"texture", "freeze", "live-input"}};
+                      {"texture", "freeze", "sample"}};
 }
 
 PresetInfo instrumentInfo()
@@ -504,7 +504,7 @@ TEST_CASE("get_metadata reports a factory preset's metadata", "[plugin][discover
     CHECK(preset.flags == CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
     CHECK(preset.creators == std::vector<std::string>{"Giga Grains"});
     CHECK(preset.description == "A held, glassy freeze \xc3\xa4.");
-    CHECK(preset.features == std::vector<std::string>{"texture", "freeze", "live-input"});
+    CHECK(preset.features == std::vector<std::string>{"texture", "freeze", "sample"});
     REQUIRE(preset.timestamps.has_value());
     CHECK(preset.timestamps->first == CLAP_TIMESTAMP_UNKNOWN);
     // Written a moment ago: the modification time is now, in seconds since the epoch.

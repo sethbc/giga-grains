@@ -691,3 +691,39 @@ TEST_CASE("findFiledAudio finds a ring or capture at its path, then in the captu
         gg::media::findFiledAudio(hash, kContent.size(), utf8(dir / "gone" / "d.wav"), settings);
     requireMissing(found);
 }
+
+TEST_CASE("findSample finds a content reference by its name in the last load folder and under "
+          "the sample folder",
+          "[media]")
+{
+    // A factory preset's sample: no saved path, a content-relative reference, not under any root
+    // (row 401; INTENT §18 D5's step 5 is for every entry).
+    const auto dir = freshDir("search-content-name");
+    MediaEntry entry = entryFor(dir / "unused");
+    entry.absolutePath.clear();
+    entry.contentPath = "packs/strings/kick.wav";
+    const std::vector<fs::path> roots{dir / "no-such-root"};
+
+    // The last load folder, by the reference's last component.
+    put(dir / "last" / "kick.wav", kContent);
+    requireFound(findSample(entry, MachineSettings{"", utf8(dir / "last")}, roots),
+                 dir / "last" / "kick.wav", true);
+    // The scan under the sample folder.
+    put(dir / "lib" / "a" / "b" / "kick.wav", kContent);
+    requireFound(findSample(entry, MachineSettings{utf8(dir / "lib"), ""}, roots),
+                 dir / "lib" / "a" / "b" / "kick.wav", true);
+    // A content root, if it holds the reference, still comes first.
+    put(dir / "no-such-root" / "packs" / "strings" / "kick.wav", kContent);
+    requireFound(findSample(entry, MachineSettings{utf8(dir / "lib"), utf8(dir / "last")}, roots),
+                 dir / "no-such-root" / "packs" / "strings" / "kick.wav", true);
+
+    // A same-named file with other bytes is never taken, by size or by hash.
+    const auto other = freshDir("search-content-name-other");
+    put(other / "last" / "kick.wav", kOther);
+    put(other / "lib" / "kick.wav", kSameSize);
+    requireMissing(findSample(entry, MachineSettings{utf8(other / "lib"), utf8(other / "last")}));
+    // An entry with neither a path nor a valid reference has no name to look for.
+    MediaEntry nameless = entry;
+    nameless.contentPath = "../kick.wav";
+    requireMissing(findSample(nameless, MachineSettings{utf8(dir / "lib"), utf8(dir / "last")}));
+}

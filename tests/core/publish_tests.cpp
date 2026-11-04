@@ -628,7 +628,9 @@ TEST_CASE("publishing off costs nothing", "[core][publish]")
     UiSnapshot snap;
     CHECK_FALSE(off.snapshot().take(snap));
     CHECK(off.publishedClock().load() == 0);
-    CHECK(off.livePeaks().frames() == static_cast<int64_t>(std::ceil(16.0 * kRate)));
+    // The strip spans the longest ring (row 385), whatever the ring's length.
+    CHECK(off.livePeaks().frames() ==
+          static_cast<int64_t>(std::ceil(gg::core::kRingMaxSeconds * kRate)));
 
     CHECK(on.grainQueue().pop(g));
     CHECK(on.snapshot().take(snap));
@@ -687,7 +689,8 @@ TEST_CASE("the instrument publishes snapshots and its rings' peaks", "[core][pub
     // (none here), so the head advances over silence.
     Processor p({kRate, 512, 3, Mode::Instrument});
     p.setPublishing(true);
-    CHECK(p.livePeaks().frames() == static_cast<int64_t>(std::ceil(16.0 * kRate)));
+    CHECK(p.livePeaks().frames() ==
+          static_cast<int64_t>(std::ceil(gg::core::kRingMaxSeconds * kRate)));
     const std::array<gg::core::NoteEvent, 1> note{{{0, gg::core::NoteEventType::On, 0, 60}}};
     float l[512];
     float r[512];
@@ -859,7 +862,7 @@ TEST_CASE("grain events reach the queue", "[core][publish]")
 TEST_CASE("live peaks follow the input", "[core][publish]")
 {
     // A 0.8 burst of 64 frames at 1.0 s over silence in the left channel, and a −0.6 one at
-    // 52032 in the right: each bucket reads its burst's magnitude and the neighbours 0 (the
+    // 52032 in the right: each bucket reads its burst's magnitude and the neighbors 0 (the
     // ring's time is the sample clock until a freeze).
     constexpr size_t kFrames = 72000;
     Channels input{std::vector<float>(kFrames, 0.0f), std::vector<float>(kFrames, 0.0f)};

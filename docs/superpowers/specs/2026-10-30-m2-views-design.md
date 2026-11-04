@@ -2,26 +2,26 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **Built (PR 2), 2026-11-01** (the plan: `docs/superpowers/plans/2026-11-01-m2-views-pr2.md`; PR 2's rulings VW-P2a to VW-P2n are in §16): the Ring, Delay and Limiter panels, the ring's lane menu, the sample strip for every layer in both products, the memory readout and cap, and the plan's undo and hygiene tasks; the text it changed is marked **Amended** in place. The header's split into its own component (row 331) and the preset strip's palette (row 313's rest) wait on sub-project 5's group 2. |
-| **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 6 of 7; wave 3, merged second, after sub-project 5. Started with wave 2 (programme design §6, "Wave rules"): the work that needs only wave 1 is built now; the work that needs wave 2's parameters waits until wave 2 has merged and this branch is rebased. |
-| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.6, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them. |
+| **Status** | **Approved by the program manager 2026-10-30** against the program design and INTENT, with two notes: the FX view's Reverb section in PR 1 is accepted (§6.1), and the INTENT §23 row takes the next free number at merge, after sub-projects 3, 2, 4 and 5 (§13). **The director's decisions D1–D11, 2026-10-30,** relayed by the program manager, are recorded in §8 and applied in place: every recommended option (D1 to D11, option 1 each); **D12** (the canvas's repaint rate, from the final review), 2026-10-30: option 2, the display's rate. Sub-project 5 replaces the contents of the header label `header.preset` with its preset strip and browser button; this sub-project keeps that ID and bounds slot and moves nothing else in the header's left group (§4). **Built (PR 1), 2026-10-30** (the plan: `docs/superpowers/plans/2026-10-30-m2-views.md`): where the build changed what this document said, the text is marked **Amended** in place with its ruling's ID (`VW-T<task><letter>`), and §16 lists every ruling. **Built (PR 2), 2026-11-01** (the plan: `docs/superpowers/plans/2026-11-01-m2-views-pr2.md`; PR 2's rulings VW-P2a to VW-P2n are in §16): the Ring, Delay and Limiter panels, the ring's lane menu, the sample strip for every layer in both products, the memory readout and cap, and the plan's undo and hygiene tasks; the text it changed is marked **Amended** in place. Row 313 was closed by sub-project 5's group 2, and the header's split into its own component (row 331) is the close's. |
+| **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 6 of 7; wave 3, merged second, after sub-project 5. Started with wave 2 (program design §6, "Wave rules"): the work that needs only wave 1 is built now; the work that needs wave 2's parameters waits until wave 2 has merged and this branch is rebased. |
+| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.6, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them. |
 | **Builds on** | M2 sub-project 1 as built (§23 #65): four layers, the morph law (D1), the Source kind, Pitch and Size Spread, the 48-slot mod matrix and its sources, the 218 parameters, the patch at version 2, the per-layer grain events and live peaks; M1's Perform view (§23 #58): the canvas, `LaneModel`, `LaneState`, `SplatRenderer`, `MacroRow`, `LoaderStrip`, the UI → host gesture path and the audio → UI publish path; sst-jucegui at `22a89ca`. |
 | **Feeds** | Sub-project 5 (the header's preset name, which its browser replaces; the undo stack's whole-state entry, which Mutate and preset recall push); sub-project 7 (the pack, the canvas figure, the GPU spike's decision). |
 | **Starts from** | `main` at `ab9f4e2` (sub-project 1 merged, PR #15), and `docs/m2-carry-over.md` with **11 open rows** (51, 85, 87, 88, 144, 148, 184, 217, 218, 221, 232). |
-| **Two PRs** | Allowed by programme design §6.6, taken here (§6.1): **PR 1**, everything that needs wave 1 alone; **PR 2**, after wave 2 and sub-project 5 merge, the panels and readouts for wave 2's parameters and operations. Both count as sub-project 6 for the carry-over. |
+| **Two PRs** | Allowed by program design §6.6, taken here (§6.1): **PR 1**, everything that needs wave 1 alone; **PR 2**, after wave 2 and sub-project 5 merge, the panels and readouts for wave 2's parameters and operations. Both count as sub-project 6 for the carry-over. |
 
 ## 1. Why this sub-project
 
 INTENT §17 describes an editor with four views: Perform (lanes, macros, a layer strip and an XY
 pad), Edit (per-layer panels), Mod (drag a source onto a control) and FX (the global chain), with
-undo/redo, keyboard navigation, light and dark themes and a colour-blind-safe layer palette. M1
+undo/redo, keyboard navigation, light and dark themes and a color-blind-safe layer palette. M1
 built one lane and the macros (§23 #58). Sub-project 1 built four layers, the morph, the spreads
 and the full mod matrix, headless by choice (§23 #65): today layers B to D, the pad, the spreads
 and 36 of the 48 routes are reachable only through a host's generic editor, automation and the
 remote-controls pages. Every M2 feature after wave 1 lands as more parameters that the UI must
 show.
 
-This sub-project gives those features their faces. It delivers the programme design's inventory
+This sub-project gives those features their faces. It delivers the program design's inventory
 items I30 to I36, I29's undo/redo and I38's gestures (§6.6 there):
 
 - **I30** the Perform view completed: one lane per layer, the layer strip, the XY pad, pitch
@@ -43,16 +43,16 @@ plugins render bit-identically with the editor open or closed, as M1's do.
 
 ## 2. Goals
 
-1. **Every parameter is reachable from the UI** (the programme design's exit): a machine check
+1. **Every parameter is reachable from the UI** (the program design's exit): a machine check
    walks the 218 slots, and wave 2's additions after the rebase, and fails on any that no view
    shows.
 2. **The canvas tells the truth for four layers** (INTENT §8.7): each lane draws its own layer's
-   grains, in that layer's colour, over its own ring or sample, with its own scan window, freeze
+   grains, in that layer's color, over its own ring or sample, with its own scan window, freeze
    tint and feedback marker; a grain's height is its pitch, so Pitch Spread and the Pitch macro
    are visible.
 3. **The frame budget holds with four lanes:** `gg-bench --canvas` at 8,192 grains stays at or
    under 3 ms idle on the reference core, and the host check at the close confirms Live and Bitwig
-   (programme design §7.11).
+   (program design §7.11).
 4. **Direct manipulation grows** without losing M1's: Position and Spray drags as in M1, plus
    Pitch and Pitch Spread on the vertical axis, per-lane freeze, the pad, the strip, and a file
    dropped onto a lane.
@@ -60,7 +60,7 @@ plugins render bit-identically with the editor open or closed, as M1's do.
    products, saved in the state as sub-project 1 defined it.
 6. **Undo/redo** covers what the editor does, survives closing the editor, and plays back through
    the host-visible gesture path so hosts record it.
-7. **The basics:** keyboard-navigable, two themes, a palette that four kinds of colour vision
+7. **The basics:** keyboard-navigable, two themes, a palette that four kinds of color vision
    tell apart, resizable and HiDPI as before.
 8. **The About box** shows the same notices and license texts the installers carry, closing row
    221.
@@ -71,10 +71,10 @@ plugins render bit-identically with the editor open or closed, as M1's do.
 ## 3. Non-goals and anti-goals
 
 **Non-goals (this sub-project)**
-- No new parameter (programme design §7.1: wave 3 adds none). The theme, the lane's axis mode
+- No new parameter (program design §7.1: wave 3 adds none). The theme, the lane's axis mode
   and the undo stack are not parameters.
 - No DSP change. Row 217's answer is chosen so that it needs none (§8, D10).
-- No preset browser, tags, favourites, INIT or Mutate (sub-project 5's). The header keeps a
+- No preset browser, tags, favorites, INIT or Mutate (sub-project 5's). The header keeps a
   preset-name slot for its browser to replace.
 - No sample loading for layers B to D or for the FX until `MEDI` version 2 exists (sub-project 2):
   PR 1 drops files onto layer A's lane in the instrument alone; PR 2 extends it.
@@ -99,7 +99,7 @@ plugins render bit-identically with the editor open or closed, as M1's do.
 - **CLAUDE.md's non-negotiables** and INTENT §14's determinism rules. The editor reads the engine's
   state through `GrainQueue`, `SnapshotBuffer`, `LivePeaks` and the published clock, and writes
   base values through the plugin's UI queue; both stay as M1 built them, extended by addition.
-- **Ownership** (programme design §6.6 and the brief): this sub-project owns `ui/`,
+- **Ownership** (program design §6.6 and the brief): this sub-project owns `ui/`,
   `plugin/src/editor/` and the spike under `docs/spikes/`, but not the browser's files
   (sub-project 5's). Shared files are edited **by addition only**: `core/include/gg/core/
   UiSnapshot.h` and the `Processor`'s publish (per-lane fields, §6.4), `plugin/src/
@@ -110,7 +110,7 @@ plugins render bit-identically with the editor open or closed, as M1's do.
   too, by one addition: `saveSettings`' NUL guard covers the `theme` field this sub-project
   added. Also by addition, as built: the root `CMakeLists.txt` and `.github/workflows/ci.yml`
   (`gg-snap` and its artifact, §6.13).
-- **The header's preset name** is coordinated with sub-project 5 through the programme manager:
+- **The header's preset name** is coordinated with sub-project 5 through the program manager:
   the label `header.preset` keeps its component ID and bounds slot; sub-project 5 replaces its
   contents with the browser's control. This sub-project moves nothing else in the header's left
   group.
@@ -119,7 +119,7 @@ plugins render bit-identically with the editor open or closed, as M1's do.
 - **sst-jucegui at its pin** (`22a89ca`): its knobs, sliders, toggles, menus, `MultiSwitch`,
   `VSlider`, `NamedPanel`, `TabbedComponent`, `MarkdownComponent`, the light and dark built-in
   style sheets, and its keyboard traverser. No submodule edit; no bump unless sub-project 5's
-  clap-wrapper bump forces one (programme design §8).
+  clap-wrapper bump forces one (program design §8).
 - **GUI tests run on macOS** (the existing `[plugin]` GUI tests are `#if defined(__APPLE__)`:
   Linux CI has no display for JUCE's GUI start-up, and Windows isn't tried). The new ones follow;
   everything framework-free (`gg-ui-core`) runs on every leg and under the sanitizers.
@@ -141,8 +141,8 @@ plugins render bit-identically with the editor open or closed, as M1's do.
    drop highlight) that spans lanes becomes awkward.
 2. **One canvas, four lanes, one accumulator, a per-band tint in the resolve** (chosen, §6.3):
    the resolve cost stays proportional to the canvas's area, as M0 measured it; each lane's rows
-   take its layer's colour; one component owns the drags and the drop.
-3. **Four accumulators blended in one resolve:** per-layer colour even where lanes overlap, but
+   take its layer's color; one component owns the drags and the drop.
+3. **Four accumulators blended in one resolve:** per-layer color even where lanes overlap, but
    lanes don't overlap, and it quadruples the resolve's reads.
 
 **The Edit view's scope.** One layer at a time, chosen in the layer strip that Perform and Edit
@@ -160,14 +160,14 @@ gestures, and INTENT §17 promises undo/redo), an editor-lifetime stack (lost wh
 closes) and an instance-lifetime stack in the plugin's editor object (chosen, §6.8): it survives
 the editor's close and open, and sub-project 5 can push whole-state entries into it.
 
-**Themes.** sst-jucegui ships light and dark style sheets; the editor's own colours (`Theme.h`)
+**Themes.** sst-jucegui ships light and dark style sheets; the editor's own colors (`Theme.h`)
 become a palette struct with a light and a dark instance. Where the choice is kept: a per-machine
 setting (chosen; a theme is a property of the screen, not the session), not the state.
 
 **The GPU spike.** Candidates ordered by platform risk (§6.11): JUCE's own `juce_opengl` first
 (cross-platform, already in the JUCE tree we build), native Metal second (macOS only). Visage is
 rejected without measuring: a second UI framework beside JUCE and the shim is a new platform
-risk by definition, which the programme design's criterion excludes.
+risk by definition, which the program design's criterion excludes.
 
 ## 6. Design
 
@@ -182,9 +182,9 @@ risk by definition, which the programme design's criterion excludes.
 - the publish additions (§6.4);
 - the Edit view for every parameter the tree has at the rebase (§6.5);
 - the Mod view and the route path (§6.6);
-- the FX view's frame with its Reverb section and row 217's behaviour (§6.7; the brief listed the
+- the FX view's frame with its Reverb section and row 217's behavior (§6.7; the brief listed the
   FX view under wave 2's work, but its reverb needs only M1, and the delay and limiter sections
-  slot in by the same table in PR 2: flagged for the programme manager);
+  slot in by the same table in PR 2: flagged for the program manager);
 - undo/redo (§6.8);
 - themes, the palette, keyboard navigation (§6.9);
 - the About box (§6.10), closing row 221;
@@ -238,7 +238,7 @@ folder); the canvas, four lanes stacked, equal height, each with a header cell a
 row: the XY pad (a square of the row's height) and the macro row (the rest of the width, as M1).
 
 **The lane header** (the layer strip's cell; 120 px wide, the lane's height): the layer's letter
-in its colour, large (click: select the layer for Edit and Mod; the selected one is outlined);
+in its color, large (click: select the layer for Edit and Mod; the selected one is outlined);
 the On toggle (`Layer A On` …); a Level slider (`Level`, `Level B` …), horizontal; the Source kind
 as a menu button (`A Source` …); a Freeze toggle (`A Freeze` …). Every control is a gesture on
 its parameter, as the macros are, with `HeldValue`. An off layer's lane and header are dimmed,
@@ -268,9 +268,9 @@ lane A, which is what the engine does.
 lane's rows of the one accumulator. **Amended** (VW-T9a): each layer's list holds 8,192 (four
 lists, about 1.3 MB), so a dense layer can't push another layer's grains out. **The vertical
 axis is pitch** (D1): a grain at rate `r` lies
-at `y = laneCentre − 12·log2(|r|) × (laneHalfHeight − radius) / 48`, so ±48 semitones span the
+at `y = laneCenter − 12·log2(|r|) × (laneHalfHeight − radius) / 48`, so ±48 semitones span the
 lane (Pitch ±24 plus Pitch Spread ±24), clamped to the lane; a grain with `r ≤ 0` or non-finite
-draws centred. **Amended** (VW-T2c): the `|r|` above never applies, since a reverse grain
+draws centered. **Amended** (VW-T2c): the `|r|` above never applies, since a reverse grain
 (`r < 0`) draws centered, as `r = 0` does; the formula holds for `r > 0`. Width is its length,
 brightness its gain, as M1. Pan is no longer drawn (D1's
 cost). `grainCapsule` takes a lane geometry with `top`, `height` and `pixelScale`; the maths lives
@@ -281,9 +281,9 @@ height `H`, so a row two lanes would share belongs to the lower lane and a press
 lane. **Amended** (VW-T9c): a press in a lane selects its layer, as a click on its letter does,
 even when it grabs nothing.
 
-**The resolve** tints each lane's rows with its layer's colour (`SplatRenderer::resolveToArgb`
+**The resolve** tints each lane's rows with its layer's color (`SplatRenderer::resolveToArgb`
 gains a banded overload: a list of `{rowBegin, rowEnd, rgbTint}`; the M1 overload is the one-band
-case and stays). Lanes are separated by a 1 px rule in the outline colour; nothing else is drawn
+case and stays). Lanes are separated by a 1 px rule in the outline color; nothing else is drawn
 between them.
 
 **The scan window becomes a rectangle** (D2): x as M1 (Position and Spray, one-sided on a Live
@@ -293,7 +293,7 @@ Spread from the snapshot, §6.4), dashed, when any of the four differs by more t
 `kGhostThreshold` in its own 0–1 domain. Drags, each a host-visible gesture as M1's:
 - the left and right edges set **Spray** (M1's rule, PU-T8a included);
 - the top and bottom edges set **Pitch Spread** (symmetric: the dragged edge's distance from the
-  centre, in semitones, clamped 0–24);
+  center, in semitones, clamped 0–24);
 - the body sets **Position** horizontally or **Pitch** vertically: the first 4 logical px of
   movement pick the axis, and the drag stays on it until release (axis lock), so a diagonal press
   edits one parameter; **Amended** (VW-T9c): the body's gesture begins when the axis is
@@ -329,10 +329,10 @@ sub-project 2's per-layer loader. The lane under a drag is highlighted. **Amende
 **Amended** (PR 2, the ring's lanes: VW-P2a, b, d, g, h, i). **A Live lane spans its ring** (VW-P2d, amended: `RingView::ringFrames / sampleRate`, from the ring's storage, else 16 s, since `LivePeaks::frames()` is always 16 s and never follows Ring Length; the peaks are drawn only over the frames the strip holds). Over a Live lane's peaks the lane draws the loop window while Loop is on, the selected splice outlined, and each mark as a 1 px rule numbered from the oldest in the window. On a Live lane the scan rectangle, its ghost and its body drag reach Position up to the lane's span (`livePositionMax`, capped at `kPositionMax`, 300 s), not 1 (VW-P2g); the Sample lane is unchanged. **The lane menu** (VW-P2a): a right-click on any lane (which selects it, with no drag), or Shift+F10 on the keyboard lane, opens Add splice mark here, Clear splice marks, Loop, Capture to layer A to D, Save capture as... and, on a Sample lane, Load sample.... It is not a drag vocabulary: a menu is discoverable, keyboard-reachable and testable headless. There is no "record" command: the ring records whenever it isn't frozen, so record is the Freeze toggle, and Loop and Overdub are parameters. Splice marks and captures are no undo entries, being commands (VW-P2b); Loop is a gesture, so one entry. A mark takes the engine's anchor (splices numbered from the first mark in storage, Loop ignored), while the lane's outline and numbers follow `MediaSession::spanOf`, which is what Capture takes (VW-P2h; carry-over row 386). The Loop item stays enabled while the plugin is inactive, being a parameter gesture; Add, Clear, Capture and Save are disabled (VW-P2i).
 
 **The XY pad** (`pad`): a square; its corners are the morph's, **A bottom-left (X 0, Y 0), B
-bottom-right, C top-left, D top-right**, Y up, each corner lettered in its layer's colour; the
+bottom-right, C top-left, D top-right**, Y up, each corner lettered in its layer's color; the
 handle at (Morph X, Morph Y); a drag is one gesture on both parameters (begin X, begin Y, values
 in pairs, end both); arrow keys move it by 1/100, Shift 1/1000; double-click returns it to the
-centre (one gesture each). **Amended** (VW-T10a): a drag is one undo entry, labeled "Morph".
+center (one gesture each). **Amended** (VW-T10a): a drag is one undo entry, labeled "Morph".
 A real double-click is two entries, since JUCE delivers its first press as an ordinary click:
 that press moves the handle to the clicked point (one entry), and the double-click centers it
 (a second). One undo returns the handle to the clicked point, a second to where it started,
@@ -433,8 +433,8 @@ right, and the base knob's arc shows the spread's extent as a faint band around 
 (Size ± its octaves, Pitch ± its semitones, Position ± Spray on a Sample layer and Position …
 Position + Spray on a Live one), so "base value and spread" are one picture. **Modulation
 depth** draws as rings around the knob (§6.6): one arc per route targeting this parameter on
-this layer (or every layer), its length the depth in the parameter's range, its colour the
-source's family, bipolar arcs centred on the base value. A control with no route has no ring.
+this layer (or every layer), its length the depth in the parameter's range, its color the
+source's family, bipolar arcs centered on the base value. A control with no route has no ring.
 **Amended** (VW-T11a): rings are drawn on knobs only, the spread pair's smaller knob included.
 No slider needs them: the Step sliders, like every modulator's control, are no mod target
 (`isValidTarget` refuses them), and `ringsFor` skips any target a route can't reach. The spread
@@ -452,7 +452,7 @@ the accessibility name. Parameter names are unchanged.
 
 **Shape** (D6): the layer strip; a **source strip** of 24 chips in five groups (Macros 1–8 ·
 LFO 1, LFO 2, Env 1, Env 2, Random 1, Random 2, Step · Wheel, Aftertouch, Bend, Velocity, Key ·
-Follower · Beat, Bar, Playing), each chip in its family's colour, the per-layer ones labelled
+Follower · Beat, Bar, Playing), each chip in its family's color, the per-layer ones labeled
 with the selected layer's letter (`sourceLayer` = same); the selected layer's **Edit panels**,
 the same components in "mod mode"; and the **route list** at the right (240 px, scrollable): 48
 rows, each slot's source, source layer (A–D or same), target with its layer (A–D or all), depth
@@ -537,7 +537,8 @@ sub-project wants a sweepable Size.
 **As built** (`0d8969c`): `ParamValue`'s commit-on-release mode, set on the Reverb Size control
 alone; a gesture that sets nothing sends no value. The tooltip reads "Sets on release: the
 room's size changes in one step". The view has no viewport: its two panels fit 640 × 360,
-which the frame's tests check. Row 217 is **Closed** by `0d8969c` (§12).
+which the frame's tests check. **Amended** (VW-T19b, VW-P2e): the FX view scrolls in the panel
+grid it shares with the Edit view (`layoutPanelGrid`), since the four new panels don't fit it. Row 217 is **Closed** by `0d8969c` (§12).
 
 ### 6.8 Undo and redo
 
@@ -557,6 +558,12 @@ destroyed mid-drag closes its open gestures and group as one entry. `gg-ui-core`
 - a **whole-state entry:** `{values before, after; routes before, after}`, pushed by a caller that
   changes everything at once: sub-project 5's Mutate and preset recall (the API is
   `pushSnapshot(label, before, after)`; this sub-project pushes none, and the test pushes one).
+  **Amended** (the consistency review's R-20, 2026-11-02): as built, `EditorPlugin.cpp` pushes one
+  whole-state entry (`pushWholeState`) per preset load and per Mutate press, the values and routes
+  only (a recall's samples and name aren't restored; row 402, decided, INTENT §23 #86). **Amended**
+  (PR 2): an undo's batch replays through `UndoCallbacks::setValues`, which `EditorPlugin` sets to
+  `sendValues` (row 337, `8e077ad`), and arrow-key nudges on the same slots within a second merge
+  into one entry (row 323, `8e077ad`).
 
 Depth 200, the oldest dropped. Host automation, state loads and the audio thread's own changes
 push nothing; an undo applies its `before` through the gesture path (`uiBeginGesture`,
@@ -579,7 +586,7 @@ undo" or "Nothing to redo".
 
 ### 6.9 Themes, the palette, keyboard navigation, HiDPI
 
-**Themes** (D8): the dark theme is M1's (sst-jucegui's dark sheet and `Theme.h`'s colours); the
+**Themes** (D8): the dark theme is M1's (sst-jucegui's dark sheet and `Theme.h`'s colors); the
 light theme is sst-jucegui's light sheet and a light palette for the editor's own surfaces and
 text. `Theme.h` becomes `Palette` with `dark()` and `light()`; every component reads the editor's
 current palette through a `ThemeProvider` rather than constants, and a switch restyles the tree
@@ -608,12 +615,14 @@ settings file's NUL guard (`saveSettings`) refuses a `theme` holding a NUL, as i
 folders. **Amended** (the merge with sub-project 5, PR #17): `ui/src/Theme.h` is back as a shim
 for sub-project 5's preset strip, browser and Mutate panel alone, which set M1's fixed colors when
 made: its constants are `Palette::dark()`'s, so those three keep their colors in both themes
-until PR 2's palette pass (carry-over row 313).
+until PR 2's palette pass (carry-over row 313). **Amended** (the consistency review's R-63,
+2026-11-02): `Theme.h` is gone; row 313 was closed in full, the sample strip by PR 2 and the
+preset strip, browser and Mutate panel by sub-project 5's group 2.
 
 **The layer palette** (D4): Okabe–Ito's four most separable hues, which deuteranopes,
 protanopes and tritanopes tell apart: **A orange `#E69F00`, B sky blue `#56B4E9`, C bluish green
 `#009E73`, D reddish purple `#CC79A7`**. They are the grain tints, the lane letters, the pad's
-corners and the source chips' layer tags. Colour is never the only cue: every lane, cell and
+corners and the source chips' layer tags. Color is never the only cue: every lane, cell and
 chip carries its letter. The light theme uses the same four (they are mid-luminance, legible on
 both grounds). Source families in the Mod view use a second set (macros, modulators, MIDI,
 follower, transport), also from Okabe–Ito's eight, distinct from the layer four. **Amended**
@@ -704,7 +713,7 @@ the API's timer queries, each the median of 240 frames, CPU path and candidate s
 the reference core, in the write-up's table with the conditions. The hosts' numbers are the
 close's.
 
-**The criterion** (programme design §6.6, verbatim): the CPU renderer stays unless the spike
+**The criterion** (program design §6.6, verbatim): the CPU renderer stays unless the spike
 beats it on the §16 UI budget with no new platform risk. The write-up (`docs/spikes/
 m2-gpu-canvas.md`) states the numbers, the risks found (deprecation, driver variance, context
 loss, Linux compositors, the x86_64 slice) and the decision; INTENT §17's renderer paragraph and
@@ -740,7 +749,7 @@ three grain counts, and times the shipped path: the banded resolve with four tin
 the one-tint resolve. Its JSON gains `"lanes": 4` and `"resolve": "banded"`, so the numbers'
 provenance is clear beside M0's and M1's. The `[bench]` canvas test checks it runs `--quick`.
 The figure is measured idle on the reference core at the sub-project's end (the exit's
-"at or under 3 ms") and again at the close beside X (programme design §6.7).
+"at or under 3 ms") and again at the close beside X (program design §6.7).
 
 **As built** (`c729f02`): the measurement moved from `gg-bench`'s `main.cpp` into `Bench.cpp`
 (`gg::bench::runCanvas`), so the test reaches it; `gg-bench-lib` links `gg::ui-core`. The
@@ -755,7 +764,7 @@ and no window): it creates each product's editor over a stub `EditorContext` (de
 `stressGrains` as the grains, a generated sample for the instrument, a few routes), and writes
 PNGs of every view in both themes at 960 × 600 and at 640 × 360 into a directory
 (`createComponentSnapshot`). The pack (§11) commits one set, regenerated by the fix wave; CI's
-mac leg uploads a set as the `gg-snapshots` artifact on every run, so the programme manager and
+mac leg uploads a set as the `gg-snapshots` artifact on every run, so the program manager and
 the director can see the views without a host, and so can the reviewer. The `[plugin]` GUI tests
 run the same snapshot code (without writing files) to cover each view's open, draw and close.
 
@@ -791,7 +800,7 @@ themselves, not through the tool's code.
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**The director's answers, 2026-10-30, relayed by the programme manager:** every recommended
+**The director's answers, 2026-10-30, relayed by the program manager:** every recommended
 option: D1 option 1 (the pitch axis), D2 option 1 (the rectangle with its four drags and the axis
 lock), D3 option 1 (four lanes always), D4 option 1 (Okabe–Ito), D5 option 1 (one layer at a
 time), D6 option 1 (the Edit panels under source chips with the route list), D7 option 1 (editor
@@ -803,7 +812,7 @@ below and applied in §6.
 1. **Pitch:** a grain's height is its pitch, ±48 semitones across the lane; pan is no longer
    drawn. *Cost:* Stereo's effect is heard, not seen.
 2. *Pitch by default, pan on a per-lane switch* saved per machine. *Cost:* two mappings to learn,
-   and a lane whose axis means something different from its neighbour's.
+   and a lane whose axis means something different from its neighbor's.
 3. *Keep pan.* *Cost:* Pitch Spread and the Pitch macro stay invisible, against INTENT §17.
 
 **D2. The scan window and its drags** (§6.3). **Decided: option 1.**
@@ -861,7 +870,8 @@ below and applied in §6.
 
 **D8. The theme's default** (§6.9). **Decided: option 1.**
 1. **Dark by default** (M1's look, what every host screenshot so far shows), light by the
-   header's switch, saved per machine. *Cost:* a light-OS user picks it by hand once.
+   header's switch, saved per machine. *Cost:* a light-OS user picks it by hand once. M5 adds
+   System, high contrast and user themes (INTENT §23 #72).
 2. *Follow the OS's light or dark,* with the same switch to override. *Cost:* the FX and the
    instrument look different from the host around them on a light OS with a dark DAW, until
    overridden; the switch gains a third state, System.
@@ -963,8 +973,8 @@ Engineering choices, each with its reason.
 
 **Unit tests** (Catch2; labels in brackets; the framework-free ones under ASan, UBSan and RTSan):
 - `[ui]` (`gg-ui-core`): per-lane geometry (a grain lands in its lane's rows and never outside);
-  the pitch axis (rate 1 → the lane's centre, rate 2 → +12 semitones' y, rate ≤ 0 and NaN →
-  centred, ±48 clamped); the rectangular window (its four edges from Position, Spray, Pitch and
+  the pitch axis (rate 1 → the lane's center, rate 2 → +12 semitones' y, rate ≤ 0 and NaN →
+  centered, ±48 clamped); the rectangular window (its four edges from Position, Spray, Pitch and
   Pitch Spread, Live and Sample lanes); `hitTest` on both axes with every region and the corner
   rule; the axis lock; the pad's inverse mapping and its weight shading equal to the morph law's
   weights; the banded resolve (each band's tint, the one-band case equal to M1's resolve bit for
@@ -999,7 +1009,7 @@ commit (`scripts/update-goldens.sh` before and after each commit that touches `c
 
 **Benchmarks:** `gg-bench --canvas` idle on the reference core at the sub-project's end: at or
 under 3 ms at 8,192 grains with four lanes, the JSON kept for the close (**the figure:** 2.959 ms at 8,192 grains with four lanes (mean 3.117 ms, p95 4.009 ms; `docs/benchmarks/2026-10-30-m2-views-canvas.json`); `engine-sample` shows no
-`regressed` ratio on any CI model (programme design §7.6); the spike's table (§6.11).
+`regressed` ratio on any CI model (program design §7.6); the spike's table (§6.11).
 
 **Validators:** clap-validator, pluginval at strictness 10 (with GUI tests where the leg runs
 them), auval on the three identities and Steinberg's validator, on `release`, on every CI leg: the
@@ -1008,7 +1018,7 @@ editor opens and closes under them.
 **Gate:** `scripts/check.sh` over `dev,asan,rtsan` passes (met at `25c7707`: dev 906/908 passed, 2 skipped; asan 788/795, 7 skipped; rtsan 797/797; format ok, 250 files; PASS); CI green on the head commit through
 the draft PR; `scripts/format.sh --check`; a fresh reviewer's final review and its fix wave.
 
-**Exit criteria** (the programme design's §6.6, each with its proof): every parameter is reachable
+**Exit criteria** (the program design's §6.6, each with its proof): every parameter is reachable
 from the UI (the `[ui]` table test and the `[plugin]` walk; after PR 2's rebase, wave 2's rows
 included); the canvas's frame time stays within §16's budget with four lanes at 8,192 grains
 (`gg-bench --canvas` idle, in the report; Live and Bitwig at the close, §11's checklist); the GUI
@@ -1035,11 +1045,11 @@ and seen at M2's close (sub-project 7):
   - `02-lane-freeze.json`: the FX over the sweep, layers A and B on; B frozen alone from 2 s to
     4 s, then A alone from 5 s to 7 s: per-lane freeze, what the lane's toggle does;
   - `03-pad-path.json`: the instrument's four Sample layers of `inst-layers-morph`, the pad
-    dragged from the centre to each corner and back, as the pad's handle moves, 1 s per leg.
+    dragged from the center to each corner and back, as the pad's handle moves, 1 s per leg.
 - **The host checklist** (Ableton Live 12 and Bitwig Studio; CLAP in Bitwig, VST3 and AU in Live;
   each item in both products):
   - the four views open, switch and close; the window resizes from 640 × 360 up; HiDPI;
-  - Perform: four lanes draw the four layers' grains in their colours, a Live lane scrolls and a
+  - Perform: four lanes draw the four layers' grains in their colors, a Live lane scrolls and a
     Sample lane stands; the rectangle's four drags record automation; double-click freezes one
     lane; the pad's drag records Morph X and Y; the strip's controls; a file dropped on lane A;
   - the frame readout at the densest setting reachable (four layers at Density 400, Size 2 s): at
@@ -1063,7 +1073,7 @@ and seen at M2's close (sub-project 7):
 184, 217, 218, 221, 232).
 
 **Closed here:** **217** (Reverb Size clicks when moved: decided in the FX view by D10, §6.7) and
-**221** (the About box shows the notices and licenses, §6.10), both in PR 1, where the programme
+**221** (the About box shows the notices and licenses, §6.10), both in PR 1, where the program
 design's §8 placed them.
 
 **Touched files with open rows:** `plugin/src/editor/EditorPlugin.h` (85: the `<string>` include
@@ -1105,7 +1115,7 @@ review cycle decides, and the sub-project's final report lists the deferred ones
   rulings made during the build, and the §9 calls that amend Part II (the lane by kind, the
   theme as a setting, the route path, Reverb Size on release). PR 2 appends to the same row.
 
-Part I is unchanged. The programme design's §6.6 is unchanged (the FX view's split across the
+Part I is unchanged. The program design's §6.6 is unchanged (the FX view's split across the
 PRs is a plan matter, flagged in §6.1).
 
 **As built (PR 1):** made in one change with the §23 row, #71 (its number at merge).
@@ -1133,7 +1143,7 @@ canvas figure §16 gets is 2.959 ms at 8,192 grains with four lanes (`docs/bench
 - The exact cell sizes, fonts and the knob/slider choice per parameter within the table's
   rules; how a panel wraps at 640 px.
 - How `MacroRow`'s data-source adaptor generalizes into `ParamControl` without changing the
-  macros' behaviour (their tests pin it).
+  macros' behavior (their tests pin it).
 - The ring overlay's geometry (arc widths per route, how many fit, the overflow count).
 - The banded resolve's signature and whether a lane's rows are passed as a span or an array of
   four.
@@ -1213,5 +1223,5 @@ here.
 commits are in `docs/m2-carry-over.md`). Closed in part: 313 (the sample strip is on the palette;
 the preset strip, the browser and the Mutate panel are sub-project 5's, by the program manager's
 ruling of 2026-11-01) and 330 (a half-built row is kept and a hidden target named). Open: 331 (the
-header's split waits for sub-project 5's group 2), 333 (the director's checklist), 338 (the final
-verification). New rows 383 to 387 hold the minors deferred.
+header's split waits for sub-project 5's group 2; the close's), 333 (decided in the close, §23 #86).
+Row 338 is closed at `293cbb5`, and rows 383 to 388 hold the minors deferred.

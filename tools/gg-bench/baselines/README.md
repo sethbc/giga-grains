@@ -2,17 +2,27 @@
 
 One file per CI leg, named after the leg's preset: `mac-universal.json`, `windows-clangcl.json`,
 `linux-gcc13.json`. CI's benchmark step passes `--baseline tools/gg-bench/baselines/<preset>.json`
-to `gg-bench` when that file exists, and reports a verdict for every engine ratio. Through M1 the
-verdict is report-only (spec ruling 3): a regression is a warning, never a failed job.
-Sub-project 6 makes it blocking, with the published §16 headline.
+to `gg-bench` when that file exists, and reports a verdict for every engine ratio. The
+verdict is report-only until 1.0.0 (spec ruling 3; INTENT §23 #60, #61): a regression is a
+warning, never a failed job. It turns blocking at 1.0.0, after M5, with the published §16 headline.
 
 **Baselines are per CPU model.** GitHub runs a leg on whichever CPU model it assigns. So far
 Linux has landed on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C, and Windows on EPYC 7763,
-9V45, 9V74 and Intel Xeon 8370C. The files have entries for the mac leg's Apple M1 VM, Windows'
-EPYC 7763, 9V45, 9V74 and Xeon 8370C, and Linux's EPYC 7763 and 9V45; the other models get no
-verdict yet. Windows' EPYC 9V74 entry is older than the rest: it was made from the SSE-era
-engine code (12 ratios) and is stale until a run lands on that model and remakes it. The ratio
-cancels a machine's speed but not its microarchitecture: for unchanged code, ratios differ by up
+9V45, 9V74 and Intel Xeon 8370C. The files have entries for:
+- `mac-universal`: the Apple M1 VM (three runs);
+- `linux-gcc13`: EPYC 7763 (2 runs at `ca60f54`), EPYC 9V74 (1 run at `ca60f54`) and EPYC 9V45
+  (1 run at `630d740`);
+- `windows-clangcl`: EPYC 7763 (1 run) and EPYC 9V74 (2 runs), both at `ca60f54`, and EPYC 9V45 and
+  Xeon 8370C (1 run each at `630d740`).
+
+The Linux and Windows files were remade in the M2 close (2026-11-03; carry-over rows 304 and 305;
+the commit `cf37b83` has each replaced entry's comparison with the one before). Windows' SSE-era
+EPYC 9V74 entry had been deleted (row 304: it gave false verdicts against the AVX2 code), and the
+model came back from two runs. The entries made at `ca60f54` have 42 ratios (14 cases at three
+blocks); the two kept at `630d740` have 30. A model seen in one run carries the 0.10 floor
+tolerance, so row 305 stays open for the single-run entries (Windows' 7763, 9V45 and 8370C, Linux's
+9V74 and 9V45), with row 144; only Linux's Xeon 8370C has no entry yet, so it gets no
+verdict. The ratio cancels a machine's speed but not its microarchitecture: for unchanged code, ratios differ by up
 to ~20% between models and by up to ~6% on one model. So each leg's file has one entry per CPU
 model, keyed by gg-bench's `machine` string (for example `AMD EPYC 7763 64-Core Processor
 (x86_64)`). A run is checked only against the entry for its own model. When the file has no entry
@@ -27,13 +37,13 @@ Each entry has one ratio per engine case per block size (32, 64 and 256). The en
 
 The report-only cases are timed and print ratios, and stay report-only (the whole gate is, until
 1.0.0). Since the AVX2 task of M2 sub-project 3 (INTENT §23 #66) the x86 entries made from three
-full-length runs have them too, 30 ratios an entry (ten cases at three blocks), so those legs
-report a verdict for them; the `mac-universal` entry (the M1 VM) and Windows' older EPYC 9V74 one
-have none, and a ratio a file lacks is only `not in the baseline`. They are:
+full-length runs have them too, 30 ratios an entry then (ten cases at three blocks; 42 for the
+entries remade at `ca60f54`), so those legs report a verdict for them; the `mac-universal` entry
+(the M1 VM) has none, and a ratio a file lacks is only `not in the baseline`. They are:
 - `engine-live-long` (`engine-live`'s stream over a 300 s ring, its reads spanning it; M2
-  sub-project 2), which no entry has yet: it gets entries once three full runs are merged in
-  (`--merge`, below). A `--quick` run caps its 300 s warm-up at 16 s, so its quick ratios read a
-  partly filled ring; only full-length runs make entries;
+  sub-project 2), which the entries made at `ca60f54` have, and the two at `630d740` lack. A
+  `--quick` run caps its 300 s warm-up at 16 s, so its quick ratios read a partly filled ring;
+  only full-length runs make entries;
 - `engine-layers` (four layers of 500 grains, X's count) and `engine-layers-full` (four of
   2,000);
 - `engine-sample-hq`: X at the HQ tier, the HQ figure (M2 engine spec §6.10);
@@ -88,7 +98,8 @@ have none, and a ratio a file lacks is only `not in the baseline`. They are:
 2. Run:
 
    ```sh
-   gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json run1.json run2.json run3.json
+   gg-bench --make-baseline <preset> tools/gg-bench/baselines/<preset>.json \
+       run1.json run2.json run3.json
    ```
 
 3. **How it groups the runs:** by their `machine`, and it writes one entry per model.

@@ -709,7 +709,7 @@ TEST_CASE("deactivate and destruction cancel a load under way at once", "[plugin
         UNSCOPED_INFO("the whole job: " << whole << " ms");
 
         // A fifth of the way into another, deactivate(). A try after the first activates again
-        // (the job cancelled runs again) and asks for a new file, which supersedes it.
+        // (the job canceled runs again) and asks for a new file, which supersedes it.
         double deactivating = whole;
         for (int t = 0; t < kTries && !(deactivating < whole / 4.0); ++t)
         {
@@ -1061,6 +1061,54 @@ TEST_CASE("relink restores the saved sample, or loads a replacement and says so"
     Stereo out(4800);
     renderNote(instrument, out, 512);
     CHECK(peak(out.left) > 0.01f);
+}
+
+TEST_CASE("a relink to the same audio keeps the content reference; to other audio drops it",
+          "[plugin]")
+{
+    // Row 389: a factory preset's sample (a content reference, no saved path) relinked by hand to
+    // a byte-identical copy stays named by its reference too, as an automatic search's find
+    // keeps it; another file is another sample and loses it.
+    const fs::path dir = setUp("relink-content-ref");
+    gg::test::useSystemContentDir(dir / "no-content"); // nothing the search could find it in
+    const fs::path original = gg::test::sineSampleFile("relink-content-ref");
+    gg::core::MediaEntry entry = gg::test::entryOf(original);
+    entry.absolutePath.clear();
+    entry.relativePath.clear();
+    entry.contentPath = "Samples/Test/relink-content-ref.wav";
+    const fs::path copy = dir / "elsewhere" / "renamed.wav";
+    fs::create_directories(copy.parent_path());
+    fs::copy_file(original, copy, fs::copy_options::overwrite_existing);
+    fs::remove(original);
+    const fs::path other = gg::test::writeSineWav(dir / "other.wav", 48000, 2.0, 330.0);
+
+    LoaderHost host;
+    PluginUnderTest instrument(kInstrumentId, host.clap());
+    REQUIRE(instrument.valid());
+    REQUIRE(instrument.loadDefaultsWithSeed(0));
+    REQUIRE(instrument.activate(48000.0, 512));
+    REQUIRE(instrument.load(gg::test::withSample(instrument.save(), entry)));
+    auto &loader = loaderOf(instrument);
+    REQUIRE(loader.status().state == SampleState::Missing);
+
+    loader.requestRelink(copy);
+    SampleStatus status = settle(instrument);
+    REQUIRE(status.state == SampleState::Loaded);
+    CHECK(status.message.empty());
+    auto saved = savedEntry(instrument);
+    REQUIRE(saved.has_value());
+    CHECK(saved->contentPath == "Samples/Test/relink-content-ref.wav");
+    CHECK(fs::path(saved->absolutePath).filename() == "renamed.wav");
+    CHECK(saved->sha256Hex == entry.sha256Hex);
+
+    loader.requestRelink(other);
+    status = settle(instrument);
+    REQUIRE(status.state == SampleState::Loaded);
+    CHECK(status.message.find("different audio than the saved sample") != std::string::npos);
+    saved = savedEntry(instrument);
+    REQUIRE(saved.has_value());
+    CHECK(saved->contentPath.empty());
+    CHECK(fs::path(saved->absolutePath).filename() == "other.wav");
 }
 
 TEST_CASE("a failed relink leaves a missing sample relinkable and a restored file loads",
@@ -1644,7 +1692,10 @@ TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
     setUp("spectral-rescan");
     const fs::path file = gg::test::sineSampleFile("spectral-rescan");
     LoaderHost host;
-    PluginUnderTest instrument(kInstrumentId, host.clap());
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    PluginUnderTest instrument(id, host.clap());
     REQUIRE(instrument.valid());
     REQUIRE(instrument.loadDefaultsWithSeed(0)); // the same seed in every run
     REQUIRE(instrument.activate(48000.0, 512));
@@ -1674,8 +1725,19 @@ TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
 
     // A sample loaded in: the material becomes the sample once the audio thread takes it.
     const std::string empty = instrument.save(); // Spectral, no sample
-    loaderOf(instrument).requestLoad(file);
-    CHECK(settle(instrument).state == SampleState::Loaded);
+    if (isFx)
+    {
+        gg::core::SessionState s; // the FX has no loader strip: a state brings layer A's sample
+        REQUIRE(gg::core::decodeState(empty, gg::core::Mode::Fx, s));
+        s.samples[0] = gg::test::entryOf(file);
+        s.samples[0]->layer = 0;
+        REQUIRE(instrument.load(gg::core::encodeState(s)));
+    }
+    else
+    {
+        loaderOf(instrument).requestLoad(file);
+        CHECK(settle(instrument).state == SampleState::Loaded);
+    }
     CHECK(host.textRescans() == afterKind); // the audio thread hasn't taken it yet
     REQUIRE(instrument.process(512, nullptr, out.data()) == CLAP_PROCESS_CONTINUE);
     instrument.onMainThread();
@@ -1691,4 +1753,79 @@ TEST_CASE("a sample loaded into a spectral layer rescans the text", "[plugin]")
     instrument.onMainThread();
     CHECK(host.textRescans() == afterKind + 2);
     CHECK(positionText(0.25).find('%') == std::string::npos);
+}
+
+TEST_CASE("the material set before a spectral kind decides its units", "[plugin]")
+{
+    // Extremes carry-over rows 375 and 376: Position's units follow a Spectral layer's material
+    // (seconds over its ring, a percentage over a sample) in both products, whichever of the
+    // sample and the kind comes first. Here the sample is set while the layer is on Sample, then
+    // the kind becomes Spectral; the sample is cleared while on Sample, then the kind becomes
+    // Spectral.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    setUp("spectral-material-first");
+    const fs::path file = gg::test::sineSampleFile("spectral-material-first");
+    const bool isFx = std::string_view(id) == kFxId;
+    const auto mode = isFx ? gg::core::Mode::Fx : gg::core::Mode::Instrument;
+    LoaderHost host;
+    PluginUnderTest plugin(id, host.clap());
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadDefaultsWithSeed(0));
+    REQUIRE(plugin.activate(48000.0, 512));
+    const clap_id position = gg::core::paramId(gg::core::ParamSlot::Position);
+    const auto positionText = [&](double value) {
+        char buffer[CLAP_NAME_SIZE] = {};
+        REQUIRE(
+            plugin.params()->value_to_text(plugin.clap(), position, value, buffer, sizeof(buffer)));
+        return std::string(buffer);
+    };
+    Stereo in(512);
+    Stereo out(512);
+    const auto block = [&](const clap_event_param_value *event = nullptr) {
+        gg::test::InputEvents events;
+        if (event != nullptr)
+        {
+            events.add(&event->header);
+        }
+        REQUIRE(plugin.process(512, in.data(), out.data(), events.list()) == CLAP_PROCESS_CONTINUE);
+        plugin.onMainThread();
+    };
+    const auto setKind = [&](double kind) {
+        const auto event = gg::test::paramValue(
+            gg::core::paramId(gg::core::layerSlot(gg::core::LayerParam::Source, 0)), kind);
+        block(&event);
+    };
+    const auto percent = [&] { return positionText(0.25).find('%') != std::string::npos; };
+
+    setKind(0.0); // Sample
+    block();
+    const std::string empty = plugin.save(); // Sample, no sample
+
+    // The sample arrives while the kind is Sample; the kind then follows.
+    gg::core::SessionState s;
+    REQUIRE(gg::core::decodeState(empty, mode, s));
+    s.samples[0] = gg::test::entryOf(file);
+    s.samples[0]->layer = 0;
+    REQUIRE(plugin.load(gg::core::encodeState(s)));
+    block();          // process takes the loaded state and onMainThread rescans, in one call
+    block();          // a settling call
+    CHECK(percent()); // the kind is Sample: a percentage
+    const uint32_t beforeKind = host.textRescans();
+    setKind(3.0);
+    block();
+    CHECK(percent()); // the sample is the material
+    CHECK(host.textRescans() == beforeKind + 1);
+    block();
+    CHECK(host.textRescans() == beforeKind + 1); // once per change
+
+    // The sample is cleared while the kind is Sample; the kind then becomes Spectral.
+    REQUIRE(plugin.load(empty));
+    block(); // as above, a settling call
+    block();
+    const uint32_t beforeSecond = host.textRescans();
+    setKind(3.0);
+    block();
+    CHECK_FALSE(percent()); // the ring is the material: seconds
+    CHECK(host.textRescans() == beforeSecond + 1);
 }

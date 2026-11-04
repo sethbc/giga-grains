@@ -37,7 +37,8 @@ sanitizers passed. The release files, with `<v>` the full version:
 - `giga-grains-<v>-windows-x64.exe` (Inno Setup; its Content component installs to
   `C:\ProgramData\sethbc\Giga Grains`) and `giga-grains-<v>-windows-x64.zip` (with `content/`),
   unsigned (INTENT §19);
-- `giga-grains-<v>-linux-x86_64.tar.gz` (with `content/`);
+- `giga-grains-<v>-linux-x86_64.tar.gz` (with `content/`), built on Ubuntu 24.04 and needing
+  its glibc 2.39 or newer (INTENT §15);
 - `giga-grains-<v>-source.tar.gz`, the tagged tree with every submodule at its pin (the
   complete corresponding source), made by the `release` job with
   `scripts/release/source-tarball.sh`;
@@ -275,7 +276,7 @@ The 0.2.0, 0.3.0 and 0.4.0 drafts are never published, so skip the publish step 
    the draft's assets on that page, then:
    - **macOS:** on a clean user account (a new standard user, no earlier Giga Grains in it or
      in `/Library/Audio/Plug-Ins/`), open the DMG and run the PKG. Gatekeeper must not object.
-     Check the five choices installed where the overview says.
+     Check the six choices installed where the overview says.
    - **Windows:** run the EXE (SmartScreen warns about an unknown publisher once: *More info* →
      *Run anyway*). It installs the CLAP and VST3 under `Common Files` and the apps under
      `Program Files\Giga Grains`.
@@ -330,9 +331,9 @@ cmake --build --preset release --target gg-installer
 
 It builds `gg-products` first, then writes into `build/release/gg-installer/`: on macOS
 `giga-grains-<v>-macos.pkg` and `.dmg` (and the last line `signed: no`), on Windows the zip and,
-when Inno Setup 6's `ISCC.exe` is found at configure, the EXE, on Linux the tarball. The bundles
-are signed ad hoc, and the PKG is unsigned, so Gatekeeper will object to it: right-click → Open,
-or allow it in System Settings → Privacy & Security. Any preset works (`dev` too); the
+when Inno Setup's `ISCC.exe` is found at configure (7.1.1, as CI pins it, or 6.3 or later), the
+EXE, on Linux the tarball. The bundles are signed ad hoc, and the PKG is unsigned, so Gatekeeper
+will object to it: right-click → Open, or allow it in System Settings → Privacy & Security. Any preset works (`dev` too); the
 `installer` tests run the same scripts on the products.
 
 **Signed and notarized,** for the director, with the identities already in the login keychain:
@@ -452,6 +453,27 @@ wasn't signed: `pkgutil --check-signature <pkg>` and `codesign -dvv <dmg>` show 
 a product inside, `codesign --verify --strict --deep -vv <bundle>` and `codesign -dvv
 --entitlements - <app>`. A dry run without the secrets is unsigned by design (`signed: no`).
 
+**auval finds no Giga Grains component (`didn't find the component`), and `auval -a` lists only
+Apple's.** Run auval from a normal login Terminal on the logged-in desktop, not from tmux, ssh or
+an agent session: a detached tmux server can sit in another launchd bootstrap session, whose
+`AudioComponentRegistrar` doesn't see your Components folders. A session that lists only Apple's
+components (no `Sbcx`) is in one. From a login Terminal the same install lists all three
+`Sbcx` identities and the three `auval -v` runs end `AU VALIDATION SUCCEEDED`. Run the whole
+install-and-auval block of CLAUDE.md's "Validators" section from that Terminal (it uses `$p` from
+the block before it there). Three more rules:
+
+- auval needs a tty. Piped or backgrounded, `auval -a` and `auval -v` hang with no output; under
+  `script -q /dev/null auval ...` they run. In a login Terminal the block's `auval -a > file`
+  redirect is fine; a pipe (`auval -a | grep ...`) is not.
+- Don't kill `AudioComponentRegistrar` and validate at once: it rescans on its next start, so
+  wait until `auval -a` lists `Sbcx` (the loop in CLAUDE.md's "Validators" block, which skips the `-v`
+  runs and prints "the registrar never listed Sbcx" if it never does) before the `-v` runs.
+- Never use `lsregister` for an AU. Its `-10811` on a `.component` is `kLSNotAnApplicationErr`,
+  which it returns for every non-app bundle; AUs don't register through Launch Services, the
+  registrar scans the Components folders.
+
+With a copy also installed system-wide (`/Library/Audio/Plug-Ins/Components`, e.g. from an installer PKG), check which bundle auval actually loads: while `auval -v` runs, `lsof -c auvaltool | grep 'Giga Grains.component'` shows the path. The user domain (`~/Library/...`) wins, and the version alone doesn't tell two 0.2.0 builds apart.
+
 **A tag that fails `plan`.** Its summary and the `::error` line give one of these reasons:
 
 - *the tag does not match CMake's version*: `check-version.sh` printed why just above it,
@@ -483,7 +505,12 @@ leg's *Build gg-all and gg-products* step means re-running the failed job.
 one - Hermite" (`tests/engine/kernel_tests.cpp`) fails now and then in *Test the x86_64 slice
 under Rosetta* (first seen in run 40920010135, on `main`), and passes on the same code's other
 runs. It is a CI-VM flake, not a regression: re-run the failed job once. A second failure is a
-real one.
+real one. The same slice's block-size tests ("render block size does not change output", "note
+and file renders do not depend on block size") fail the same way, an off layer logging one extra
+grain at blockSize 1 (carry-over row 234): re-run the failed job once too, and first copy the
+failure's counters into row 234. Its "When" column says what each means: an enable fault
+"disagreeing with its on ramp" (the machine), one "off the control grid" (a code fault), a grain
+spawned with an engine's gate off (the engine misread its gate), or neither.
 
 **A step needs a re-run.** `gh run rerun <run id> --failed --repo sethbc/giga-grains` re-runs
 the failed jobs of a tag's run; the `release` job then runs once they pass.

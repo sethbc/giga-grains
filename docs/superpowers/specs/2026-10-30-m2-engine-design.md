@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Built on branch `m2-engine` (PR #16): the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md`. Rulings made during the build are marked **Amended (2026-10-30)** where they change a section, and INTENT §23 #66 lists them by ID. The status is **Built** (2026-10-30), the final review's fix wave, the idle run's regression fix (ES-F2) and the cancel fix (ES-F3) done and marked below; the programme manager accepts the final report |
+| **Status** | **Approved by the program manager 2026-10-30** against the program design and INTENT. **The director's decisions D1–D5, 2026-10-30,** are recorded in §8 and applied in place: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Built on branch `m2-engine` (PR #16): the plan is `docs/superpowers/plans/2026-10-30-m2-engine.md`. Rulings made during the build are marked **Amended (2026-10-30)** where they change a section, and INTENT §23 #66 lists them by ID. The status is **Built** (2026-10-30), the final review's fix wave, the idle run's regression fix (ES-F2) and the cancel fix (ES-F3) done and marked below; the program manager accepts the final report. The close (2026-11-02) amended §5 and §14's risk row (ES-T12a, ES-T12b), D3 (ES-T1a), §6.5 (the steal's overshoot, about 87 grains) and §6.11 (the output bound, D-bound) |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 3 of 7; wave 2, merged first (sub-projects 2 and 4 rebase on this one) |
-| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.3, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
+| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.3, §7 and §12 are this sub-project's charter: realized here, not reopened). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): four layers each with its own `gg::Engine` and pool of 4,096, the Source kind, the mod matrix, render tasks, the patch at version 2, the mip-level accessor (`levelCount()`, `level(n)`) on `PreparedSource` and `LiveSource`, and the reserved index block `0x..50`–`0x..5F` in every scope |
 | **Feeds** | Sub-project 2 (the live ring's and resample buffer's incremental pyramids behind the same accessor; the memory cap counts the file pyramid); sub-project 4 (the chain after the grain sum is untouched here); sub-project 6 (the Quality and Budget parameters in the Edit view and the memory readout); sub-project 7 (the idle run's HQ and overload figures, the baselines' new entries) |
 | **Starts from** | `main` at `ab9f4e2`, and `docs/m2-carry-over.md` with **11 open rows** (51, 85, 87, 88, 144, 148, 184, 217, 218, 221, 232) |
@@ -17,7 +17,7 @@ load. M1 built the pool and two tiers; sub-project 1 gave each layer its own poo
 bounds what four layers at HQ may cost, nothing anti-aliases an upward transposition, and the
 third tier, the windowed sinc, is still M0's scalar prototype in `gg-bench`.
 
-This sub-project delivers the programme design's inventory items I14 to I19 (§6.3 there):
+This sub-project delivers the program design's inventory items I14 to I19 (§6.3 there):
 
 - **I14** the budget manager: a fixed weight table per tier and channel count, a per-instance
   budget, per-layer quotas, and the overload ladder in §14's order (lower the tier, drop new
@@ -86,7 +86,7 @@ This sub-project delivers the programme design's inventory items I14 to I19 (§6
 - CLAUDE.md's non-negotiables: no allocation, lock, I/O or unbounded loop on the audio thread;
   RTSan-clean; 0- and 1-sample blocks; the counter RNG alone; layers summed in order; 64-bit
   positions; the ladder's order (tier, drop, steal); licensing.
-- **Ownership** (programme design §6.3): `engine/include/gg/grain/` and its sources (the pool,
+- **Ownership** (program design §6.3): `engine/include/gg/grain/` and its sources (the pool,
   kernels, scheduler admission, tiers), `Interpolate.h`, the mipmap code (`PreparedSource` and a
   new `Mipmap.h`), `tools/gg-bench`'s cases, the sweep harness under `tests/`. Shared files
   (`Processor`, `ParamIds.h`, `tests/CMakeLists.txt`, INTENT) by addition only. `LiveSource` is
@@ -94,7 +94,7 @@ This sub-project delivers the programme design's inventory items I14 to I19 (§6
   (§6.2) and widens its guard; its levels, length and operations are 2's. The brief says to stop
   at a boundary rather than copy another's code, and this spec names each crossing.
 - **Parameters** in the reserved block `0x..50`–`0x..5F`: index `0x50` in each layer scope and in
-  scope 0 (§6.8). No patch version bump: absent parameters take their defaults (programme design
+  scope 0 (§6.8). No patch version bump: absent parameters take their defaults (program design
   §7.5). No new chunk. No new scope.
 - Merged first in wave 2: sub-projects 2 and 4 rebase on the new pool, kernels and `Tier`.
 - The `reference` kernel in `tools/gg-bench/Kernels.h` is frozen: nothing here touches it, so
@@ -116,7 +116,7 @@ This sub-project delivers the programme design's inventory items I14 to I19 (§6
   the parallel tasks admit concurrently; it needs scheduling pulled out of the tasks and serialized
   per piece, a restructure of what sub-project 1 built, and pieces end at call ends.
 - *A per-layer budget only (no instance budget):* four layers could cost four budgets; the
-  programme design says per instance.
+  program design says per instance.
 
 **The HQ kernel's coefficients.** Two.
 - **One continuous table of the windowed sinc, read with linear interpolation, stretched by the
@@ -147,7 +147,8 @@ miss.
 **AVX2.** A second translation unit of the sample and live kernels compiled with `-mavx2` (and no
 FMA), chosen once at load by CPU features through a function pointer (chosen), not GCC's function
 multiversioning attributes, which ClangCL doesn't offer and which hide the dispatch point the
-tests need to force.
+tests need to force. **Amended (ES-T12a, ES-T12b):** the table is chosen per engine, and each AVX2
+function carries `__attribute__((target("avx2")))` in place of a file-level flag; see §6.12.
 
 ## 6. Design
 
@@ -163,7 +164,7 @@ tests need to force.
   effective value's nearest step); no exception is made.
 - **The ladder may lower a grain's tier below its layer's Quality only under overload** (§6.5).
   Nothing else changes a grain's tier.
-- **The mod matrix's target rule** (the programme manager's ruling PM-1, 2026-10-30, found while
+- **The mod matrix's target rule** (the program manager's ruling PM-1, 2026-10-30, found while
   reviewing sub-project 4's spec): `isValidTarget` admitted a layer parameter only below
   `LFO 1 Rate`, so every wave-2 layer parameter, Quality included, would have been silently
   refused as a route target. Since this sub-project merges first in wave 2, the fix is its:
@@ -265,7 +266,7 @@ y    = (Σ_k c_k × tap_k) / (Σ_k c_k)        both sums in k order, float
   into a 48 kHz host) reads level 4 stretched by `s` < 0.5, bounded but with a shorter effective
   kernel, an accepted edge.
 - **The halfband:** each level is the one above it filtered by a linear-phase half-band FIR and
-  decimated by 2 (every other output computed; the FIR's odd taps are zero but the centre). The
+  decimated by 2 (every other output computed; the FIR's odd taps are zero but the center). The
   design targets a passband to 0.4 of the level's new rate within 0.1 dB and 80 dB of stopband
   from 0.6 of it; a Kaiser-windowed half-band of about 31 taps meets it. Its taps are a named
   constant; the exact count and window are the builder's (§15). **Amended (2026-10-30, ES-T3a):**
@@ -406,8 +407,10 @@ the grain. An unstolen grain renders M1's bits.
 
 **Accounting during a fade.** The stolen grain's weight stays in the ledger until its new end, so
 for up to F samples both it and the new grain sound: the instance's real cost may exceed the
-budget by one grain's weight per steal in flight, at most `kStealFade × onset rate` grains, 8% of
-the default budget at the exit's 16,384 onsets a second. The excess is bounded and deterministic;
+budget by one grain's weight per steal in flight, at most `kStealFade × onset rate` grains: about 87 at
+the exit's 16,384 onsets a second (256 / 48,000 s × 16,384), 2% of the default budget (8.5% of the
+exit case's 1,024-grain quota; **Amended**, the consistency review's R-9, 2026-11-02; first
+written "8% of the default budget"). The excess is bounded and deterministic;
 it is recorded in INTENT §14.
 
 **Why it never clicks or drops out.** A tier change is per grain; a drop plays nothing; a steal
@@ -463,7 +466,7 @@ scanned model.
   corrected by the final review from "45 MB plus about 4 MB", and `Processor.h`'s comment now
   says it).
 
-### 6.8 Parameters: the reserved block (programme design §7.1)
+### 6.8 Parameters: the reserved block (program design §7.1)
 
 | Parameter | Scope, index | Kind | Range, default | Where |
 |---|---|---|---|---|
@@ -515,7 +518,7 @@ AU order follows from the IDs. Nothing is frozen before M5.
     the other five catch all sixteen. `fx-hq-pitch-ladder`'s 5 s FX input is never heard: layer A
     reads its Sample at Mix 1. `fx-overload`'s event log is 1.6 MB (accepted).
 
-### 6.10 `gg-bench` (programme design §6.3, §7.6)
+### 6.10 `gg-bench` (program design §6.3, §7.6)
 
 Report-only beside X, in the default case list so CI's legs time them and the close's
 `--make-baseline --merge` adds their entries:
@@ -555,7 +558,7 @@ call (0, 1 and up to 4,096 among them):
 - **Overload sweeps:** Budget swept 16,384 → 256 → 16,384 under four HQ layers at full Density
   and Size; Quality swept on each layer under a small Budget.
 - **The checks,** on every render: no NaN or Inf (and every ring, every peak strip and every
-  snapshot finite), the peak at most 2 + the input's peak (the chain's bound, INTENT §14), no
+  snapshot finite), the peak at most 2 + the input's peak (the chain's bound, INTENT §14; 3 + the input's peak with the global delay engaged, D-bound, §23 #69), no
   runaway (the last second's RMS at most 6 dB above the loudest earlier second once the input
   has stopped changing), and the goldens' click score (`metricsVersion` 2, the limit 15) over the
   output, except across a Reverb Size move (row 217, accepted S8) and across the input's own
@@ -603,7 +606,7 @@ call (0, 1 and up to 4,096 among them):
     is private and `LiveSource.h` is sub-project 2's beyond Task 1's two additions; a ring-guard
     plant fails if the two drift.
 
-### 6.12 The AVX2 spike (I19; programme design §7.10)
+### 6.12 The AVX2 spike (I19; program design §7.10)
 
 - **Timebox:** one plan task, after the HQ kernel and the bench cases.
 - **What it builds:** `GrainKernelsAvx2.cpp`, the sample and live kernels for all three readers
@@ -656,7 +659,7 @@ call (0, 1 and up to 4,096 among them):
     `engine-sample` passed in all nine cells; its `engine-sample-eco` and `engine-full-pool` passed
     all but four, the M1 VM's known drift.
 - **The ruling** (INTENT §23, this sub-project's row): a kernel path chosen at load by CPU
-  features, whose output is bit-identical to the fallback's, isn't CPU-adaptive behaviour under
+  features, whose output is bit-identical to the fallback's, isn't CPU-adaptive behavior under
   §14; what varies is speed alone, as it already does between a NEON and an SSE build.
 
 ## 7. Determinism and real-time safety
@@ -678,7 +681,7 @@ call (0, 1 and up to 4,096 among them):
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**The director's answers, 2026-10-30, relayed by the programme manager:** every recommended
+**The director's answers, 2026-10-30, relayed by the program manager:** every recommended
 option: D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1. Each is marked below
 and was already applied in §6.
 
@@ -700,12 +703,14 @@ and was already applied in §6.
    sparse layer's unused share is wasted.
 2. *A fixed quarter each, always.* *Cost:* one layer alone reaches only a quarter of the budget.
 3. *Each layer gets the whole budget.* *Cost:* four layers may cost four budgets; the bound is per
-   layer, not per instance, which the programme design asked for.
+   layer, not per instance, which the program design asked for.
 
 **D3. The HQ kernel's length** (§6.2). **Decided: option 1.**
 1. **16 taps.** *Cost:* about a third more per HQ grain than 12 taps (the weights as first
    written, 12 against 9; **Amended (2026-10-30, ES-T10a)** the measured 16-tap weight is 27); at
    16 taps the first image sits at least 70 dB down and the passband holds to 0.4 of Nyquist.
+   **Amended** (ES-T1a, §6.2): at s = 1; near a residual rate of 2 the first image is about -37 dB,
+   which the sitting's question carries.
 2. *12 taps.* *Cost:* images about 10 dB higher and a softer top octave, for a quarter less CPU.
 
 **D4. When the ladder steals rather than drops** (§6.5): the oldest sounding grain is stolen, with
@@ -834,7 +839,7 @@ Engineering choices, each with its reason.
   ms, destruction 402 ms, against a bound of 308 ms): the loader's `media::prepare` built the
   pyramid (§6.3) without its cancel flag, so a cancel waited for the whole build. `5f1f9b5` passes
   the flag to `PreparedSource::make` (one line in sub-project 2's `media/src/Sample.cpp`, by
-  addition; a cancelled `make` returns nullptr, which the loader treats as cancelled, not an
+  addition; a canceled `make` returns nullptr, which the loader treats as canceled, not an
   error). Not reproduced locally (deactivate 23 ms of 1,510 ms), so CI confirms it.
 - **The AVX2 verdict** with its three runs per leg and the spread (§6.12).
 - **The gate:** `scripts/check.sh` over `dev,asan,rtsan` passes (summary pasted in the PR); CI
@@ -905,7 +910,7 @@ open items, the sweep driver's latent gaps and the cancel fix's CI confirmation)
 - **§21:** the memory risk row names the pyramid's cost.
 - **§22:** the AVX2 row resolved either way, with the measurement.
 - **§14 (the mod matrix's targets):** the layer rule as amended by PM-1 (§6.1).
-- **§23 #66:** this sub-project's director decisions (D1–D5, with their dates), the programme
+- **§23 #66:** this sub-project's director decisions (D1–D5, with their dates), the program
   manager's ruling PM-1 (the mod matrix's target rule), the AVX2 ruling,
   its rulings made during the build, and the §9 calls that amend Part II (the plugins' pool
   size, the overshoot, one copy per level).
@@ -922,7 +927,7 @@ Part I is unchanged.
 | The ladder changes an M1 golden's bits | The quota is unlimited by default in the engine and far above every golden's load in the `Processor`; the hash list before and after every task |
 | `engine-sample` regresses from the weighted admission | One integer add per draw; measured on the M5 Max and the CI models before the PR is marked ready; fixed here, not carried (§7.6) |
 | The sweep harness takes too long under ASan | Many small cases run 8 at a time; each case's audio is seconds; the family's wall time is measured in the plan and trimmed before CI sees it |
-| The AVX2 path isn't bit-identical on some compiler (a contraction, a different `sqrt`) | `-mno-fma` and `-ffp-contract=off`; the two-path equality test on every x86 leg; dropped if it can't be made identical within the timebox |
+| The AVX2 path isn't bit-identical on some compiler (a contraction, a different `sqrt`) | (**Amended**, ES-T12a and ES-T12b, §6.12: per-function `target("avx2")`, one pointer per engine) `-mno-fma` and `-ffp-contract=off`; the two-path equality test on every x86 leg; dropped if it can't be made identical within the timebox |
 | Sub-project 2's `LiveSource` work conflicts with the guard and `readSinc` | Both are additions at named places; 2 rebases on this merge, first in the wave |
 | The fade's bounded overshoot surprises a reviewer | Recorded in §6.5, §14 and INTENT; measured in `engine-overload` |
 

@@ -38,6 +38,7 @@
 
 #include "AboutBox.h"
 #include "GrainCanvas.h" // ui/src: the editor's own components
+#include "HeldValue.h"
 #include "LayerStrip.h"
 #include "LoaderStrip.h"
 #include "MacroRow.h"
@@ -311,6 +312,21 @@ struct ModHarness
         recording.context.undo = &undo;
         recording.context.notice = [this](const std::string &text) { notices.push_back(text); };
     }
+};
+
+/// The UI's clock (gg::ui::wallSeconds) held at a time the test steps, for its scope: key repeats
+/// then merge, or not, by the test's own gaps rather than the machine's speed (row 388 (f)).
+struct SteppedWallClock
+{
+    static inline double now = 1000.0;
+    SteppedWallClock()
+    {
+        gg::ui::wallClockForTests = []() noexcept { return now; };
+    }
+    ~SteppedWallClock() { gg::ui::wallClockForTests = nullptr; }
+    SteppedWallClock(const SteppedWallClock &) = delete;
+    SteppedWallClock &operator=(const SteppedWallClock &) = delete;
+    void advance(double seconds) { now += seconds; }
 };
 
 /// Drops chip `source` (a ModSource index) on `target`.

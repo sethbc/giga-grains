@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -762,9 +763,16 @@ TEST_CASE("a Ring Length shrink waits for the grains reading past it", "[plugin]
     // while; once the reads fit the second it offers, the next call adopts it and the status
     // clears. Bounded by work: the drain takes one grain's length (50 ms, five calls), so the
     // shrink must land within 40 polls.
+    // Carry-over row 400: a fixed seed and periodic onsets (Distribution 0). With the default
+    // Distribution and the instance's random seed, a rare gap between onsets (3 seeds of 0 to
+    // 2000 here: 196, 233 and 1742) left no grain reading 2 s back when the change came, so the
+    // shrink was offered at the first poll; every 750 samples, three or more 50 ms grains always
+    // read there.
     gg::test::useMediaScratch("ring-shrink-drain");
     PluginUnderTest fx(kFxId);
     REQUIRE(fx.valid());
+    REQUIRE(fx.loadDefaultsWithSeed(1));
+    setParam(fx, idOf(LayerParam::Distribution, 0), 0.0);
     setParam(fx, idOf(LayerParam::Density, 0), 6.0); // 64 Hz
     setParam(fx, idOf(LayerParam::Size, 0), -4.321928094887363);
     setParam(fx, idOf(LayerParam::Position, 0), std::log2(1.0 + 2.0 * 255.0 / 16.0) / 8.0);
@@ -997,7 +1005,7 @@ TEST_CASE("a resize lands with kAdoptCopyFrames written since its copy and not a
 TEST_CASE("params.flush adopts no ring: the offer waits whole for the next process call",
           "[plugin]")
 {
-    // The programme manager's ruling (CLAUDE.md: params.flush stays trivial): a restore offered
+    // The program manager's ruling (CLAUDE.md: params.flush stays trivial): a restore offered
     // while active is a ring, a source and values on layer A's exchange; a flush takes none of it,
     // and the next process() call applies it all at its start, the ring held from that call's
     // first sample, so it renders as a restore made before the first call does.
@@ -1205,6 +1213,55 @@ TEST_CASE("a capture with splice 0 under Loop is the last L frames", "[plugin]")
         CHECK(interleaved(*splice) ==
               std::vector<float>(window.end() - 2 * (head - mark), window.end()));
     }
+}
+
+TEST_CASE("the lane's capture with Loop on takes the splice the engine plays", "[plugin]")
+{
+    // Row 386: with Loop on and the marks older than the loop, the engine plays Splice 1 from the
+    // first mark in storage (SP-T1a/b); the lane's capture (asPlayed, the editor's) takes those
+    // frames, where a capture's own numbering (SP-T8a, gg-render's) finds no mark inside the loop
+    // and takes the loop window.
+    gg::test::useMediaScratch("ring-capture-played");
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.activate(kRate, kBlock));
+    setParam(fx, idOf(LayerParam::Loop, 0), 1.0);
+    setParam(fx, idOf(LayerParam::LoopLength, 0), -2.0);                 // 0.25 s: 12,000 frames
+    render(fx, 200, 81);                                                 // 102,400 frames
+    fx.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 1.0f}); // 48,000 behind
+    render(fx, 1, 82);
+    fx.impl().uiCommand({0, gg::core::CommandKind::AddSplice, 0, 0.5f}); // 24,000 behind
+    render(fx, 1, 83);
+    setParam(fx, idOf(LayerParam::Splice, 0), 1.0);
+    render(fx, 1, 84);
+    const auto *processor = fx.impl().processor();
+    const auto marks = processor->engine(0).live().splices();
+    REQUIRE(marks.size() == 2);
+    const int64_t head = processor->engine(0).live().head();
+    REQUIRE(marks[1] < head - 12000); // both older than the loop
+    // The engine's window is splice 1, [marks[0], marks[1]).
+    CHECK(processor->ringMeta(0).windowFrames == marks[1] - marks[0]);
+    const std::vector<float> window = gg::test::ringWindow(*processor, 0);
+    const int64_t oldest = head - static_cast<int64_t>(window.size() / 2);
+    auto &media = fx.impl().media();
+    const auto played = media.captureRing(0, 1, *processor, true);
+    REQUIRE(played != nullptr);
+    CHECK(played->frames() == marks[1] - marks[0]);
+    CHECK(interleaved(*played) == std::vector<float>(window.begin() + 2 * (marks[0] - oldest),
+                                                     window.begin() + 2 * (marks[1] - oldest)));
+    // A k past the count is the last splice, to the head, as the engine plays it.
+    const auto last = media.captureRing(0, 9, *processor, true);
+    REQUIRE(last != nullptr);
+    CHECK(last->frames() == head - marks[1]);
+    // SP-T8a's numbering (gg-render's): no mark inside the loop, so the loop window.
+    const auto own = media.captureRing(0, 1, *processor);
+    REQUIRE(own != nullptr);
+    CHECK(own->frames() == 12000);
+    CHECK(interleaved(*own) == std::vector<float>(window.end() - 2 * 12000, window.end()));
+    // Splice 0 with asPlayed: the loop window too, which the engine plays then.
+    const auto whole = media.captureRing(0, 0, *processor, true);
+    REQUIRE(whole != nullptr);
+    CHECK(whole->frames() == 12000);
 }
 
 TEST_CASE("a ring held at deactivation comes back at the next activation", "[plugin]")
@@ -1479,6 +1536,59 @@ TEST_CASE("a whole-window read the head laps is kept at its first try", "[plugin
 
 namespace
 {
+LapRig *wholeLapRig = nullptr;
+
+// On the first try's hook, more than a whole window (kLapRing + kLapPiece frames, rounded up to
+// whole pieces) is rendered: the head laps every frame of the copy. Later tries render nothing.
+void wholeLapHook(uint8_t layer, int attempt)
+{
+    if (layer != 0)
+    {
+        return;
+    }
+    ++wholeLapRig->hooked;
+    if (attempt == 0)
+    {
+        wholeLapRig->render(kLapRing + kLapPiece);
+    }
+}
+} // namespace
+
+TEST_CASE("a copy the head laps whole is retried", "[plugin][threads]")
+{
+    // Carry-over row 353: when the head passes the whole window during one copy (R1 - R0 >= N),
+    // no frame of it is good, and the read must try again rather than give up at its first try.
+    // The hook laps the first try whole and lets the second through, which must be kept: the
+    // window as of the head after the lap, frame for frame.
+    LapRig rig;
+    REQUIRE(rig.processor.setRingNow(0, std::make_unique<gg::RingStorage>(kLapRing, kLapPiece),
+                                     gg::core::RingOffer{}));
+    rig.render(2 * kLapRing);
+    const int64_t r0 = rig.t;
+    std::optional<gg::plugin::RingCopy> copy;
+    wholeLapRig = &rig;
+    gg::plugin::detail::setRingReadHook(wholeLapHook);
+    copy = gg::plugin::readRing(rig.processor, 0, {}, kRate);
+    gg::plugin::detail::setRingReadHook(nullptr);
+    wholeLapRig = nullptr;
+    REQUIRE(rig.t - r0 >= kLapRing); // the first try was lapped whole
+    CHECK(rig.hooked == 2);          // and the read tried again
+    REQUIRE(copy.has_value());
+    CHECK(copy->head == rig.t);
+    CHECK(copy->oldest == rig.t - kLapRing);
+    const gg::SampleBuffer &w = *copy->window;
+    REQUIRE(w.frames() == kLapRing);
+    int64_t wrong = 0;
+    for (int64_t i = 0; i < w.frames(); ++i)
+    {
+        const float expected = rig.ramp(copy->oldest + i);
+        wrong += w.channel(0)[i] != expected || w.channel(1)[i] != -expected ? 1 : 0;
+    }
+    CHECK(wrong == 0);
+}
+
+namespace
+{
 LapRig *swapRig = nullptr;
 
 // On the first try's hook, a new storage of the same length is offered and the audio side
@@ -1557,6 +1667,49 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
     // audio thread renders (each piece polls the offer), however long this thread is descheduled
     // or polls; the audio thread's kMaxTotal is a safety bound, and reaching it fails.
     constexpr uint32_t kPiece = 64;
+    {
+        // First deterministically (carry-over row 351), on one thread: the adoption's hook
+        // (Processor::setAdoptRingHook) reads the published storage and collects between the
+        // publication and the retirement, where the threaded run below collects only by chance.
+        // The new storage must be published there already, and the old one not yet retired, so
+        // that collect() frees nothing. With the two in the other order, the hook sees the old
+        // storage still published and its collect() frees it: both checks fail on every run.
+        gg::core::Processor q({kRate, kPiece, 7, gg::core::Mode::Fx});
+        REQUIRE(q.setRingNow(0, std::make_unique<gg::RingStorage>(4800, kPiece),
+                             gg::core::RingOffer{}));
+        std::vector<float> left(kPiece, 0.25f), right(kPiece, -0.25f), outL(kPiece), outR(kPiece);
+        const float *in[2] = {left.data(), right.data()};
+        float *out[2] = {outL.data(), outR.data()};
+        q.process(in, 2, out, 2, kPiece, {});
+        const gg::RingStorage *old = q.ringRead(0).storage;
+        const gg::RingStorage *publishedInHook = nullptr;
+        std::size_t freedInHook = 0;
+        int hooked = 0;
+        q.setAdoptRingHook([&] {
+            SST_CPPUTILS_RTSAN_DISABLE; // the main thread's role, taken here on the audio side
+            ++hooked;
+            publishedInHook = q.ringRead(0).storage;
+            const std::size_t before = q.sources(0).ringsHeld();
+            q.sources(0).collect();
+            freedInHook += before - q.sources(0).ringsHeld();
+        });
+        gg::core::RingOffer how;
+        how.copiedTo = q.ringRead(0).head->load(std::memory_order_acquire);
+        auto next = std::make_unique<gg::RingStorage>(9600, kPiece);
+        const gg::RingStorage *offered = next.get();
+        q.sources(0).offerRing(std::move(next), how);
+        q.process(in, 2, out, 2, kPiece, {}); // adopts it
+        q.setAdoptRingHook({});
+        REQUIRE(hooked == 1);
+        // Compares pointers only: a storage freed is never dereferenced here.
+        CHECK(publishedInHook == offered);
+        CHECK(publishedInHook != old);
+        CHECK(freedInHook == 0);
+        CHECK(q.sources(0).ringsHeld() == 2); // the old one, retired, awaits collect()
+        q.sources(0).collect();
+        CHECK(q.sources(0).ringsHeld() == 1);
+        CHECK(q.ringRead(0).storage == offered);
+    }
     constexpr int kSwaps = 200;
     constexpr int64_t kMaxTotal = int64_t{48000} * 600;
     constexpr int64_t kFramesPerSwap = int64_t{48000} * 5;
@@ -1646,6 +1799,72 @@ TEST_CASE("a replaced ring stays published until its storage can be collected", 
     CHECK(freedWhilePublished == 0);
 }
 
+namespace
+{
+/// The first bad copy of "the ring reader's copies match what the audio thread wrote" (carry-over
+/// row 403): what it held, and the swaps' state at that read.
+struct Mismatch
+{
+    bool seen{false};
+    const char *kind{""};
+    uint64_t read{0};
+    int64_t oldest{0};
+    int64_t head{0};
+    int64_t frames{0};
+    bool trimmed{false};
+    bool full{false};     // the copy's head >= N
+    bool hasFrame{false}; // a bad frame (the fields below), not a copy that isn't contiguous
+    int64_t frame{0};     // the first bad frame, by ring time
+    float foundL{0.0f};
+    float foundR{0.0f};
+    float againL{0.0f};
+    float againR{0.0f};
+    float expected{0.0f};
+    int64_t badFrames{0};
+    int64_t lastBad{0};
+    uint32_t swaps{0};
+    uint32_t adopted{0};
+    uint32_t adoptedFull{0};
+    bool offerOpen{false};
+    int64_t lastSwapHead{-1};
+    int64_t headNow{0};
+};
+
+/// The mechanism a bad frame names, from the value found in frame `frame` of a ramp that holds
+/// t mod 1,000,000 (right channel negated) in rings of capacity `capacity` (the triage's classes).
+const char *classifyMismatch(int64_t frame, float left, float right, int64_t capacity)
+{
+    constexpr int64_t kWrap = 1000000;
+    const auto expected = static_cast<float>(frame % kWrap);
+    if (left == expected && right != -expected)
+    {
+        return "the right channel alone: memory reuse or a translation fault";
+    }
+    if (right != -left)
+    {
+        return "the channels disagree: memory reuse or a translation fault";
+    }
+    if (left == 0.0f)
+    {
+        return "0, a never-written slot: a gap in a swapped storage";
+    }
+    if (left < 0.0f || left >= static_cast<float>(kWrap) || left != std::floor(left))
+    {
+        return "not a frame of the ramp: memory reuse or a translation fault";
+    }
+    const int64_t d = (static_cast<int64_t>(left) - frame % kWrap + kWrap) % kWrap;
+    if (d % capacity == 0)
+    {
+        return "a newer lap's frame: an overwritten frame accepted";
+    }
+    if ((kWrap - d) % capacity == 0)
+    {
+        return "an older lap's frame: a gap in a swapped storage";
+    }
+    return "another frame of the ramp: memory reuse or a translation fault";
+}
+} // namespace
+
 TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin][threads]")
 {
     // Spec §6.4's race-free read, under a running audio thread: one thread renders a Processor
@@ -1658,6 +1877,9 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     // are only safety bounds: reaching one fails the test. Whether the head laps a copy here is up
     // to the scheduler, so the test counts the trimmed copies but needs none; "a read whose copy
     // the head laps keeps the frames still good" forces one.
+    // A bad copy reports its first bad frame, what it held and the swaps' state then
+    // (classifyMismatch names the mechanism the value points to): it failed once in CI, under
+    // Rosetta with the three shards beside it (carry-over row 403).
     constexpr int64_t kN = 48000;
     constexpr uint32_t kPiece = 256;
     constexpr int64_t kMaxTotal = 600 * 48000;
@@ -1722,6 +1944,8 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     bool offerFull = false;
     uint32_t adopted = 0;
     uint32_t adoptedFull = 0;
+    int64_t lastSwapHead = -1;
+    Mismatch mismatch;
     const auto settle = [&] {
         if (offerOpen && !p.sources(0).ringAdoptionPending())
         {
@@ -1774,6 +1998,7 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
                 ++swaps;
                 offerOpen = true;
                 offerFull = copy->head >= kN;
+                lastSwapHead = copy->head;
                 nextSwap = reads + 25;
             }
             holdReleased.store(request, std::memory_order_release);
@@ -1787,19 +2012,75 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
         }
         ++reads;
         const gg::SampleBuffer &w = *copy->window;
-        trimmed += copy->oldest > std::max<int64_t>(0, copy->head - kN) ? 1 : 0;
+        const bool wasTrimmed = copy->oldest > std::max<int64_t>(0, copy->head - kN);
+        trimmed += wasTrimmed ? 1 : 0;
+        // Carry-over row 403's diagnostics: the first bad copy, and the swaps' state at it.
+        const auto recordBad = [&](const char *kind) {
+            Mismatch &m = mismatch;
+            m.seen = true;
+            m.kind = kind;
+            m.read = reads;
+            m.oldest = copy->oldest;
+            m.head = copy->head;
+            m.frames = w.frames();
+            m.trimmed = wasTrimmed;
+            m.full = copy->head >= kN;
+            m.swaps = swaps;
+            m.adopted = adopted;
+            m.adoptedFull = adoptedFull;
+            m.offerOpen = offerOpen;
+            m.lastSwapHead = lastSwapHead;
+            m.headNow = p.ringRead(0).head->load(std::memory_order_acquire);
+        };
         if (copy->oldest + w.frames() != copy->head)
         {
             ++bad;
+            if (!mismatch.seen)
+            {
+                recordBad("not contiguous");
+            }
             continue;
         }
+        int64_t first = -1;
         for (int64_t f = 0; f < w.frames(); ++f)
         {
             const auto v = static_cast<float>((copy->oldest + f) % 1000000);
             if (w.channel(0)[f] != v || w.channel(1)[f] != -v)
             {
-                ++bad;
+                first = f;
                 break;
+            }
+        }
+        if (first >= 0)
+        {
+            ++bad;
+            if (!mismatch.seen)
+            {
+                // What the bad frame holds names the mechanism (classifyMismatch).
+                recordBad("");
+                Mismatch &m = mismatch;
+                m.hasFrame = true;
+                m.frame = copy->oldest + first;
+                m.foundL = w.channel(0)[first];
+                m.foundR = w.channel(1)[first];
+                m.expected = static_cast<float>(m.frame % 1000000);
+                // Read the copy again, through volatile so that the compiler loads it again: a
+                // value that differs now was a load or compare fault, not a wrong copy (the copy
+                // is this thread's own buffer, written once).
+                m.againL = static_cast<const volatile float *>(w.channel(0))[first];
+                m.againR = static_cast<const volatile float *>(w.channel(1))[first];
+                for (int64_t f = first; f < w.frames(); ++f)
+                {
+                    const auto v = static_cast<float>((copy->oldest + f) % 1000000);
+                    if (w.channel(0)[f] != v || w.channel(1)[f] != -v)
+                    {
+                        ++m.badFrames;
+                        m.lastBad = copy->oldest + f;
+                    }
+                }
+                // Every storage in this test is RingStorage(kN, kPiece): capacity kN + kPiece.
+                m.kind = classifyMismatch(m.frame, m.foundL, m.foundR,
+                                          kN + static_cast<int64_t>(kPiece));
             }
         }
     }
@@ -1810,6 +2091,32 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
     INFO("reads " << reads << ", trimmed " << trimmed << ", swaps " << swaps << ", adopted "
                   << adopted << " (" << adoptedFull << " of a full ring), declined "
                   << p.ringAdoptionsDeclined(0));
+    // Carry-over row 403: the first bad copy, which names the mechanism (classifyMismatch).
+    std::ostringstream firstBad;
+    if (mismatch.seen)
+    {
+        const Mismatch &m = mismatch;
+        firstBad << "first bad read: " << m.kind << "; read " << m.read << ", oldest " << m.oldest
+                 << ", head " << m.head << ", frames " << m.frames
+                 << (m.trimmed ? ", trimmed" : ", untrimmed")
+                 << (m.full ? ", head >= N" : ", head < N");
+        if (m.hasFrame)
+        {
+            firstBad << "; frame " << m.frame << " (index " << m.frame - m.oldest << "): found L "
+                     << m.foundL << " R " << m.foundR << " (read again: L " << m.againL << " R "
+                     << m.againR << "), expected L " << m.expected << "; bad frames in the copy "
+                     << m.badFrames << ", the last " << m.lastBad;
+        }
+        firstBad << "; at that read: swaps " << m.swaps << ", adopted " << m.adopted << " ("
+                 << m.adoptedFull << " of a full ring), an offer "
+                 << (m.offerOpen ? "open" : "settled") << ", the last swap's head "
+                 << m.lastSwapHead << ", the head now " << m.headNow;
+    }
+    else
+    {
+        firstBad << "no bad read";
+    }
+    INFO(firstBad.str());
     // Reaching a safety bound before the work was done fails here.
     CHECK_FALSE(hung.load());
     CHECK(reads >= kReads);
@@ -1958,6 +2265,64 @@ TEST_CASE("a save before the audio thread takes a restored ring writes the resto
     sameRing(decoded(b.save(), gg::core::Mode::Fx));
 }
 
+TEST_CASE("a newer load withdraws an older restore offer", "[plugin]")
+{
+    // Carry-over row 355: a state loaded while active offers its ring, which the audio thread
+    // adopts at its next process() call. A newer load before that call, with no ring for the
+    // layer, withdraws the offer: the older session's ring never lands after the newer one's
+    // values. The layer keeps the ring it had, whose length (16 s, the older state's being 2 s)
+    // the watcher takes as the ring of record once the withdrawal settles, offering no resize.
+    gg::test::useMediaScratch("ring-load-withdrawn");
+    std::string older;
+    {
+        PluginUnderTest a(kFxId);
+        REQUIRE(a.valid());
+        REQUIRE(a.loadDefaultsWithSeed(3));
+        setParam(a, idOf(LayerParam::RingLength, 0), 1.0); // 2 s
+        REQUIRE(a.activate(kRate, kBlock));
+        render(a, 94, 11);
+        setParam(a, paramId(ParamSlot::Freeze), 1.0);
+        render(a, 47, 12);
+        older = a.save();
+    }
+    REQUIRE(decoded(older, gg::core::Mode::Fx).rings[0].has_value());
+    std::string newer;
+    {
+        PluginUnderTest b(kFxId);
+        REQUIRE(b.valid());
+        REQUIRE(b.loadDefaultsWithSeed(5));
+        newer = b.save();
+    }
+    REQUIRE_FALSE(decoded(newer, gg::core::Mode::Fx).rings[0].has_value());
+
+    PluginUnderTest fx(kFxId);
+    REQUIRE(fx.valid());
+    REQUIRE(fx.loadDefaultsWithSeed(4));
+    REQUIRE(fx.activate(kRate, kBlock));
+    render(fx, 40, 99); // its own ring holds other noise
+    const auto *processor = fx.impl().processor();
+    const gg::RingStorage *own = processor->ringRead(0).storage;
+    REQUIRE(own->frames() == 16 * 48000);
+    const std::size_t held = processor->sources(0).ringsHeld();
+    const std::vector<float> before = gg::test::ringWindow(*processor, 0);
+    REQUIRE(fx.load(older));
+    REQUIRE(processor->sources(0).ringAdoptionPending()); // offered, not taken
+    REQUIRE(fx.load(newer));
+    CHECK(processor->sources(0).ringsHeld() == held); // the older ring freed, never handed over
+    render(fx, 1, 0, nullptr, true);
+    CHECK(processor->ringRead(0).storage == own);
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending());
+    CHECK(processor->ringAdoptionsDeclined(0) == 0);
+    const std::vector<float> after = gg::test::ringWindow(*processor, 0);
+    REQUIRE(after.size() == before.size() + 2 * kBlock);
+    CHECK(std::equal(before.begin(), before.end(), after.begin())); // none of the older audio
+    fx.onMainThread();
+    CHECK_FALSE(processor->sources(0).ringAdoptionPending()); // no resize offered
+    CHECK(fx.impl().media().status(0).empty());
+    render(fx, 1, 0, nullptr, true);
+    CHECK(processor->ringRead(0).storage == own);
+}
+
 TEST_CASE("a session saves no ring of a layer whose Source is Sample", "[plugin]")
 {
     // D1 (the final review's I2): a held ring is saved only when the layer's base Source builds
@@ -1991,9 +2356,10 @@ TEST_CASE("a ring kept at deactivation is encoded only by the next save", "[plug
 {
     // The final review's I3: deactivate() runs on the host's main thread, so it keeps a held
     // ring as the frames it copied and leaves the WAV bytes and their hash to the next save; the
-    // next activation restores those frames directly, with no decode. The bytes a save writes
-    // are the ones an active save writes, and the ring comes back bit for bit, at the same rate
-    // or converted as a restore converts it.
+    // next activation restores those frames directly, with no decode, or, once a save has made
+    // the bytes, from them (carry-over row 354). The bytes a save writes are the ones an active
+    // save writes, and the ring comes back bit for bit, at the same rate or converted as a
+    // restore converts it.
     gg::test::useMediaScratch("ring-deactivate-lazy");
     PluginUnderTest reference(kFxId);
     frozenFx(reference);
@@ -2039,6 +2405,72 @@ TEST_CASE("a ring kept at deactivation is encoded only by the next save", "[plug
     CHECK(converted.size() / 2 ==
           static_cast<std::size_t>(std::llround(window.size() / 2 * 44100.0 / kRate)));
     CHECK(converted == gg::test::ringWindow(*restored.impl().processor(), 0));
+}
+
+TEST_CASE("an inactive save keeps one copy of a ring", "[plugin]")
+{
+    // Carry-over row 354: a ring kept at deactivation is held as its frames until a save encodes
+    // it; from then on the instance holds the WAV bytes alone, so the memory cap counts the ring
+    // once, before the save and after it, and the next activation restores it from the bytes,
+    // frame for frame.
+    gg::test::useMediaScratch("ring-inactive-one-copy");
+    PluginUnderTest fx(kFxId);
+    frozenFx(fx);
+    const std::vector<float> window = gg::test::ringWindow(*fx.impl().processor(), 0);
+    const auto &media = fx.impl().media();
+    fx.deactivate();
+    // The frames copied, and nothing else: the FX holds no sample.
+    CHECK(media.memoryUsedBytes() == window.size() * sizeof(float));
+    const gg::core::SessionState inactive = decoded(fx.save(), gg::core::Mode::Fx);
+    REQUIRE(inactive.rings[0].has_value());
+    REQUIRE(inactive.rings[0]->embed);
+    REQUIRE(inactive.audio.size() == 1);
+    // The WAV bytes alone now, not the frames beside them.
+    CHECK(media.memoryUsedBytes() == inactive.audio[0].bytes.size());
+    CHECK(inactive.audio[0].bytes.size() == inactive.rings[0]->fileSize);
+    fx.save();
+    CHECK(media.memoryUsedBytes() == inactive.audio[0].bytes.size()); // a second save: the same
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
+}
+
+namespace
+{
+int deactivateCopies = 0;
+
+void countCopies(uint8_t /*layer*/, int /*attempt*/) { ++deactivateCopies; }
+} // namespace
+
+TEST_CASE("a deactivation keeps a frozen ring a save has just encoded as its bytes", "[plugin]")
+{
+    // Carry-over row 354, the deactivation's branch: a frozen ring saved while active is cached
+    // as its WAV bytes; the deactivation that follows probes that cache as the save does and
+    // copies nothing (the ring-read hook, called after each try's copy, is never called), keeps
+    // the bytes alone against the cap and encodes nothing, and the activation restores the ring
+    // from them, frame for frame.
+    gg::test::useMediaScratch("ring-deactivate-cached");
+    PluginUnderTest fx(kFxId);
+    frozenFx(fx);
+    const std::vector<float> window = gg::test::ringWindow(*fx.impl().processor(), 0);
+    const auto &media = fx.impl().media();
+    const gg::core::SessionState active = decoded(fx.save(), gg::core::Mode::Fx);
+    REQUIRE(active.rings[0].has_value());
+    REQUIRE(active.audio.size() == 1);
+    const uint32_t encoded = media.ringsEncoded();
+    deactivateCopies = 0;
+    gg::plugin::detail::setRingReadHook(countCopies);
+    fx.deactivate();
+    gg::plugin::detail::setRingReadHook(nullptr);
+    CHECK(deactivateCopies == 0); // the cache answered: no copy taken
+    CHECK(media.ringsEncoded() == encoded);
+    CHECK(media.memoryUsedBytes() == active.audio[0].bytes.size());
+    const gg::core::SessionState inactive = decoded(fx.save(), gg::core::Mode::Fx);
+    CHECK(media.ringsEncoded() == encoded); // the bytes kept, not encoded again
+    REQUIRE(inactive.audio.size() == 1);
+    const bool sameBytes = inactive.audio[0].bytes == active.audio[0].bytes;
+    CHECK(sameBytes);
+    REQUIRE(fx.activate(kRate, kBlock));
+    CHECK(gg::test::ringWindow(*fx.impl().processor(), 0) == window);
 }
 
 TEST_CASE("a deactivation with four 60 s rings copies them and encodes none", "[plugin][serial]")

@@ -3,7 +3,7 @@
   "name": "Spectral Mist",
   "author": "Giga Grains",
   "description": "The input dissolved into a soft spectral blur that keeps its pitch but loses its edges; beautiful on keys, strings and held notes.",
-  "tags": ["texture", "smear", "pad", "live-input"],
+  "tags": ["texture", "smear", "pad"],
   "params": {
     "Mix": 0.6,
     "A Source": 3,

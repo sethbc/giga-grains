@@ -20,10 +20,10 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
-- **Where we are** (INTENT §20, §23 #61, #64): M0 and M1 are done, and so are the installers and
+- **Where we are** (INTENT §20, §23 #61, #64, #71, #93): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
-  is `docs/releasing.md`). **M2 is in progress** as seven sub-projects in four waves, run by one
-  agent session each (`docs/superpowers/specs/2026-10-29-m2-programme-design.md`: read its §6
+  is `docs/releasing.md`). **M2 is closed** (2026-11-03) as seven sub-projects in four waves, run by one
+  agent session each (`docs/superpowers/specs/2026-10-29-m2-program-design.md`: read its §6
   for your sub-project's scope and what it owns, and its §7 for the rules every sub-project
   builds on). Sub-project 1, Layers and structure, is built (INTENT §23 #65): four layers, the
   morph, the Source kind, the mod matrix, render tasks and the patch at version 2, which wave 2
@@ -39,13 +39,22 @@ AGPL-3.0-or-later.
   remote-controls pages. Sub-project 5, Presets and content, is built (INTENT §23 #70; PRs #17
   and #25): the `.ggpreset` file, INIT, CLAP preset discovery, the browser and Mutate, content
   v2 (51 CC0 files, VSCO 2: CE strings and brass beside VCSL), content-relative preset samples,
-  the 48 factory presets and their 48 goldens (108 in all). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  the 48 factory presets and their 48 goldens (108 in all). Sub-project 6, Views, is built (INTENT
+  §23 #71; PRs #18 and #24): the Perform, Edit, Mod and FX views, four lanes with a pitch axis,
+  the layer strip and XY pad, the Mod view's route path, undo, two themes, the About box,
+  `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the
+  consistency pass, the carry-over burned down to 15 open rows, the from-scratch build setup, the
+  gate, the idle figures and the release commit for v0.2.0 (the program manager tags it). **M3 is
+  next**, run as M1 was: one session, serial sub-projects, parallel tasks inside each (INTENT
+  §20, §23 #87). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
-  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`).
+  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`), and the
+  dependency watch, `docs/dependency-watch.md`: the pins that trail upstream on purpose, each with
+  what would move it and what to check (not carry-over; INTENT §23 #90).
 
 Development is Claude-led. The director steers, listens and reviews. Ears are the scarce
 resource, so machines must catch everything they can catch.
@@ -71,6 +80,10 @@ resource, so machines must catch everything they can catch.
   1. lower the interpolation tier;
   2. then drop new grains;
   3. then steal grains with fades.
+
+  The order is by load, and the engine's D4 decides between the last two (INTENT §23 #81, the
+  director, 2026-11-02): lower the tier; while the oldest sounding grain is under half its window,
+  drop the new grain; past it, steal it with a fade.
 
   It never clicks and never drops out.
 - **Stability contracts** (INTENT §18, §23 #61, #62). Frozen from the first public release,
@@ -112,6 +125,9 @@ resource, so machines must catch everything they can catch.
   our control (upstream, the director's ears, a later feature) are listed in the sub-project's final
   report and recorded in that file as a plain log, with no count rules. A row stays until the thing
   it names is done; nothing is filed upstream.
+- **Models** (the director, 2026-10-30): no Fable, ever. Name `model` on every dispatch. Where
+  superpowers' Model Selection says "the most capable model", use opus; otherwise haiku for
+  mechanical work and sonnet for integration and as the reviewer floor.
 - Reference templates for the CLAP-first build, CI and installers, all three GitHub-hosted under
   surge-synthesizer. A session may read their local clones, when they're present:
   - shortcircuit-xt, https://github.com/surge-synthesizer/shortcircuit-xt (local clone
@@ -130,6 +146,14 @@ resource, so machines must catch everything they can catch.
   the C++ x64 tools and the C++ Clang (ClangCL) component; configure and build `windows-clangcl`
   from an "x64 Native Tools" developer shell with Visual Studio's `VC\Tools\Llvm\x64\bin` first
   on the PATH, so `clang-cl` is Visual Studio's own (INTENT §23 #76).
+- **A fresh machine:** `scripts/bootstrap-macos.sh [--ci] [--clone DIR]`,
+  `scripts/bootstrap-linux.sh [--with-format] [--clone DIR]` and
+  `scripts/bootstrap-windows.ps1 [-Verify] [-Clone DIR]` install what the build needs (the README's
+  "Building from source" has their one-liners); `scripts/dev-shell-windows.ps1` enters the x64
+  developer shell. Their `--clone` runs `ctest -LE serial` (the `[serial]` timing and memory cases are left out of a
+  newcomer's first run), and `GG_REPO_REF` picks the commit to check out, in a new or an existing
+  clone. The Linux one installs a font (`fonts-dejavu-core`) beside the JUCE libraries: the GUI
+  tests lay out text. CI's legs run them (the `scripts_bootstrap` test checks them against stubs).
 - Fetch the dependencies with `git submodule update --init --recursive` (what CI and
   `worktree-setup.sh` check out; today no nested submodule is built).
 - **In a linked worktree** (`git worktree add …`), run its `scripts/worktree-setup.sh
@@ -193,10 +217,14 @@ check. CI's Linux leg is the only GCC build: push early (as a draft pull request
 **The Linux products' libstdc++.** On Linux with GCC, outside the sanitizer builds, the four
 products link libstdc++ and libgcc statically with their symbols kept local, and the CLAP and
 VST3 export their entry points alone (`clients/clap-first/CMakeLists.txt`,
-`linux-exports.map`; INTENT §15). CI's Linux leg checks it after the build: "Linux products need
-no libstdc++ newer than Ubuntu 22.04's" fails on a `GLIBCXX` above 3.4.30, a `CXXABI` above
-1.3.13 or an exported `std::` symbol, and lists each product's symbol versions in the step
-summary.
+`linux-exports.map`; INTENT §15). The Linux baseline is Ubuntu 24.04 (§23 #91): the products
+need its glibc, 2.39, and no longer run on 22.04. CI's Linux leg (`ubuntu-24.04`, gcc-13 from the
+archive) checks it after the build: "Linux products need no libstdc++ or glibc newer than Ubuntu
+24.04's" reads the ceilings from the runner's own `libstdc++.so.6` and `libc.so.6` (after
+checking both packages are Ubuntu's, and that the runner's glibc is exactly the documented 2.39,
+`GG_BASELINE_GLIBC`), fails on a `GLIBCXX`, `CXXABI` or `GLIBC` version
+above them or an exported `std::` symbol, and lists the ceilings and each product's symbol
+versions in the step summary.
 
 **The required checks** (INTENT §23 #77). `main`'s ruleset requires two: `ci-ok` and
 `clang-format`. `ci-ok` passes only when `plan`, every build leg and every sanitizer job passed. A
@@ -224,9 +252,10 @@ tag; RTSan runs everything. To reproduce a shard locally: `ctest --preset asan -
 - **ccache**, every build leg and the sanitizer jobs, passed as
   `CMAKE_<LANG>_COMPILER_LAUNCHER` at CI configure (local presets are unchanged). Windows uses
   ccache's own pinned release (4.14.2, SHA-256 checked) since the leg moved to Ninja (INTENT §23
-  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset, runner image and commit
-  (the sanitizer jobs' by sanitizer, LLVM version and commit; one ASan shard and the RTSan job
-  save), restored by prefix.
+  #76); `mac-universal`'s two-architecture compiles are largely uncached. Keyed by OS, preset,
+  runner image (`macos-26`, `windows-2022`, `ubuntu-24.04`; a new image misses once, as the Linux
+  leg's move from `ubuntu-22.04` did, §23 #91) and commit (the sanitizer jobs' by sanitizer, LLVM
+  version and commit; one ASan shard and the RTSan job save), restored by prefix.
 - **The pinned LLVM archive** (sanitizer jobs), keyed by version and SHA-256. The SHA-256 is
   checked on a hit too.
 - **The content** (every build leg and the sanitizer jobs): `scripts/fetch-content.sh` fetches
@@ -248,10 +277,10 @@ except `windows-clangcl`, which builds into `build/windows/`.
 |---|---|
 | `dev` | Debug, with everything. The everyday build. |
 | `release` | Release. Time benchmarks and run the validators on this one. |
-| `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. |
+| `asan` | ASan + UBSan, Debug, with `GG_BUILD_EDITOR=OFF`: the engine, `gg-core`, `gg-media`, the UI core, the tools, the plugin core and the tests. No editor, JUCE or plugin formats. With Apple clang it misses warnings CI's LLVM 23 turns into errors: also configure the CI-equivalent tree once, `CC=/opt/homebrew/opt/llvm/bin/clang CXX=/opt/homebrew/opt/llvm/bin/clang++ cmake --preset asan -B build/asan-llvm`, and build `gg-tests` in it. |
 | `rtsan` | RealtimeSanitizer, RelWithDebInfo, built like `asan` (`GG_BUILD_EDITOR=OFF`). Needs upstream LLVM 20 or newer in `$GG_LLVM` (Apple clang has no RTSan). |
 | `mac-universal` | Release for arm64 + x86_64. CI's macOS leg, which also runs the x86_64 slice's tests and golden checks under Rosetta. |
-| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). |
+| `windows-clangcl`, `linux-gcc13` | CI's Windows and Linux legs. `windows-clangcl` is Ninja with clang-cl, Release, from a VS 2022 x64 developer shell (into `build/windows/`). `linux-gcc13` is gcc-13 on Ubuntu 24.04, the Linux baseline (INTENT §15). |
 
 Every preset uses the same three commands:
 
@@ -273,7 +302,9 @@ ctest --preset dev --output-on-failure
     editor, so they aren't built.
 - **RTSan:** set `GG_LLVM` when configuring:
   - `GG_LLVM=/opt/homebrew/opt/llvm cmake --preset rtsan` with Homebrew LLVM on macOS;
-  - CI uses LLVM's 20.1.8 release for Linux, checked against its SHA-256, in `/opt/llvm-20.1.8`.
+  - CI uses LLVM's 23.1.4 release for Linux, checked against its SHA-256, in `/opt/llvm-23.1.4`
+    (Homebrew's `llvm` was at 23.1.4 too on 2026-11-03, so CI's sanitizer builds and a local
+    `rtsan` matched then).
   - Configuring fails, naming `GG_LLVM`, if the compiler isn't upstream Clang 20 or newer.
 - **Outputs:**
   - The plugins and standalone apps land in `build/<preset>/gg_assets/`.
@@ -285,8 +316,11 @@ ctest --preset dev --output-on-failure
     CC0 text and `content-version.txt`): the installers' Content component. It depends on
     `gg-content`, so a tree needs the fetched release (or `GG_CONTENT_DIR`).
   - `cmake --build --preset <p> --target gg-installer` builds `gg-products`, then packs it into
-    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno Setup
-    6's `ISCC.exe` is found at configure, its installer, or the Linux tarball. Unsigned unless
+    `build/<preset>/gg-installer/`: the macOS PKG and DMG, the Windows zip and, when Inno
+    Setup's `ISCC.exe` is found at configure, its installer, or the Linux tarball. CI's Windows
+    leg installs Inno Setup 7.1.1 (pinned, SHA-256 checked) and names its `ISCC.exe` with
+    `-DGG_ISCC`; locally `cmake/products.cmake` looks in `Program Files\Inno Setup 7`, then Inno
+    Setup 6's folder (the script needs 6.3 or later). Unsigned unless
     the signing environment is set ("Releasing" below; `docs/releasing.md`).
 - **If you delete a bundle or `gg_assets/`, configure again before building.** The `Info.plist`
   files of the CLAP, VST3 and app bundles are link dependencies, and CMake writes them at
@@ -334,8 +368,8 @@ scripts/check.sh [--presets dev,asan,rtsan] [-L label]... [--no-format] [--allow
 
 **Tests.** `gg-tests` is the Catch2 suite, and each Catch2 tag becomes a CTest label. To run one
 area, use `ctest --preset dev -L <label>`. `-L` takes a regular expression, and repeated `-L`
-options must all match: `-L core -L rt` runs only the tests labelled both, and `-L 'core|rt'`
-runs the tests labelled either. The labels are:
+options must all match: `-L core -L rt` runs only the tests labeled both, and `-L 'core|rt'`
+runs the tests labeled either. The labels are:
 - engine: `engine`, `cloud` (the Cloud scheduler), `live` (the live ring), `pool`, `source`,
   `rng`, `math`, `interp`, `window`, `denormal`, and since M2 sub-project 3 `budget` (the
   weights, the ledger, the quotas, the ladder's three rungs, the steal fade, the exit case and the
@@ -355,7 +389,8 @@ runs the tests labelled either. The labels are:
     sweeps), each checking finiteness, the peak bound, no runaway and the goldens' click score
     outside named exemptions (`SweepDriver.h`; carry-over rows 217 and 302), and pinning a floor
     under the share of its render that it scores. About 26.5 s in `dev` (eight at a time) and
-    about 194 s under ASan; none is `slow`;
+    about 194 s under ASan, both timed over the first 20 cases (a re-time of all 30 is the close's);
+    none is `slow`;
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
@@ -405,6 +440,9 @@ runs the tests labelled either. The labels are:
   M2 sub-project 2 the memory cap's accounting (`MemoryBudget`; the 600 s file cap is gone), the
   sample pool, float32 WAV bytes, a ring's saved audio and collect and save. `slow` marks one of
   them, the search's 50,000-entry scan.
+  - The memory cap counts the rings and loaded samples, not the fixed costs. One of those is
+    `LivePeaks` (the editor's peak strip): each layer's is sized for a 300 s ring in every
+    instance, about 0.9 MB a layer at 48 kHz (scaling with the rate), outside the cap.
   - The WAV, AIFF and AIFC files they decode are written at run time
     (`tests/media/AudioFixtures.h`). dr_libs can't write FLAC or MP3, so
     `tests/fixtures/audio/` holds one tiny FLAC and one MP3, the only audio committed to the
@@ -428,7 +466,7 @@ runs the tests labelled either. The labels are:
   the 4-wide table alone. Set `GG_FORCE_SSE` (set and not empty) to make a process, or a ctest,
   use the 4-wide table; `kernel_force_sse_env` checks it;
 - `determinism`: block-size invariance;
-- `rt`: the allocation tripwire. In the `rtsan` build, two tests labelled both `rt` and `rtsan`
+- `rt`: the allocation tripwire. In the `rtsan` build, two tests labeled both `rt` and `rtsan`
   check that RTSan is active: one checks the build flag, and `rtsan_negative_control` passes
   only if RTSan reports an allocation made inside a nonblocking function.
 - tools: `render` (gg-render's CLI, `render_write_media_alone`, `render_spectrogram_utf8_path`,
@@ -477,7 +515,7 @@ runs the tests labelled either. The labels are:
   LICENSE, byte for byte) sits outside the editor guard, so it runs without the editor too;
 - `serial`: the Catch2 cases tagged `[serial]`, which measure time or memory and run with
   `RUN_SERIAL` (see "Tests run in parallel");
-- `plugin`: the plugins, driven through their CLAP factory. Tests labelled both `plugin` and
+- `plugin`: the plugins, driven through their CLAP factory. Tests labeled both `plugin` and
   `rt` put the allocation tripwire on `process` and `params.flush`. `routes_tests.cpp` checks
   the editor's route path (`uiSetRoutes`: the render, the saved state, a load and an edit in one
   block in both orders, an inactive edit, the tripwire). Since M2 sub-project 2,
@@ -533,7 +571,9 @@ multiply-add. Keep that step whenever the macOS leg changes.
 
 **The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
 Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
-cases alone, then the golden cases three `gg-render` processes at a time. On a pull request and a
+cases alone, then all 108 golden cases (the 60 and the 48 preset goldens, whose packed presets
+the native `ctest` built) three `gg-render` processes at a time, each with `--content-dir` set to
+the fetched content. On a pull request and a
 push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
 shard locally: `arch -x86_64 build/mac-universal/tests/gg-tests '~[serial]~[slow]' --order decl
 --shard-count 3 --shard-index 0`.
@@ -546,6 +586,10 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 **Tests run in parallel.** Every test preset runs 8 tests at a time (`"jobs"` in the hidden
 `base` test preset); `-j N` on the command line overrides it, and `-j 1` runs them serially.
 - Each Catch2 test case runs in its own process.
+- **ThreadSanitizer** (no preset, no CI job): `tests/tsan-suppressions.txt` holds one suppression,
+  the ring reader's designed reader/writer slot race (`race:gg::media::ringToBuffer`; a seqlock
+  validates what it keeps; carry-over row 403). A local TSan tree runs with
+  `TSAN_OPTIONS="suppressions=$PWD/tests/tsan-suppressions.txt"`.
 - **Keep new tests parallel-safe:**
   - never write a path that another test writes: unit tests' scratch files go in
     `GG_TEST_OUTPUT_DIR` under a name of their own, and each golden case writes its own files;
@@ -573,9 +617,13 @@ code page, so the name matches nothing and the test fails with "No tests ran". S
 
     ```cmake
     catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
-    catch_discover_tests(gg-tests TEST_SPEC "[serial]" ADD_TAGS_AS_LABELS
+    catch_discover_tests(gg-tests TEST_SPEC "[serial]~[crawl48]" ADD_TAGS_AS_LABELS
             PROPERTIES RUN_SERIAL TRUE)
+    catch_discover_tests(gg-tests TEST_SPEC "[crawl48]" ADD_TAGS_AS_LABELS
+            PROPERTIES RUN_SERIAL TRUE FIXTURES_REQUIRED presets_built)
     ```
+
+    The third is the preset crawl, serial and requiring the `presets_built` fixture.
 
 **Golden renders (`gg-render`).** `gg-render` renders a render spec offline and deterministically:
 
@@ -776,7 +824,7 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     - layers: `fx-layers` (stereo noise, four Live layers, B Pitch +7, C Size 40 ms, D Pitch
       -12, the pad at rest), `inst-layers-morph` (four Sample layers, a sweep, a 330 Hz sine,
       noise and a lower sweep, one held note, Morph X and Y stepped around the square and back
-      to the centre), `inst-pitch-spread` (one note over a sine, A Pitch Spread 0, 2, 7, 12, 24
+      to the center), `inst-pitch-spread` (one note over a sine, A Pitch Spread 0, 2, 7, 12, 24
       at 1 s intervals), `inst-size-spread` (one note over noise, Size 100 ms, A Size Spread 0,
       0.5, 1, 2 octaves), `fx-layer-switch` (Layer B On at 1 s, off at 2.5 s, on at 3 s, over a
       330 Hz sine), `fx-source-switch` (layer A Live, Sample over `loop-48k.wav` from 1 s, Live
@@ -1051,12 +1099,18 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     write the JSON, or 2 for bad usage.
   - Sub-project 4's fix wave measured 28.49 ns per stereo sample, 0.137% of one M5 Max core,
     at its final code (`ac81dfb`; INTENT §16), and sub-project 6's idle run 29.44 ns, 0.141%,
-    published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60).
+    published beside X (19.5% at block 256; `docs/benchmarks/`, INTENT §23 #60). The M2 close's
+    idle re-measurement (`docs/benchmarks/2026-11-03-m2-*.json`) is 28.72 ns, 0.138%, and X
+    19.4% at block 256 (the published headline stays M1's 19.5%); its canvas figure at 8,192
+    grains is 2.85 ms.
 - **`--chain`** times the units the extremes sub-project adds after the grains, per stereo
   sample on stereo noise at 48 kHz: two `BusFilter`s (Low-pass, 1 kHz, resonance 0.5), the
   `Delay` (375 ms, feedback 0.5, damping 0.3, ping-pong, amount 1) and the `Limiter` (Peak,
-  ceiling 0.5, release 100 ms) (`tools/gg-bench/Bench.h` lists every setting). It takes
-  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`).
+  ceiling 0.5, release 100 ms), and in the same rounds a second stage, `spectral` (row 372): one
+  Spectral Smear source's STFT, active, over stereo noise as a sample with no grain reading it,
+  in ns per stereo sample (`tools/gg-bench/Bench.h` lists every setting). It takes
+  `--space`'s options and prints and writes as it does (its own JSON, `"benchmark": "chain"`,
+  the stage under `"spectral"`).
   - It is report-only: no ratio, no baseline, no verdict. CI's benchmark step doesn't time it;
     ctest's `bench_chain_cli` only checks that it runs. Its exit status is as `--space`'s.
 - **An option a mode doesn't take is bad usage** (exit 2, with the usage): `--space` and `--chain`
@@ -1084,19 +1138,31 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   build job to 120: it outgrew 30 once M2's cases joined.
   - **Baselines are per CPU model.** GitHub assigns a leg different CPU models from run to run
     (seen so far: Linux on AMD EPYC 7763, 9V45 and 9V74 and Intel Xeon 8370C; Windows on EPYC
-    7763, 9V45 and 9V74). For unchanged code, ratios differ by up to ~20% between models and ~6%
+    7763, 9V45 and 9V74 and Intel Xeon 8370C). For unchanged code, ratios differ by up to ~20% between models and ~6%
     on one model. So a leg's baseline has one entry per model, keyed by gg-bench's `machine`
     string, and a run is checked only against its own model's entry. The committed baselines
-    have entries for the mac leg's Apple M1 VM, Windows' EPYC 7763, EPYC 9V45, Xeon 8370C and
-    EPYC 9V74 (the last from the SSE-era code, stale until a run lands on that model), and
-    Linux's EPYC 7763 and 9V45. The x86 entries were remade at the AVX2 task from three
-    full-length runs (INTENT §23 #66), and the six report-only cases (`engine-layers`,
-    `engine-layers-full`, `engine-sample-hq`, `engine-sample-hq-up`, `engine-overload`,
-    `engine-sample-sse`) now have entries beside the four gated ones there (30 ratios an entry),
-    none on `mac-universal`; they stay report-only, as the whole gate does. A model with no
-    entry gets no verdict (the summary says so) until later runs on it are added to the baseline.
+    have entries for the mac leg's Apple M1 VM (three runs), and for the x86 legs, as the M2
+    close remade them (2026-11-03, from the three full-length dispatches at `ca60f54` and the
+    earlier ones at `630d740`, carry-over rows 304 and 305; the commit `cf37b83` has the
+    comparisons):
+    - `linux-gcc13`: EPYC 7763 from 2 runs at `ca60f54`, EPYC 9V74 from 1 run at `ca60f54`,
+      EPYC 9V45 from 1 run at `630d740`;
+    - `windows-clangcl`: EPYC 7763 from 1 run and EPYC 9V74 from 2 runs at `ca60f54`, EPYC 9V45
+      and Xeon 8370C from 1 run each at `630d740`;
+    - `mac-universal` is unchanged.
+
+    The entries made at `ca60f54` carry 42 ratios, the kept ones at `630d740` 30. The x86 entries
+    were first made at the AVX2 task from three full-length runs (INTENT §23 #66), and the
+    six report-only cases (`engine-layers`, `engine-layers-full`, `engine-sample-hq`,
+    `engine-sample-hq-up`, `engine-overload`, `engine-sample-sse`) have entries beside the four
+    gated ones there, none on `mac-universal`; they stay report-only, as the whole gate does. A
+    single-run entry carries the 0.10 floor tolerance (row 305 stays open for them, with row 144).
+    A model with no entry gets no verdict (the summary says so) until later runs on it are
+    added to the baseline.
   - **The gate is report-only until 1.0.0** (INTENT §19, §23 #44, #60, #61): exit 3 becomes a
-    `::warning` and the step exits 0. A crash, exit 1 or 2, or the timeout still fails the job.
+    `::warning` and the step exits 0, when the output also holds gg-bench's `verdict: N of M`
+    line (row 148); exit 3 without it fails the step. A crash, exit 1 or 2, or the timeout still
+    fails the job.
     The `bench_baseline_*` tests pin exit 3 (a regression or a missing entry), exit 0, the
     no-verdict line and exit 1 for a run with no ratios.
   - The gate turns blocking at 1.0.0, after M5 (INTENT §23 #60, #61), with the published X. The
@@ -1152,7 +1218,8 @@ gg-snap <out-dir> [--sizes 960x600,640x360]
 - **It never touches your settings:** it sets `GG_STRESS_GRAINS=2048` (below) and points
   `GG_SETTINGS_FILE` at a scratch file in the system's temporary folder, removed afterwards.
 - **Exit status:** 0, 1 with a message on stderr, 2 for bad usage.
-- **`snap_cli`** (labels `plugin` and `slow`, a 300 s timeout; macOS, with the editor) runs it
+- **`snap_cli`** (labels `plugin` and `slow`, a 900 s timeout and `PROCESSORS 2`;
+  macOS, with the editor) runs it
   into `build/<preset>/tests/test-output/snap_cli` and requires exactly the 32 names, each a PNG
   of at least 1,000 bytes. It takes about 66 s in `dev`, so `-LE slow` leaves it out.
 - **CI's macOS leg** runs it after the tests and uploads the files as the `gg-snapshots`
@@ -1187,7 +1254,7 @@ sets it, and the test "the stress seam draws four lanes" covers it.
 - **On Linux,** CI runs pluginval under `xvfb-run -a` with `--skip-gui-tests`.
 - **On Windows,** CI runs clap-validator without `preset-discovery-crawl`,
   `-descriptor-consistency` and `-load`: 0.4.1-127 demands `/C:\...` for a FILE location, which
-  no Windows file function opens (carry-over row 233). Run all three on macOS and Linux.
+  no Windows file function opens (M2 carry-over row 233). Run all three on macOS and Linux.
 - **auval (macOS)** needs the AU installed for your user:
 
   ```sh
@@ -1200,7 +1267,9 @@ sets it, and the test "the stress seam draws four lanes" covers it.
     grep -q Sbcx "$TMPDIR/auval-list.txt" && break
     sleep 2
   done
-  auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  if grep -q Sbcx "$TMPDIR/auval-list.txt"; then
+    auval -v aumu GGin Sbcx; auval -v aufx GGfx Sbcx; auval -v aumf GGfx Sbcx
+  else echo "the registrar never listed Sbcx" >&2; fi
   ```
 
   Each of the three runs must end with `AU VALIDATION SUCCEEDED`.

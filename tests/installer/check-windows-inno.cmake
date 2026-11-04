@@ -3,7 +3,8 @@
 # Copyright 2026, the Giga Grains authors (see git history)
 #
 # Compiles installer/windows/giga-grains.iss with Inno Setup and checks the installer it makes
-# (spec §6.5). Run as a CTest, on Windows with Inno Setup 6 (cmake/products.cmake's GG_ISCC):
+# (spec §6.5). Run as a CTest, on Windows with Inno Setup (cmake/products.cmake's GG_ISCC; CI's is
+# 7.1.1, and 6.3 or later compiles the script too):
 #
 #   cmake -DISCC=<ISCC.exe> -DISS=<giga-grains.iss> -DPRODUCTS=<gg-products>
 #         -DLICENSES=<gg-products/licenses> -DOUT=<scratch dir> -DNUMERIC=<X.Y.Z>

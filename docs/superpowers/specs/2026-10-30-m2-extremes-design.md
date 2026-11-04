@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | **Approved by the programme manager 2026-10-30** against the programme design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the programme manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the programme design's §6.4 and §7, which it realizes and does not reopen. **Built 2026-10-30** (Tasks 1 to 16 on `m2-extremes`; INTENT §23 #69 records it). Sections changed by the build are marked **Amended**; the director's later decision D7a (2026-10-30) is in §8 and §6.4 |
+| **Status** | **Approved by the program manager 2026-10-30** against the program design and INTENT, with three notes applied in place (§4, §6.3, §13): the named edits inside sub-projects 3's and 2's files are accepted as described, resolved at this sub-project's rebase with the `Field` numbers assigned then; the `isValidTarget` layer rule is sub-project 3's, found done after the rebase and only tested here; the §23 row takes the next free number at merge. **The director's decisions D1–D8, 2026-10-30,** relayed by the program manager, are recorded in §8 and applied in §6: every recommended option (D1–D8 option 1). Written by the sub-project's worker session from the program design's §6.4 and §7, which it realizes and does not reopen. **Built 2026-10-30** (Tasks 1 to 16 on `m2-extremes`; INTENT §23 #69 records it). Sections changed by the build are marked **Amended**; the director's later decision D7a (2026-10-30) is in §8 and §6.4. The close (2026-11-02) amended §3, §6.4, §6.5 and D6 (D-glide; K-2, §23 #79) and §6.2 (D-specwindow), and corrected §10 and §11's counts |
 | **Milestone** | M2 Giga (INTENT §20, §23 #64), sub-project 4 of 7; wave 2, with sub-projects 3 and 2, **merged third** |
-| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-programme-design.md` (its §6.4, §7 and §12 are this sub-project's charter). This document records how this sub-project implements them |
+| **Spec authority** | `INTENT.md`, then `docs/superpowers/specs/2026-10-29-m2-program-design.md` (its §6.4, §7 and §12 are this sub-project's charter). This document records how this sub-project implements them |
 | **Builds on** | M2 sub-project 1 as merged (`ab9f4e2`, PR #15; INTENT §23 #65): the four layers, the per-layer chain of §7.2, the Source-kind parameter with its enumeration (Spectral = 3 exists and falls back), the mod matrix, the reserved index block `0x..60`–`0x..7F`, the render tasks; M1's Space (`core/src/space/`, the diffuser, the soft limiter, the 32-sample grid) |
 | **Feeds** | Sub-project 5 (presets voice the filters, the delay, the limiter and Smear; the Spectral kind); sub-project 6 (the Edit view's Filter panel and the FX view draw these parameters); sub-project 7 (the pack, the chain's cost beside X, INTENT §22's buses row) |
 | **Starts from** | `main` at `ab9f4e2` (sub-project 1 merged), and `docs/m2-carry-over.md` with **11 open rows** |
-| **Rebases on** | sub-project 3 (merged first: the pool, the HQ tier, the budget), then sub-project 2 (merged second: the ring length, the resample tap, `MEDI` v2), before its final verification (programme design §6, "Wave rules") |
+| **Rebases on** | sub-project 3 (merged first: the pool, the HQ tier, the budget), then sub-project 2 (merged second: the ring length, the resample tap, `MEDI` v2), before its final verification (program design §6, "Wave rules") |
 
 ## 1. Why this sub-project
 
@@ -17,10 +17,10 @@ INTENT §5 promises 100× to 1000× stretch and §3 names extreme sound design a
 paulstretch-style Spectral Smear source. §14's Units draw grain buses with per-bus FX and a filter
 per layer, and its Mix and global FX draw a delay and a limiter after the layers; §17 gives them an
 Edit panel and an FX view; §22 asks whether buses with channel masks are enough for v1 or per-grain
-filters are needed sooner. The programme design (decision 3, "everything is M2"; §6.4; §7.7) puts
+filters are needed sooner. The program design (decision 3, "everything is M2"; §6.4; §7.7) puts
 all of it here, in wave 2, beside the engine's scale (3) and the sources' persistence (2).
 
-It delivers the programme design's inventory items I20 to I23:
+It delivers the program design's inventory items I20 to I23:
 
 - **I20 Smear:** one layer parameter that couples position jitter, overlap (8 to 32), micro-detune
   and power normalization, so a cloud at extreme stretch stops combing (§6.1);
@@ -34,7 +34,7 @@ It delivers the programme design's inventory items I20 to I23:
 
 **Headless, like wave 1.** Every new parameter is reachable through the host's generic editor,
 automation, the mod matrix, new remote-controls pages and `gg-render`; the Edit and FX views that
-draw them are sub-project 6's (programme design §6.6).
+draw them are sub-project 6's (program design §6.6).
 
 ## 2. Goals
 
@@ -63,7 +63,7 @@ draw them are sub-project 6's (programme design §6.6).
 **Non-goals (other sub-projects, or later):**
 - The budget manager, the pool's ceiling, the HQ tier and the mipmaps (3); the ring's length,
   the memory cap, the resample tap and kind, `AUDI` and `MEDI` v2 (2). This sub-project adds no
-  chunk and bumps no version (programme design §7.5).
+  chunk and bumps no version (program design §7.5).
 - The Edit view's Filter panel, the FX view, the layer strip (6); presets that use any of this (5).
 - Per-grain filters (INTENT §14: "True per-grain filters come later, behind a budget weight", M5).
   This sub-project measures their cost (§6.10); it does not ship them.
@@ -74,7 +74,7 @@ draw them are sub-project 6's (programme design §6.6).
   asked for, and the measurement decides what follows.
 - Spectral parameters beyond what the layer already has: the STFT's size, hop and window are fixed
   (§6.2); Position, Spray and Freeze give the Spectral kind its controls.
-- Smoothing Reverb Size (carry-over row 217): sub-project 6 decides it in the FX view (programme
+- Smoothing Reverb Size (carry-over row 217): sub-project 6 decides it in the FX view (program
   design §8). This sub-project adds files beside `Reverb2Patched.h` and doesn't edit it.
 
 **Anti-goals (a failure even if everything works):**
@@ -82,7 +82,11 @@ draw them are sub-project 6's (programme design §6.6).
   off, the delay at Amount 0 and the limiter Off.
 - A click or a zipper when a filter's type, cutoff or resonance moves, when Bus Split moves, when
   Delay Time moves, when the limiter's mode changes, or when a layer's kind switches to or from
-  Spectral.
+  Spectral. **Amended** (D-glide, the director, 2026-10-31, row 379): Delay Time never clicks
+  except inside a Feedback loop at 95% or more over a near-silent tail, where the re-read passes
+  crackle: an accepted law. **Amended** (the director, 2026-11-02, K-2, INTENT §23 #79): a mode
+  change into Peak mid-sound over hot material may click, as part of Peak's zero-attack law (D5b);
+  every other mode change crossfades without a click.
 - Output that depends on the block size, the thread pool, the host's rate conversion of nothing, or
   measured CPU; a `std::` distribution or a clock-seeded RNG anywhere, pffft's phases included.
 - An allocation, lock or syscall on the audio thread, the STFT included: every buffer and pffft
@@ -95,13 +99,13 @@ draw them are sub-project 6's (programme design §6.6).
 
 - CLAUDE.md's non-negotiables: the audio-thread rules, RTSan-clean, 0- and 1-sample blocks,
   `params.flush` trivial; randomness only from the counter RNG keyed by (seed, layer, stream,
-  field, grain index); no `std::` distributions; no CPU-adaptive behaviour; layers summed in a
+  field, grain index); no `std::` distributions; no CPU-adaptive behavior; layers summed in a
   fixed order; block-size invariance; 64-bit positions; the overload ladder's order; licensing
   (pffft is BSD-like and already built, INTENT §15; sst-filters is GPL-3.0-or-later and pinned).
 - INTENT §8's principles break ties: §8.1 (Smear must sound good across its whole range), §8.2
   and §8.3 (the Spectral kind is a configuration of the one engine and a source like any other),
   §8.4, §8.6 and §8.9.
-- The programme design's §7: my parameters in the `0x..60`–`0x..7F` blocks of scope 0 and of each
+- The program design's §7: my parameters in the `0x..60`–`0x..7F` blocks of scope 0 and of each
   layer scope, absent → default with no bump (§7.1, §7.5); the chain of §7.2 with the delay and
   limiter where it draws them and both resting as the identity (§7.7); the limiter's default
   equal to M1's soft limiter so no golden moves; every M1 hash kept and X unchanged in definition
@@ -114,7 +118,7 @@ draw them are sub-project 6's (programme design §6.6).
   second output pair), `tests/CMakeLists.txt`, the plugin's remote pages, INTENT.
   **Edits at named places inside files other wave-2 sub-projects own or touch,** each a few
   lines, resolved by this sub-project at its rebase (it merges last) and named in its SPEC READY
-  report so the programme manager can object (the builder check found that pure additions won't
+  report so the program manager can object (the builder check found that pure additions won't
   do):
   - `engine/src/Engine.cpp` and `Engine.h`: a third source slot (`kSpectralSlot`), which means a
     branch in the spawn path, in `admit` (`lastEnd` is a sample slot's alone) and in `renderPool`
@@ -130,7 +134,7 @@ draw them are sub-project 6's (programme design §6.6).
   - `core/include/gg/core/ModMatrix.h`: `isValidTarget`'s layer rule, which today admits a layer
     parameter only below `LFO 1 Rate` (so that no modulator's control is a target) and must
     instead refuse the modulators' controls by name, or every wave-2 layer parameter is silently
-    dropped as a route. **Assigned to sub-project 3 by the programme manager (2026-10-30),** which
+    dropped as a route. **Assigned to sub-project 3 by the program manager (2026-10-30),** which
     merges first: this sub-project finds it done after its rebase and only tests that its eight
     layer parameters are admitted (§10); until the rebase its own branch carries the same
     one-line change so its tests and goldens run, and drops it at the rebase. The new globals
@@ -251,6 +255,24 @@ the material with no transients and no comb; grains read it as they read the liv
   would read it as Sample or Live: a fraction of the sample, or seconds behind the ring's head
   (M1-k's one-sided seconds); Position's text follows the material (ruling FR-6's rule, from
   Source's base value and the loader's state).
+
+  > **Amended 2026-11-02 (the M2 close, row 381; D-specwindow built):** ring material follows
+  > sub-project 2's window, as a Live layer's grains do. At hop kH, with R the ring's head, E =
+  > `anchorAt(kH)` the window's end (R at Loop off with no splice, a selected splice's later mark)
+  > and `windowOldestAt(kH)` its oldest frame, the frame's first material frame is
+  > clamp(min(E, R − 256) − N − Position × rate, max(windowOldestAt(kH), R − readFrames), min(E,
+  > R − 256) − N), the newest bound winning: Position counts seconds behind the window's end, a
+  > loop's or a splice's window holds the analysis, and the frame never comes within 256 frames
+  > of the head. The reads stay bounded by the storage (ruling SP-T12aa): frames below max(0, R −
+  > readFrames) read 0. At Loop off with no splice this is the earlier law bit for bit (every
+  > golden's WAV kept its SHA-256), except during a Ring Length shrink, where the admission
+  > limit N′ narrows the frame's start as it narrows a Live grain's (SP-T12ad). **Ruling:** a
+  > window shorter than N + 256 frames (a loop under about 90 ms at 48 kHz, or a short splice)
+  > leaves every frame at the newest start, reading up to N frames before the window's oldest
+  > frame, as a Live grain admitted at the window's oldest frame reads past it; cyclic loop reads
+  > would be a later option. The ring commands (AddSplice, ClearSplices) reach every layer whose
+  > ring is read, `gg::core::readsRing` (a Live or Resample layer, or a Spectral one with no
+  > sample), the predicate `ringSaved` shares; a layer that reads a sample ignores them.
 - **The STFT.** Size N is the power of two nearest 85 ms at the running rate (4096 at 44.1 and
   48 kHz, 8192 at 88.2 and 96 kHz, 16384 above), hop H = N/4 (a multiple of 32, so every hop
   boundary is a grid boundary). Analysis and synthesis windows are both Hann, whose product at a
@@ -272,6 +294,14 @@ the material with no transients and no comb; grains read it as they read the liv
   analysis frame's. `sineDet`'s quarter-wave polynomial gives cos and sin, libm-free. So the smear
   of a given seed, layer, Position history and material is a function of the sample clock alone,
   at any block size.
+
+  > **Amended 2026-11-02 (the M2 close, row 365):** DC and Nyquist keep their phase, so the
+  > overlapping frames add them in amplitude, not in power: divided by 0.75 with the rest, a
+  > constant (or a Nyquist-rate) material came out 2.5 dB loud (4/3). They are scaled by
+  > `kOverlapGain` before the inverse, so they too reconstruct at unity (a test: within 0.05 dB).
+  > Only content under about half a bin, roughly 6 Hz at 48 kHz, and the inaudible Nyquist move;
+  > the five Spectral goldens (`inst-spectral`, `fx-spectral-freeze` and the presets `fx-06`,
+  > `fx-20` and `inst-21`) were regenerated, their event logs unchanged.
 - **The output ring** is a `LiveSource` of `SpectralSource::kRingSeconds` = 5 s (Spray's 2 s,
   Size's 2 s, the 256-frame margins and a block), written one sample per output sample on every
   piece, whatever the layer's kind: silence while the kind isn't Spectral, so a layer that isn't Spectral pays a
@@ -308,6 +338,9 @@ the material with no transients and no comb; grains read it as they read the liv
   > a Live layer's is, so a reopened frozen Spectral pad is the saved one. A Spectral layer with a
   > sample saves no ring, as a Sample layer doesn't (`gg::core::ringSaved`, given the layer's
   > material: the plugin's loader on the main thread, `gg-render`'s Processor after the render).
+  > **Amended (D-specwindow, the director, 2026-11-01, option 1: defer; row 381):** until row 381
+  > is built, a Spectral layer's analysis reads Position over the whole ring whatever Loop, Loop
+  > Length and Splice say, and the ring commands skip it.
 - **Feedback** on a Spectral layer is 0, as on a Sample layer: Feedback writes a Live layer's ring
   (wave 1's rule, kept); a Spectral layer's ring is its material. `toWetParams` keeps the rule.
 - **Memory** per layer at 48 kHz: the ring 5 s × 2 channels × (240,000 + maxBlockSize) floats,
@@ -374,8 +407,12 @@ octave, SIMD stereo.
 - **Declicked switches.** Each bus holds two filter instances. A type change (Off included) starts
   the incoming type on the spare instance at the boundary, from rest, and crossfades the bus from
   the outgoing instance's output to the incoming's over the 10 ms ramp (the outgoing keeps running
-  through the fade, then clears); after the fade the spare is free again. A change inside a fade
-  turns the fade from its current value, as the ramps do. A cutoff or resonance move is smoothed by
+  through the fade, then clears); after the fade the spare is free again. A change back to the
+  outgoing type inside a fade (A to B to A) turns the fade from its current value, as the ramps
+  do; a change to a third type waits for the fade to end, since two instances can't turn toward
+  it (the owner asks again each cell). **Amended 2026-11-02 (the M2 close, row 370):** the code
+  had waited for every change; it now turns for the one that returns, and no golden moves. A
+  cutoff or resonance move is smoothed by
   the per-sample interpolation alone. Bus Split moves latch per grain, so they can't click.
   **Amended (the final review's fix wave):** the first cell after a clear (a new instance, a
   reset, the layer switched back on) takes its type at once, as the ramps jump there, so a loaded
@@ -391,7 +428,7 @@ octave, SIMD stereo.
 
 ### 6.4 The global delay (I23)
 
-After the layers' weighted sum and before the reverb's return and the mix, as the programme
+After the layers' weighted sum and before the reverb's return and the mix, as the program
 design's §7.2 draws it: `wet' = delay(wet)`, the reverb hears `wet'`, and the mix takes `wet'`.
 
 Five globals (scope 0, `0x60`–`0x64`): `Delay Amount` (0–100%, default 0: the return's gain),
@@ -422,7 +459,9 @@ D7's), `Delay Damping` (0–100%, default 30%: a one-pole low-pass in the loop, 
   other read at p = 1, so a toggle never clicks (a hard switch stepped the echoes); like the other
   ramps it jumps where they jump (a loaded state, a macro or route, a clear). **Time** is D6's:
   under option 1 the read position glides toward its target at no more than 0.5 samples per sample
-  (Space's Pre-delay rule, P1), so a move bends the pitch like tape and never clicks; while nothing
+  (Space's Pre-delay rule, P1), so a move bends the pitch like tape and never clicks (except inside a Feedback loop at 95% or
+  more over a near-silent tail, where the re-read passes crackle: an accepted law, **Amended**,
+  D-glide, row 379); while nothing
   has run since a clear the new value applies at once (R-T2a). The ramps and the glide are
   functions of the absolute sample, so the output is block-size invariant.
 - **Memory:** 2 s of stereo at the running rate plus a block, about 0.8 MB at 48 kHz, allocated
@@ -445,7 +484,7 @@ default 100 ms).
 
 - **Off** is the identity: the sample passes bit for bit. **The per-layer soft limiters stay**
   (M1's law, `softLimit`, per layer before the morph weight), so at Off the only limiting is
-  M1's: "the default law equals M1's soft limiter" (programme design §7.7), and no golden moves.
+  M1's: "the default law equals M1's soft limiter" (program design §7.7), and no golden moves.
 - **Soft** applies M1's `softLimit` to the wet sum, scaled to the Ceiling: `C × softLimit(x / C)`
   with `C` the ceiling's linear gain, so four hot layers whose sum passes 1 are brought below the
   ceiling with M1's knee.
@@ -457,7 +496,11 @@ default 100 ms).
   anticipated.
 - **Amended (D5b, the director, 2026-10-31, option 1): the laws stand.** Peak's instant attack and Soft's drive at the bottom ceilings score as clicks over hot material (carry-over row 378, an accepted law, not a defect). The sweep harness's `kLimiterDrive` looks away over the calls in which Peak's gain falls below −6 dB or Soft's input passes twice the ceiling, plus 10 ms after, and nothing wider.
 - **A mode change crossfades** over the 10 ms ramp between the outgoing and the incoming law's
-  outputs (both computed through the fade), so switching never clicks; Ceiling and Release ramp
+  outputs (both computed through the fade), so switching never clicks, but into Peak mid-sound over hot material, whose gain leaves 1 with
+  no attack (**Amended**, the director, 2026-11-02, K-2, INTENT §23 #79: part of Peak's
+  zero-attack law, D5b; row 378 measured 24.4 at 461 samples into the fade at -18 dB, and Peak's
+  clicks over hot material run 16.24 to 42.05, Soft's up to 19.77, at the bottom ceilings; the
+  sweep harness exempts the fade by samples); Ceiling and Release ramp
   like Mix. **Amended (the final review's fix wave):** where the ramps jump (a new instance, a
   loaded state, a macro or route that moves the mode, a reset) the mode snaps instead, so a loaded
   Peak state is limited from its first sample.
@@ -494,7 +537,7 @@ instance, after the tasks join:
 With Smear 0, Bus Split 0, both filters Off, the kind not Spectral, Amount 0 and the limiter Off,
 every marked line is the identity on the same bits, and the chain is wave 1's.
 
-### 6.7 Parameters: the reserved block (programme design §7.1)
+### 6.7 Parameters: the reserved block (program design §7.1)
 
 Forty parameters, each `AUTOMATABLE | MODULATABLE`, the stepped ones also `STEPPED`, inside the
 `0x60`–`0x7F` blocks; the next-free constants are unchanged (`0x31`, `0x22`), as ruling FR-1
@@ -570,7 +613,7 @@ in its ring's).
 ### 6.10 `gg-bench` and INTENT §22's measurement
 
 Report-only beside X, in the default case list so CI's legs time them and the close can merge
-their baseline entries after three full runs (programme design §7.6):
+their baseline entries after three full runs (program design §7.6):
 
 - **`engine-sample-smear`:** `engine-sample` at Smear 1: the two extra draws per spawn and the
   jitter's reads (X's overlap is already far above 32, so the density floor doesn't bind).
@@ -629,7 +672,7 @@ definition. The `reference` kernel and `Kernels.h` are untouched.
 Each a forced choice; the recommended option is first, with one line on what each costs. Nothing
 engineering-only is here (that is §9).
 
-**The director's answers, 2026-10-30, relayed by the programme manager:** every recommended
+**The director's answers, 2026-10-30, relayed by the program manager:** every recommended
 option. D1 option 1, D2 option 1, D3 option 1, D4 option 1, D5 option 1, D6 option 1, D7 option 1,
 D8 option 1. Each is marked below and applied in §6 as written there (§6 was drafted around the
 recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moot).
@@ -661,7 +704,7 @@ recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moo
    share). *Cost:* at Distribution 0 the buses are two exact half-rate streams, which can read as
    two rhythms; no in-between shares.
 3. *By pan side:* grains panned left of a threshold (Bus Split) take bus 1, the rest bus 2.
-   *Cost:* with Stereo at 0 every grain is centred and one bus is empty; the split follows Stereo.
+   *Cost:* with Stereo at 0 every grain is centered and one bus is empty; the split follows Stereo.
 
 **D4. The bus filter's model** (§6.3). **Decided: option 1 (2026-10-30).**
 1. **A 12 dB/octave state-variable filter** (sst-filters' `CytomicSVF`): Off, Low-pass, High-pass,
@@ -685,12 +728,14 @@ recommended options; the alternatives' text in §6.1, §6.2 and §6.3 is now moo
 
 **D6. How Delay Time changes** (§6.4). **Decided: option 1 (2026-10-30).**
 1. **It glides,** the read position moving toward the new time at no more than half a sample per
-   sample (Space's Pre-delay rule), so a move bends pitch like tape and never clicks. *Cost:* a
+   sample (Space's Pre-delay rule), so a move bends pitch like tape and never clicks (**Amended**, D-glide, row 379: except inside a
+   Feedback loop at 95% or more over a near-silent tail, where the re-read passes crackle, an
+   accepted law). *Cost:* a
    large jump takes up to twice its size to arrive, bending pitch meanwhile.
 2. *It crossfades* from the old time to the new over 50 ms. *Cost:* a brief double echo on every
    change; two reads per sample during the fade.
 3. *It jumps* at the next grid cell, as Reverb Size does. *Cost:* a click or glitch on every
-   move, as Size's accepted artefact (row 217).
+   move, as Size's accepted artifact (row 217).
 
 **D7. Delay Feedback's top, and the instrument's tail** (§6.4, §6.5). **Decided: option 1
 (2026-10-30).**
@@ -727,6 +772,8 @@ Loop, Loop Length and Splice). **Decided: option 1 (2026-11-01).**
 1. **Defer, carry-over row 381:** a Spectral smear reads outside the Loop/Splice window until it
    is built, and the ring commands skip it. *Cost:* the window does not shape a Spectral layer
    meanwhile.
+
+   **Amended 2026-11-02 (the M2 close, row 381):** built; §6.2's material has the law.
 2. *Build now.* *Cost:* more engine work before the merge.
 
 **D-corners. Should the extremes' sweep corners score their boundaries?** (the integration
@@ -845,7 +892,7 @@ Engineering choices, each with its reason.
 - `[golden][metrics]`: every new case catches all sixteen injected steps or is in the table with
   its count and reason.
 
-**Goldens** (9 new, 45 in all; every WAV of the 36 existing cases keeps its SHA-256, stated per
+**Goldens** (9 new; 60 cases on `main` after the merges, the 51 earlier ones included, §23 #69; every WAV of the 36 existing cases keeps its SHA-256, stated per
 commit; each new case's spectrogram looked at before it is committed):
 
 | Case | Mode | What |
@@ -873,7 +920,7 @@ frozen window fell between the loop's bursts. Peak did not click in `fx-limiter`
 **Benchmarks:** the three engine cases and `--chain` run from `release` with their figures and
 the §22 figure in the report; `engine-sample` shows no `regressed` ratio against
 `tools/gg-bench/baselines/` on any CI model at the sub-project's end (a regression is fixed here,
-programme design §7.6).
+program design §7.6).
 
 *Measured (2026-11-01, idle, M5 Max, `cc68e3d`; `docs/benchmarks/2026-11-01-m2-extremes*.json`):*
 ratios to `reference` at blocks 32 / 64 / 256: X 1.172 / 1.101 / 1.032 (+1.6% / +2.7% / +0.8%
@@ -890,7 +937,7 @@ on `release`, on every CI leg, with the forty new parameters and the five new pa
 draft PR; a fresh reviewer's final review and its fix wave done; after the rebase onto 3 and 2,
 all of it again.
 
-**Exit criteria** (the programme design's §6.4, each with its proof): a 1000× stretch render at
+**Exit criteria** (the program design's §6.4, each with its proof): a 1000× stretch render at
 Smear 1 shows no comb peaks above the stated threshold where Smear 0 does (the pinned comb test,
 and `inst-stretch-smear`'s spectrogram); the Spectral Smear source is deterministic across
 platforms by its event log and within metric tolerances (the `golden` tests on every CI leg);
@@ -900,7 +947,7 @@ filtered bus and the delay (the table above); §22's row resolved with the measu
 
 ## 11. The listening pack: `docs/listening/m2-extremes/`
 
-Rendered for the record, listened to at sub-project 7 (programme design decision 1). A `README.md`
+Rendered for the record, listened to at sub-project 7 (program design decision 1). A `README.md`
 in the M2 layers pack's form (how to render; a table of files with length, what it is, its peak
 and RMS, and what to listen for; a host checklist for the close) and `specs/`:
 
@@ -920,7 +967,7 @@ and RMS, and what to listen for; a host checklist for the close) and `specs/`:
 | `12-limiter-modes.wav` | four hot layers of noise, Mode Off, Soft, Peak at −6 dB | Off clips nothing and sums hot; Soft rounds it; Peak holds the ceiling with its release |
 | `13-all-together.wav` | a Spectral layer and a Smear 0.7 layer, split buses filtered, the delay and Peak | the chain as a whole; does it still sound like one instrument? |
 
-Fourteen renders from thirteen specs (`02` has two or three). **Amended:** `02c` is Smear 0.5, as
+Fifteen renders from fifteen specs. **Amended:** `02c` is Smear 0.5, as
 its README says, because D8's option 2 was a build constant that was never built. The README's
 host checklist covers: the "FX" and "Filter A" pages in Bitwig; the Spectral kind in Live with
 the sidechain feeding an instrument layer; automating Delay Time and Bus 1 Cutoff in Live; the
@@ -931,7 +978,7 @@ Peak limiter on a hot four-layer patch; a Smear 1 patch's CPU against Smear 0 in
 **11 open rows at this sub-project's start** (`docs/m2-carry-over.md`: 51, 85, 87, 88, 144, 148,
 184, 217, 218, 221, 232).
 
-**Closed here:** none is owned by this sub-project (programme design §8: 51 is sub-project 3's,
+**Closed here:** none is owned by this sub-project (program design §8: 51 is sub-project 3's,
 217 and 221 sub-project 6's, the rest upstream, 1.0.0 or M3).
 
 **Touched files with open rows:** `core/include/gg/core/Processor.h` (184: M3's Voice scheduler,
@@ -941,7 +988,7 @@ when-touched row). `core/src/space/Reverb2Patched.h` (217, "when Space's FX view
 **not edited**: the new units are new files beside it. No other open row names a file this
 sub-project edits.
 
-**Expected at the end: 11 open rows,** none added. Every minor the final review raises is fixed in
+**Expected at the end: 11 open rows,** none added (the policy then in force, retired by §23 #67; the build added rows 357 to 382). Every minor the final review raises is fixed in
 the fix wave unless blocked outside our control or genuinely large (the policy). The global DC
 blocker and Feedback on a Spectral layer go to INTENT §22, not to the carry-over: they are design
 questions, not open defects.
@@ -966,7 +1013,7 @@ questions, not open defects.
 - **§22:** the buses row resolved with the measurement and its figures (§6.10); two new rows,
   post-M2: a global DC blocker (nothing needs it yet), and Feedback into a Spectral layer's
   material.
-- **§23:** one row, taking the next free number at the merge (the programme manager's note), for
+- **§23:** one row, taking the next free number at the merge (the program manager's note), for
   D1–D8 with their dates, the rulings made during the build, and the §9 calls that amend Part II
   (the Spectral kind's Position, Spray, Freeze and Feedback rules; the limiter's Off default; the
   spectral ring's size; the Field numbering at the rebase).

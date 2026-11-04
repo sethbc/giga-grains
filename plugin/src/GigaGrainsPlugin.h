@@ -427,7 +427,7 @@ class GigaGrainsPlugin : public plugHelper_t
     /// The MIDI control `header` as a ControlEvent (M2 sub-project 1's spec §6.8), at its time,
     /// on its channel: CC 1 (0xBn, controller 1) is ModWheel, value / 127; channel pressure
     /// (0xDn) is Aftertouch, pressure / 127; pitch bend (0xEn) is PitchBend,
-    /// (msb << 7 | lsb) / 16383, so its centre 0x2000 is 8192 / 16383. Each data byte is taken as
+    /// (msb << 7 | lsb) / 16383, so its center 0x2000 is 8192 / 16383. Each data byte is taken as
     /// its 7 bits. False for any other event. Stateless.
     static bool toControlEvent(const clap_event_header *header,
                                gg::core::ControlEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
