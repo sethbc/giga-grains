@@ -594,8 +594,11 @@ class GigaGrainsPlugin : public plugHelper_t
     /// carries its release velocity: CLAP's 0..1 as it comes, a MIDI note-off's / 127 (a choke's,
     /// and a MIDI note-on at velocity 0's, are 0). Each off forgets the IDs of the notes it
     /// releases: an ID's own, the oldest remembered on a (channel, key) it releases by pair (the
-    /// note table releases the oldest held there), or every one a wildcard or CC 123 matches. So
-    /// call it once per event, in the host's order. Audio thread.
+    /// note table releases the oldest held there), or every one a wildcard or CC 123 matches; a
+    /// choke by pair forgets every ID on the pair (it ends every note there). A choke becomes
+    /// NoteEventType::Choke, addressed as an off: a Voice layer's voices for it finish at once,
+    /// with no release, and the note ends (NOTE_END); a Cloud layer hears an off. So call it once
+    /// per event, in the host's order. Audio thread.
     bool toNoteEvent(const clap_event_header *header,
                      gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Forgets the note IDs remembered for (`channel`, `key`), −1 matching any. Audio thread.
