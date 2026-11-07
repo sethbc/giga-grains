@@ -60,6 +60,35 @@ voice tints and new presets (5); per-sample pitch glides inside a grain (later, 
   CC 74, so Timbre → Position does nothing for it; a LinnStrument's first Y lands before its
   note-on, so its voice starts with it.
 
+## 3a. The builder check's rulings (2026-11-07; Claude's, binding on the plan)
+
+- **B1. Every cell is applied while a Voice layer has a sounding voice,** as with time-varying
+  routes, so a voice's per-voice Env 1 and Env 2 step, and its end reaches the engine, at the cell
+  it happens, whatever events arrive. V1's peak gain is computed from the Env 1 state handed over
+  at the grain's cell.
+- **B2. No double counting:** on a Voice layer, a route whose source is per voice is left out of
+  the layer-wide pass for the per-voice targets (the engine's and Level) and applied per voice
+  only; for every other target it reads the instance-wide value (§4.4).
+- **B3. At Mode Voice the layer's Cloud stream doesn't schedule;** the tie rule "Cloud first"
+  matters only at a mode-switch boundary.
+- **B4. P7 as amended:** per-voice sources on targets that aren't per voice read the
+  instance-wide values of §4.4 (Velocity and Key the last note-on, Env 1 and Env 2 gated by the
+  held set, as today; Pressure, Timbre and Note Pitch the newest held note's; Release Velocity the
+  last note-off's). This amends the program design's P7 ("the newest sounding voice") and its
+  §4.4 ("the new ones 0 on Cloud"), so no Cloud render moves.
+- **B5. A short tap keeps its gate for one cell on Voice layers:** a note that starts and ends in
+  one group starts its voice with the gate on and applies the Off at the next cell (b + 32), so
+  its Env 1 attacks and the voice plays its release. Cloud's held set is unchanged.
+- **B6. This spec amends two parent rules,** recorded in §23 with V1–V6: grains are summed in spawn
+  order across a layer's voices (not per voice by ordinal), and a stolen voice gets no steal fade
+  of its own (V4: its grains' windows are the fade).
+- **B7. The direct bend's center is exact:** the voice's bend is `(v − 8192) / 8192` from the
+  14-bit value, kept as its own field (the Pitch Bend mod source keeps today's
+  `(msb << 7 | lsb) / 16383`). The MPE-against-expression goldens use gestures exactly
+  representable on both paths, and their equality test compares only those spans.
+- **B8. A held voice whose Env 1 sits at 0 in Sustain stops spawning,** as if finished (it frees
+  its slot), so a Sustain-0 patch doesn't hold silent voices.
+
 ## 4. Design
 
 ### 4.1 Parameters (append-only IDs)
