@@ -5,6 +5,7 @@
 #ifndef GG_ENGINE_ENGINE_H
 #define GG_ENGINE_ENGINE_H
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -118,6 +119,22 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// carries the ordinal. A finished voice (finishVoice) stops spawning and its grains play out their
 /// windows: no grain is cut. The Spectral Smear keeps reading the layer's Cloud parameters'
 /// Position. With voice mode off (the default) the engine is the Cloud engine above, bit for bit.
+///
+/// **The held anchor** (M3 pitch-sync spec §4.6, S4, SB4). A voice whose scheduler is at
+/// Clock::Pitch keeps, over a ring (Live or Spectral mode), the ring time its last refresh asked to
+/// start at, s* = ρ − positionDraw × sampleRate unclamped (Live mode, below), and the ring it read
+/// (kLiveSlot or kSpectralSlot). A refresh grain (GrainDraw::held false) starts as any ring grain
+/// and stores its s* and slot, before the lo > hi drop, so a dropped refresh's held grains aim
+/// where it asked. A held grain whose voice holds an anchor for its ring starts at clamp(anchor,
+/// lo, hi), the clamp of its own onset: the anchor stays put in ring time while the head moves
+/// on, so hi only recedes from it, and lo binds only when the hold outlives the window (a ring
+/// shrunk, a long refresh), where the grain reads from the oldest admissible frame; lo > hi drops
+/// it as any ring grain. A held grain with no anchor for its ring starts as a refresh and stores
+/// one. startVoice, clearVoices (so reset() and the gate turning off) and a source-mode change
+/// applied at process()'s first frame drop the voices' anchors and make each voice's next grain a
+/// refresh (CloudScheduler::restartRefresh); a ring resize (ringResized, setRingLimit) drops
+/// nothing. Sample mode, Free voices and the Cloud stream neither read nor write an anchor (a
+/// Sample layer's held grains repeat their draws and read Position per grain, SB5).
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
 /// positions), the output and the grain events are bit-identical however the host splits blocks
@@ -359,6 +376,12 @@ class Engine
     /// distribution change moves its pending onset, ruling M1-h). Ignored for a slot out of
     /// range or not spawning. Real-time safe, with the same threading rule as setCloudParams.
     void setVoiceParams(uint32_t slot, const VoiceParams &params) noexcept;
+    /// The controls the voice in `slot` last took (startVoice or setVoiceParams), as given; for
+    /// the tests. A slot at or above kMaxVoices reads the last slot's.
+    const VoiceParams &voiceParams(uint32_t slot) const noexcept
+    {
+        return voices_[std::min(slot, kMaxVoices - 1)].params;
+    }
     /// Stops the voice in `slot` spawning (V4: its grains play out their windows). Ignored for a
     /// slot out of range. Real-time safe, with the same threading rule as setCloudParams.
     void finishVoice(uint32_t slot) noexcept;
@@ -556,10 +579,21 @@ class Engine
                       const float *overdubGain) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The grain a draw makes from the current sample source.
     GrainSpec sampleGrain(const GrainDraw &d) const noexcept;
+    /// A voice's held anchor on the ring (the class comment's **The held anchor**): the ring time
+    /// its last refresh asked to start at, unclamped, and the ring it read; slot kNoAnchor when it
+    /// holds none.
+    static constexpr uint8_t kNoAnchor = 0xFF;
+    struct VoiceAnchor
+    {
+        double start{0.0};
+        uint8_t slot{kNoAnchor};
+    };
     /// The grain a draw makes from `ring` (the live ring, or the smear's), admission-clamped over
-    /// its window, on source slot `slot`; false when it can't fit.
-    bool liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
-                   uint8_t slot) const noexcept;
+    /// its window, on source slot `slot`; false when it can't fit. With `anchor` (a voice at Clock
+    /// Pitch), a held draw whose anchor is on `slot` starts at the anchor, clamped, and any other
+    /// draw stores its unclamped start and `slot` there, before the fit check. Null: no anchor.
+    bool liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring, uint8_t slot,
+                   VoiceAnchor *anchor) const noexcept;
     /// Whether every sounding ring grain's farthest tap, at the next sample (clock_, the head at
     /// most head() + 1), is at least M frames inside the newest `frames`; otherwise false, with
     /// `latestEnd` the latest end of those that aren't (setRingLimit).
@@ -584,7 +618,7 @@ class Engine
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Voice mode's schedule for [blockStart, blockStart + numFrames): every spawning voice's
     /// draws, merged by (onset sample, ordinal, slot), each with its voice gain, passed to
-    /// spawn(const GrainDraw &, uint32_t ordinal) in that order.
+    /// spawn(const GrainDraw &, uint32_t ordinal, uint32_t slot) in that order.
     template <class Spawn>
     void scheduleVoices(int64_t blockStart, uint32_t numFrames,
                         Spawn &&spawn) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -607,16 +641,23 @@ class Engine
     SincTable sinc_; // the HQ tier's windowed sinc, built here, off the audio thread
     GrainPool pool_;
     CloudScheduler cloud_;
-    // The voice streams (M3 Voice spec §4.3): each slot's scheduler, controls, ordinal and
-    // whether it spawns. A slot's scheduler keeps its state after the voice finishes, unused
-    // until the slot's next startVoice.
+    // The voice streams (M3 Voice spec §4.3): each slot's scheduler, controls, ordinal, whether
+    // it spawns and its held anchor on the ring (M3 pitch-sync spec §4.6). A slot's scheduler
+    // keeps its state after the voice finishes, unused until the slot's next startVoice.
     struct Voice
     {
         CloudScheduler scheduler;
         VoiceParams params;
         uint32_t ordinal{0};
         bool spawning{false};
+        VoiceAnchor anchor;
     };
+    /// Drops the voice's held anchor and makes its next grain a refresh (SB4).
+    static void dropAnchor(Voice &voice) noexcept
+    {
+        voice.anchor.slot = kNoAnchor;
+        voice.scheduler.restartRefresh();
+    }
     Voice voices_[kMaxVoices];
     bool voiceMode_{false};
     LiveSource live_;
