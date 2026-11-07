@@ -25,6 +25,10 @@ inline constexpr int64_t kNeverStolen = std::numeric_limits<int64_t>::max();
 /// GrainPool::spawn's `edge` for a grain that isn't cut: no output sample is at or after it.
 inline constexpr int64_t kNoEdge = std::numeric_limits<int64_t>::max();
 
+/// GrainSpec::voice of a grain the layer's Cloud stream spawned, not a voice's (M3 Voice spec
+/// §4.3).
+inline constexpr uint32_t kNoVoice = 0xFFFFFFFFu;
+
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
 {
@@ -55,6 +59,9 @@ struct GrainSpec
     /// The mipmap level the grain reads (M2 engine spec §6.3); 0, the full-rate source, until
     /// the engine sets it.
     uint8_t level{0};
+    /// The ordinal of the voice that spawned the grain (M3 Voice spec §4.3), or kNoVoice for a
+    /// Cloud grain. Only the event log reads it: the pool doesn't store it.
+    uint32_t voice{kNoVoice};
 
     /// Every member, sourceSlot and bus included (as the plan asked): two grains that differ
     /// only in the slot they read, or their bus, compare unequal. Only tests compare GrainSpecs.

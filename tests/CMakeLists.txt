@@ -50,6 +50,7 @@ add_executable(gg-tests
         engine/spectral_tests.cpp
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
+        engine/voice_tests.cpp
         engine/window_tests.cpp
         media/budget_tests.cpp
         media/collect_tests.cpp

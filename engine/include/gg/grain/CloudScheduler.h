@@ -255,14 +255,33 @@ class CloudScheduler
     void schedule(int64_t blockStart, uint32_t numFrames, uint64_t seed, uint32_t layer,
                   uint32_t stream, Emit &&emit) noexcept
     {
-        // Covers the lambda below too: a lambda body takes the pragma of its enclosing scope.
-        GG_FP_CONTRACT_OFF
-        if (!(densityHz_ > 0.0) || (noteGate_ && keyCount_ == 0))
+        if (!beginRun(blockStart))
         {
             return; // off, or gated with no key held
         }
-        const auto start = static_cast<double>(blockStart);
         const auto end = static_cast<double>(blockStart + static_cast<int64_t>(numFrames));
+        while (nextOnset_ < end)
+        {
+            emit(takeNext(seed, layer, stream));
+        }
+    }
+
+    /// schedule() a grain at a time, for a caller that merges several streams by onset (the
+    /// engine's voices, M3 Voice spec §4.3): the same draws, bit for bit, with no allocation.
+    /// For the block starting at blockStart, call beginRun(blockStart) once; if it returns true,
+    /// call takeNext() while pendingOnset() is before the block's end. That is exactly what
+    /// schedule() does. false means the stream emits nothing in this block (off, or gated with no
+    /// key held), and changes nothing, as schedule() then changes nothing; don't call takeNext().
+    /// beginRun applies what schedule() applies at its blockStart: a forced onset (moved to
+    /// blockStart), the resume after being off (ruling M1-j) and ruling M1-h's rescale.
+    bool beginRun(int64_t blockStart) noexcept
+    {
+        GG_FP_CONTRACT_OFF
+        if (!(densityHz_ > 0.0) || (noteGate_ && keyCount_ == 0))
+        {
+            return false; // off, or gated with no key held
+        }
+        const auto start = static_cast<double>(blockStart);
         if (onsetForced_)
         {
             // Spec §6.2–§6.3: the held set went from empty to non-empty, so the cloud starts at
@@ -283,132 +302,139 @@ class CloudScheduler
                 nextOnset_ = std::max(lastOnset_ + interval(lastE_), start);
             }
         }
-        while (nextOnset_ < end)
+        return true;
+    }
+
+    /// t(k), the onset of the grain takeNext() draws next, in output samples since reset().
+    double pendingOnset() const noexcept { return nextOnset_; }
+
+    /// Draws grain k at pendingOnset() and moves on to k + 1: one iteration of schedule()'s loop.
+    /// seed, layer and stream key the draws, as schedule()'s do. Call it only after beginRun()
+    /// returned true for the block that holds pendingOnset().
+    GrainDraw takeNext(uint64_t seed, uint32_t layer, uint32_t stream) noexcept
+    {
+        // Covers the lambda below too: a lambda body takes the pragma of its enclosing scope.
+        GG_FP_CONTRACT_OFF
+        const double t = nextOnset_;
+        const uint64_t k = nextK_;
+        const double whole = std::floor(t);
+        const auto key = [&](rng::Field field) {
+            return rng::hash({seed, layer, stream, field, k});
+        };
+        const uint64_t jitter = key(rng::Field::PositionJitter);
+        int16_t note = -1;
+        double rate = pitchRatio_;
+        if (keyCount_ > 0)
         {
-            const double t = nextOnset_;
-            const uint64_t k = nextK_;
-            const double whole = std::floor(t);
-            const auto key = [&](rng::Field field) {
-                return rng::hash({seed, layer, stream, field, k});
-            };
-            const uint64_t jitter = key(rng::Field::PositionJitter);
-            int16_t note = -1;
-            double rate = pitchRatio_;
-            if (keyCount_ > 0)
-            {
-                // floor(u × n) by truncation, as u × n >= 0; u × n < n, and the min() keeps the
-                // index in range whatever the rounding.
-                const double u = rng::uniform01(key(rng::Field::Note));
-                const auto i = std::min(static_cast<uint32_t>(u * static_cast<double>(keyCount_)),
-                                        keyCount_ - 1);
-                note = keys_[i];
-            }
-            if (params_.pitchSpreadSemitones != 0.0 || params_.smearDetuneSemitones != 0.0)
-            {
-                // M2 spec §6.6: the spread is added before the clamp; the extremes spec §6.1:
-                // Smear's detune after it. A term whose amplitude is 0 is skipped, with no draw.
-                const double keyTerm = note >= 0 ? static_cast<double>(note - 60) : 0.0;
-                double semis = params_.pitchSemitones + keyTerm;
-                if (params_.pitchSpreadSemitones != 0.0)
-                {
-                    semis +=
-                        params_.pitchSpreadSemitones * rng::bipolar(key(rng::Field::PitchSpread));
-                }
-                if (params_.smearDetuneSemitones != 0.0)
-                {
-                    semis +=
-                        params_.smearDetuneSemitones * rng::bipolar(key(rng::Field::SmearDetune));
-                }
-                rate = exp2Det(std::clamp(semis, -kMaxPitchSemitones, kMaxPitchSemitones) / 12.0);
-            }
-            else if (note >= 0)
-            {
-                rate = exp2Det(std::clamp(params_.pitchSemitones + static_cast<double>(note - 60),
-                                          -kMaxPitchSemitones, kMaxPitchSemitones) /
-                               12.0);
-            }
-            double durationSamples = durationSamples_;
-            if (params_.sizeSpreadOctaves != 0.0)
-            {
-                // M2 spec §6.6: the spread is in the log2 domain, within Size's range.
-                const double log2Seconds =
-                    std::clamp(durationLog2_ + params_.sizeSpreadOctaves *
-                                                   rng::bipolar(key(rng::Field::SizeSpread)),
-                               kMinSpreadLog2Seconds, kMaxSpreadLog2Seconds);
-                durationSamples = std::clamp(exp2Det(log2Seconds) * sampleRate_,
-                                             kMinDurationSamples, kMaxDurationSamples);
-            }
-            // Live mode: seconds behind the head, further back only. Spectral mode: the same with
-            // Position replaced by 0, since Position addresses the smear's material, not its ring
-            // (the extremes spec §6.2). Sample mode: a fraction of the source, with the spray
-            // folded in, or with sprayInSeconds the position alone and the spray carried in
-            // seconds for the source to convert.
-            const bool inSeconds = mode_ == SourceMode::Sample && params_.sprayInSeconds;
-            double positionDraw = params_.position;
-            if (mode_ == SourceMode::Spectral)
-            {
-                positionDraw = params_.spray * rng::uniform01(jitter);
-            }
-            else if (mode_ == SourceMode::Live)
-            {
-                positionDraw += params_.spray * rng::uniform01(jitter);
-            }
-            else if (!inSeconds)
-            {
-                positionDraw =
-                    std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0, 1.0);
-            }
-            double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
-            if (params_.smearJitterSec != 0.0)
-            {
-                // The extremes spec §6.1: seconds behind the head in Live and Spectral mode (the
-                // admission clamp then applies, as to the spray); in Sample mode carried in
-                // seconds, for the source to convert at its own rate and clamp, as the spray in
-                // seconds is.
-                const double smear =
-                    params_.smearJitterSec * rng::bipolar(key(rng::Field::SmearJitter));
-                if (mode_ != SourceMode::Sample)
-                {
-                    positionDraw += smear;
-                }
-                else
-                {
-                    sprayOffsetSec += smear;
-                }
-            }
-            // The extremes spec §6.3: no draw at a split of 0, so every grain is on bus 0.
-            const uint8_t bus =
-                params_.busSplit > 0.0 && rng::uniform01(key(rng::Field::Bus)) < params_.busSplit
-                    ? 1
-                    : 0;
-            const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
-            // A pan below the smallest normal float is 0, so the value doesn't depend on the
-            // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
-            const float pan =
-                std::abs(p) < std::numeric_limits<float>::min() ? 0.0f : static_cast<float>(p);
-            const GrainDraw g{
-                .index = k,
-                .onsetSample = static_cast<int64_t>(whole),
-                .onsetFrac = t - whole,
-                .positionDraw = positionDraw,
-                .sprayOffsetSec = sprayOffsetSec,
-                .rate = rate,
-                .durationSamples = durationSamples,
-                .texture = params_.texture,
-                .gain = params_.gain,
-                .pan = pan,
-                .tier = params_.quality,
-                .key = note,
-                .bus = bus,
-            };
-            const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
-            lastOnset_ = t;
-            lastE_ = e;
-            hasLast_ = true;
-            nextOnset_ = t + interval(e);
-            ++nextK_;
-            emit(g);
+            // floor(u × n) by truncation, as u × n >= 0; u × n < n, and the min() keeps the
+            // index in range whatever the rounding.
+            const double u = rng::uniform01(key(rng::Field::Note));
+            const auto i =
+                std::min(static_cast<uint32_t>(u * static_cast<double>(keyCount_)), keyCount_ - 1);
+            note = keys_[i];
         }
+        if (params_.pitchSpreadSemitones != 0.0 || params_.smearDetuneSemitones != 0.0)
+        {
+            // M2 spec §6.6: the spread is added before the clamp; the extremes spec §6.1:
+            // Smear's detune after it. A term whose amplitude is 0 is skipped, with no draw.
+            const double keyTerm = note >= 0 ? static_cast<double>(note - 60) : 0.0;
+            double semis = params_.pitchSemitones + keyTerm;
+            if (params_.pitchSpreadSemitones != 0.0)
+            {
+                semis += params_.pitchSpreadSemitones * rng::bipolar(key(rng::Field::PitchSpread));
+            }
+            if (params_.smearDetuneSemitones != 0.0)
+            {
+                semis += params_.smearDetuneSemitones * rng::bipolar(key(rng::Field::SmearDetune));
+            }
+            rate = exp2Det(std::clamp(semis, -kMaxPitchSemitones, kMaxPitchSemitones) / 12.0);
+        }
+        else if (note >= 0)
+        {
+            rate = exp2Det(std::clamp(params_.pitchSemitones + static_cast<double>(note - 60),
+                                      -kMaxPitchSemitones, kMaxPitchSemitones) /
+                           12.0);
+        }
+        double durationSamples = durationSamples_;
+        if (params_.sizeSpreadOctaves != 0.0)
+        {
+            // M2 spec §6.6: the spread is in the log2 domain, within Size's range.
+            const double log2Seconds =
+                std::clamp(durationLog2_ + params_.sizeSpreadOctaves *
+                                               rng::bipolar(key(rng::Field::SizeSpread)),
+                           kMinSpreadLog2Seconds, kMaxSpreadLog2Seconds);
+            durationSamples = std::clamp(exp2Det(log2Seconds) * sampleRate_, kMinDurationSamples,
+                                         kMaxDurationSamples);
+        }
+        // Live mode: seconds behind the head, further back only. Spectral mode: the same with
+        // Position replaced by 0, since Position addresses the smear's material, not its ring
+        // (the extremes spec §6.2). Sample mode: a fraction of the source, with the spray
+        // folded in, or with sprayInSeconds the position alone and the spray carried in
+        // seconds for the source to convert.
+        const bool inSeconds = mode_ == SourceMode::Sample && params_.sprayInSeconds;
+        double positionDraw = params_.position;
+        if (mode_ == SourceMode::Spectral)
+        {
+            positionDraw = params_.spray * rng::uniform01(jitter);
+        }
+        else if (mode_ == SourceMode::Live)
+        {
+            positionDraw += params_.spray * rng::uniform01(jitter);
+        }
+        else if (!inSeconds)
+        {
+            positionDraw =
+                std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0, 1.0);
+        }
+        double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
+        if (params_.smearJitterSec != 0.0)
+        {
+            // The extremes spec §6.1: seconds behind the head in Live and Spectral mode (the
+            // admission clamp then applies, as to the spray); in Sample mode carried in
+            // seconds, for the source to convert at its own rate and clamp, as the spray in
+            // seconds is.
+            const double smear =
+                params_.smearJitterSec * rng::bipolar(key(rng::Field::SmearJitter));
+            if (mode_ != SourceMode::Sample)
+            {
+                positionDraw += smear;
+            }
+            else
+            {
+                sprayOffsetSec += smear;
+            }
+        }
+        // The extremes spec §6.3: no draw at a split of 0, so every grain is on bus 0.
+        const uint8_t bus =
+            params_.busSplit > 0.0 && rng::uniform01(key(rng::Field::Bus)) < params_.busSplit ? 1
+                                                                                              : 0;
+        const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
+        // A pan below the smallest normal float is 0, so the value doesn't depend on the
+        // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
+        const float pan =
+            std::abs(p) < std::numeric_limits<float>::min() ? 0.0f : static_cast<float>(p);
+        const GrainDraw g{
+            .index = k,
+            .onsetSample = static_cast<int64_t>(whole),
+            .onsetFrac = t - whole,
+            .positionDraw = positionDraw,
+            .sprayOffsetSec = sprayOffsetSec,
+            .rate = rate,
+            .durationSamples = durationSamples,
+            .texture = params_.texture,
+            .gain = params_.gain,
+            .pan = pan,
+            .tier = params_.quality,
+            .key = note,
+            .bus = bus,
+        };
+        const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
+        lastOnset_ = t;
+        lastE_ = e;
+        hasLast_ = true;
+        nextOnset_ = t + interval(e);
+        ++nextK_;
+        return g;
     }
 
   private:
