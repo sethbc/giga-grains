@@ -41,6 +41,8 @@ struct GrainSpec
     double durationSamples; ///< Window length in output samples, at least 16.
     /// The Texture envelope's control, [0, 1] (spec §4; Envelope.h): 0 is the plain Hann.
     double texture{0.0};
+    /// The window's Skew, [-1, 1] (M3 grain-shape spec G9; Envelope.h): 0 is Texture's shape.
+    double skew{0.0};
     float gain;
     float pan;               ///< -1 (left) .. 1 (right); see panGains().
     Tier tier{Tier::Normal}; ///< How the grain reads its source (ruling 2).
@@ -181,8 +183,8 @@ struct GrainRows
     const float *gainL;        ///< gain × panGains(pan).left
     const float *gainR;        ///< gain × panGains(pan).right
     const double *texture;     ///< GrainSpec::texture
-    /// envelopeShape(texture, durationSamples) (Envelope.h), one array per member, which every
-    /// window site passes to warpPhase.
+    /// envelopeShape(texture, skew, durationSamples) (Envelope.h), one array per member, which
+    /// every window site passes to warpPhase.
     const double *envAttackEnd;
     const double *envReleaseStart;
     const double *envAttackScale;

@@ -23,6 +23,8 @@
 /// curve but lands exactly on its anchors: a = 0.7 at s = 0 and a = r = aMin at s = 1 (the
 /// plan's form gives 0.050000000000000044 for 0.05).
 ///
+/// Skew (envelopeShape's three-argument form) then moves the peak: see its comment.
+///
 /// At τ = 0, a = r = 0.5 exactly, both scales are exactly 1 and warp(φ) == φ bit for bit, so
 /// texture 0 renders as the plain Hann did. Everything here is plain IEEE arithmetic, so the
 /// envelope is deterministic on every platform (no libm).
@@ -38,8 +40,18 @@ struct EnvelopeShape
     double releaseScale;
 };
 
-/// The family above. texture in [0, 1] (NaN or out of range reads as 0), durationSamples >= 16.
-constexpr EnvelopeShape envelopeShape(double texture, double durationSamples) noexcept
+/// A grain's attack and release as fractions of its duration, before the warp's scales.
+struct EnvelopeSides
+{
+    double attack;
+    double release;
+};
+
+namespace detail
+{
+/// Texture's (a, r) for the family above. texture in [0, 1] (NaN or out of range reads as 0),
+/// durationSamples >= 16.
+constexpr EnvelopeSides textureSides(double texture, double durationSamples) noexcept
 {
     GG_FP_CONTRACT_OFF
     const double tau = (texture >= 0.0 && texture <= 1.0) ? texture : 0.0;
@@ -60,7 +72,56 @@ constexpr EnvelopeShape envelopeShape(double texture, double durationSamples) no
         a = (1.0 - s) * 0.7 + s * aMin;
         r = (1.0 - s) * 0.3 + s * aMin;
     }
-    return {a, 1.0 - r, 0.5 / a, 0.5 / r};
+    return {a, r};
+}
+} // namespace detail
+
+/// The family above. texture in [0, 1] (NaN or out of range reads as 0), durationSamples >= 16.
+constexpr EnvelopeShape envelopeShape(double texture, double durationSamples) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    const EnvelopeSides sides = detail::textureSides(texture, durationSamples);
+    return {sides.attack, 1.0 - sides.release, 0.5 / sides.attack, 0.5 / sides.release};
+}
+
+/// The family with Skew (M3 grain-shape spec G9). skew in [-1, 1] (NaN or out of range reads as
+/// 0) trades attack for release at the same a + r, so the window's mean and energy don't change
+/// (G10). With sMin = min(0.5, max(0.01, 16 / d)): sigma < 0 gives a' = (1 - |sigma|) a +
+/// |sigma| min(a, sMin) and r' = (a + r) - a'; sigma > 0 gives r' = (1 - sigma) r + sigma min(r,
+/// sMin) and a' = (a + r) - r'. A side already under sMin is never lengthened. Skew 0 returns
+/// the two-argument shape, bit for bit.
+constexpr EnvelopeShape envelopeShape(double texture, double skew, double durationSamples) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    const double sigma = (skew >= -1.0 && skew <= 1.0) ? skew : 0.0;
+    if (sigma == 0.0)
+    {
+        return envelopeShape(texture, durationSamples);
+    }
+    const EnvelopeSides sides = detail::textureSides(texture, durationSamples);
+    const double a = sides.attack;
+    const double r = sides.release;
+    const double total = a + r;
+    // A NaN duration reads as 0.01 (the comparison is false), so the shape stays finite.
+    const double floorFrac = 16.0 / durationSamples;
+    const double atLeast = floorFrac > 0.01 ? floorFrac : 0.01;
+    const double sMin = atLeast < 0.5 ? atLeast : 0.5;
+    double a2 = a;
+    double r2 = r;
+    if (sigma < 0.0)
+    {
+        const double m = -sigma;
+        const double target = a < sMin ? a : sMin;
+        a2 = (1.0 - m) * a + m * target;
+        r2 = total - a2;
+    }
+    else
+    {
+        const double target = r < sMin ? r : sMin;
+        r2 = (1.0 - sigma) * r + sigma * target;
+        a2 = total - r2;
+    }
+    return {a2, 1.0 - r2, 0.5 / a2, 0.5 / r2};
 }
 
 /// Whether e is texture 0's shape, a = r = 0.5 with both scales 1, for which warpPhase(phase, e)

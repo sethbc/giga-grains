@@ -777,3 +777,33 @@ TEST_CASE("the pool keeps each grain's bus", "[pool]")
     b.bus = 1;
     REQUIRE_FALSE(a == b);
 }
+
+TEST_CASE("the pool latches the skewed shape", "[pool][grainshape]")
+{
+    for (const double skew : {-1.0, 0.0, 0.4})
+    {
+        gg::GrainSpec g = grain(0, 0, 4800.0);
+        g.texture = 0.75;
+        g.skew = skew;
+        gg::GrainPool pool(4);
+        REQUIRE(pool.spawn(g));
+        const gg::GrainRows &rows = pool.rows();
+        const gg::EnvelopeShape e = gg::envelopeShape(0.75, skew, 4800.0);
+        REQUIRE(rows.envAttackEnd[0] == e.attackEnd);
+        REQUIRE(rows.envReleaseStart[0] == e.releaseStart);
+        REQUIRE(rows.envAttackScale[0] == e.attackScale);
+        REQUIRE(rows.envReleaseScale[0] == e.releaseScale);
+        if (skew == 0.0)
+        {
+            const gg::EnvelopeShape today = gg::envelopeShape(0.75, 4800.0);
+            REQUIRE(rows.envAttackEnd[0] == today.attackEnd);
+            REQUIRE(rows.envReleaseStart[0] == today.releaseStart);
+            REQUIRE(rows.envAttackScale[0] == today.attackScale);
+            REQUIRE(rows.envReleaseScale[0] == today.releaseScale);
+        }
+        else
+        {
+            REQUIRE(rows.envAttackEnd[0] != gg::envelopeShape(0.75, 4800.0).attackEnd);
+        }
+    }
+}

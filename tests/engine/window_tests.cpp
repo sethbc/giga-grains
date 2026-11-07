@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026, the Giga Grains authors (see git history)
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -164,6 +168,167 @@ TEST_CASE("the envelope is continuous and bounded", "[window]")
                     REQUIRE(std::abs(w - previous) < 2.0f / 16.0f);
                 }
                 previous = w;
+            }
+        }
+    }
+}
+
+namespace
+{
+constexpr double kTextures[] = {0.0, 0.25, 0.5, 0.75, 1.0};
+constexpr double kDurations[] = {16.0, 17.0, 100.0, 320.0, 4800.0, 96000.0};
+
+uint64_t bitsOf(double v) { return std::bit_cast<uint64_t>(v); }
+
+bool sameShape(const gg::EnvelopeShape &x, const gg::EnvelopeShape &y)
+{
+    return bitsOf(x.attackEnd) == bitsOf(y.attackEnd) &&
+           bitsOf(x.releaseStart) == bitsOf(y.releaseStart) &&
+           bitsOf(x.attackScale) == bitsOf(y.attackScale) &&
+           bitsOf(x.releaseScale) == bitsOf(y.releaseScale);
+}
+
+double skewFloor(double d)
+{
+    const double atLeast = 16.0 / d > 0.01 ? 16.0 / d : 0.01;
+    return atLeast < 0.5 ? atLeast : 0.5;
+}
+
+double ulpOf(double v) { return std::nextafter(v, 1e300) - v; }
+} // namespace
+
+TEST_CASE("skew 0 is the texture envelope bit for bit", "[engine][window][grainshape]")
+{
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    for (const double tau : kTextures)
+    {
+        for (const double d : kDurations)
+        {
+            INFO("texture " << tau << ", duration " << d);
+            const gg::EnvelopeShape today = gg::envelopeShape(tau, d);
+            for (const double sigma : {0.0, -0.0, kNaN, 1.5, -2.0})
+            {
+                REQUIRE(sameShape(gg::envelopeShape(tau, sigma, d), today));
+            }
+        }
+    }
+}
+
+TEST_CASE("skew lands on its anchors", "[engine][window][grainshape]")
+{
+    for (const double tau : kTextures)
+    {
+        for (const double d : kDurations)
+        {
+            INFO("texture " << tau << ", duration " << d);
+            const gg::EnvelopeSides sides = gg::detail::textureSides(tau, d);
+            const double sMin = skewFloor(d);
+            const gg::EnvelopeShape early = gg::envelopeShape(tau, -1.0, d);
+            REQUIRE(early.attackEnd == std::min(sides.attack, sMin));
+            const gg::EnvelopeShape late = gg::envelopeShape(tau, 1.0, d);
+            REQUIRE(std::abs((1.0 - late.releaseStart) - std::min(sides.release, sMin)) <=
+                    ulpOf(1.0));
+            if (d <= 32.0)
+            {
+                // sMin is 0.5: a side at most that long stays as it is. Texture's sides run past
+                // 0.5 at 0.25, 0.5 and 0.75, where the floor takes them down to it.
+                const gg::EnvelopeShape today = gg::envelopeShape(tau, d);
+                if (sides.attack <= 0.5)
+                {
+                    REQUIRE(early.attackEnd == today.attackEnd);
+                }
+                if (sides.release <= 0.5)
+                {
+                    REQUIRE(std::abs(late.releaseStart - today.releaseStart) <= ulpOf(1.0));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("skew keeps attack plus release", "[engine][window][grainshape]")
+{
+    for (const double tau : kTextures)
+    {
+        for (const double d : kDurations)
+        {
+            const gg::EnvelopeSides sides = gg::detail::textureSides(tau, d);
+            const double total = sides.attack + sides.release;
+            for (const double sigma : {-1.0, -0.5, -0.01, 0.01, 0.5, 1.0})
+            {
+                INFO("texture " << tau << ", duration " << d << ", skew " << sigma);
+                const gg::EnvelopeShape e = gg::envelopeShape(tau, sigma, d);
+                const double r2 = 1.0 - e.releaseStart;
+                // releaseStart stores 1 - r', so r' is recovered to within one ulp of 1.
+                REQUIRE(std::abs((e.attackEnd + r2) - total) <= ulpOf(total) + ulpOf(1.0));
+            }
+        }
+    }
+}
+
+TEST_CASE("skew moves the peak monotonically and never the wrong way",
+          "[engine][window][grainshape]")
+{
+    for (const double tau : kTextures)
+    {
+        for (const double d : kDurations)
+        {
+            INFO("texture " << tau << ", duration " << d);
+            double previous = 0.0;
+            for (int i = 0; i <= 40; ++i)
+            {
+                const double sigma = -1.0 + 0.05 * i;
+                const double attack = gg::envelopeShape(tau, sigma, d).attackEnd;
+                REQUIRE(attack >= previous);
+                previous = attack;
+            }
+        }
+    }
+    // A side already at the floor is never lengthened (d = 100, texture 1: a = r = 0.16 = sMin).
+    const double sMin = skewFloor(100.0);
+    const gg::EnvelopeSides sides = gg::detail::textureSides(1.0, 100.0);
+    REQUIRE(sides.attack <= sMin);
+    for (int i = 0; i <= 40; ++i)
+    {
+        const double sigma = -1.0 + 0.05 * i;
+        const gg::EnvelopeShape e = gg::envelopeShape(1.0, sigma, 100.0);
+        if (sigma < 0.0)
+        {
+            REQUIRE(e.attackEnd <= sides.attack + ulpOf(sides.attack));
+        }
+        else if (sigma > 0.0)
+        {
+            REQUIRE(1.0 - e.releaseStart <= sides.release + ulpOf(1.0));
+        }
+    }
+}
+
+TEST_CASE("skew keeps the window's mean and energy", "[engine][window][grainshape]")
+{
+    const gg::HannTable hann;
+    constexpr int kSteps = 100000;
+    const auto integrate = [&](const gg::EnvelopeShape &e) {
+        double mean = 0.0;
+        double energy = 0.0;
+        for (int i = 0; i < kSteps; ++i)
+        {
+            const double w = hann.at(gg::warpPhase((i + 0.5) / kSteps, e));
+            mean += w;
+            energy += w * w;
+        }
+        return std::pair{mean / kSteps, energy / kSteps};
+    };
+    for (const double tau : kTextures)
+    {
+        for (const double d : kDurations)
+        {
+            const auto [mean0, energy0] = integrate(gg::envelopeShape(tau, d));
+            for (const double sigma : {-1.0, -0.5, 0.5, 1.0})
+            {
+                INFO("texture " << tau << ", duration " << d << ", skew " << sigma);
+                const auto [mean, energy] = integrate(gg::envelopeShape(tau, sigma, d));
+                REQUIRE(std::abs(mean - mean0) <= 1e-6 * mean0);
+                REQUIRE(std::abs(energy - energy0) <= 1e-6 * energy0);
             }
         }
     }
