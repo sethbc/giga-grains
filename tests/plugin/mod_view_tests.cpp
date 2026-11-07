@@ -678,18 +678,22 @@ TEST_CASE("a menu's caption leaves off its panel's title", "[plugin]")
     CHECK(shape->getParentComponent()->getName() == "Shape"); // not "LFO 1 Shape" under "LFO 1"
 }
 
-TEST_CASE("the source strip has 24 chips and the layer's letter on the per-layer ones", "[plugin]")
+TEST_CASE("the source strip has a chip per source and the layer's letter on the per-layer ones",
+          "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
     gg::ui::SourceStrip strip;
     strip.setSize(660, 80);
-    for (int i = 1; i <= 24; ++i)
+    for (int i = 1; i < static_cast<int>(gg::core::ModSource::Count); ++i)
     {
         INFO(i);
         auto *chip = dynamic_cast<gg::ui::SourceChip *>(
             findDeep(strip, ("source." + std::to_string(i)).c_str()));
         REQUIRE(chip != nullptr);
         CHECK(chip->description() == juce::String("modsource:") + juce::String(i));
+        CHECK(chip->getButtonText().isNotEmpty()); // every source, the note expressions included
+        CHECK(chip->getComponentID() == "source." + juce::String(i));
+        CHECK(chip->getTitle() == gg::core::modSourceName(static_cast<gg::core::ModSource>(i)));
     }
     CHECK(strip.getComponentID() == "sources");
     auto *lfo = dynamic_cast<gg::ui::SourceChip *>(findDeep(strip, "source.9"));

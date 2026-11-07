@@ -24,7 +24,7 @@ uint8_t sourceFamily(ModSource s) noexcept
     {
         return 3;
     }
-    return s >= ModSource::TransportBeat ? 4 : 2;
+    return s >= ModSource::TransportBeat && s <= ModSource::TransportPlaying ? 4 : 2;
 }
 
 std::vector<RingSpec> ringsFor(const gg::core::ModRoutes &routes, gg::core::ParamSlot target,

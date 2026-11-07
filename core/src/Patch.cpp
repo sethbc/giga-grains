@@ -213,6 +213,7 @@ ModRoute parseRoute(const TiXmlElement &e)
     {
         return ModRoute{}; // finite as a double, beyond a float's range
     }
+    // Only "1" reads as Voice only; absent or any other value reads as false.
     const char *vo = e.Attribute("voiceOnly");
     return ModRoute{source,
                     sourceLayer,

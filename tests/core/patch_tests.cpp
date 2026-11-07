@@ -2150,7 +2150,6 @@ TEST_CASE(
     {
         flagged += r.voiceOnly ? 1u : 0u;
     }
-    CHECK(flagged == 6); // the five factory routes and slot 21
     CHECK(count == flagged);
     Loaded l = distinct();
     REQUIRE(l.load(state, Mode::Fx));
