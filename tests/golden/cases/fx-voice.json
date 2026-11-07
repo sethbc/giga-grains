@@ -4,7 +4,7 @@
   "durationSeconds": 7.0,
   "blockSize": 256,
   "seed": 1,
-  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 6.5, "amplitude": 0.5},
+  "input": {"kind": "sine", "frequencyHz": 330, "seconds": 6.5, "amplitude": 0.1},
   "channels": 1,
   "params": {"Mix": 1.0, "A Mode": 1, "Position": 0.2, "Density": 5.0, "Size": -4.0, "A Env 1 Release": 0.0},
   "notes": [{"time": 0.5, "key": 60, "duration": 3.0}, {"time": 0.5, "key": 64, "duration": 3.0}, {"time": 0.5, "key": 67, "duration": 3.0}]
