@@ -45,6 +45,7 @@ add_executable(gg-tests
         engine/live_tests.cpp
         engine/mathdet_tests.cpp
         engine/mipmap_tests.cpp
+        engine/pitchsync_tests.cpp
         engine/pool_tests.cpp
         engine/rng_tests.cpp
         engine/rt_tests.cpp

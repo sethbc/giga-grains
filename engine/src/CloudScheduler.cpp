@@ -11,6 +11,10 @@ namespace gg
 namespace
 {
 constexpr double kMinDensityHz = 0.01;
+// Clock Pitch (M3 pitch-sync spec S2, S4): f0's floor, and the refresh rate a non-finite value
+// means.
+constexpr double kMinPitchHz = 1.0;
+constexpr double kDefaultRefreshHz = 16.0;
 constexpr float kMaxGain = 4.0f;
 
 double finiteOr(double v, double fallback) noexcept { return std::isfinite(v) ? v : fallback; }
@@ -82,9 +86,17 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.smearDetuneSemitones = std::clamp(finiteOr(in.smearDetuneSemitones, d.smearDetuneSemitones),
                                         0.0, kMaxSmearDetuneSemitones);
     p.busSplit = std::clamp(finiteOr(in.busSplit, d.busSplit), 0.0, 1.0);
+    p.clock = in.clock;
+    if (p.clock == Clock::Pitch)
+    {
+        // Free ignores it (SB2), so it stays 0 there. Its bound depends on the sample rate, so
+        // updateDerived() applies it, as the density's.
+        p.refreshHz = finiteOr(in.refreshHz, kDefaultRefreshHz);
+    }
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;
+    const Clock oldClock = params_.clock;
     params_ = p;
     updateDerived();
 
@@ -100,6 +112,15 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
         // Ruling M1-h. The next schedule() call rescales from the last grain with the values in
         // effect then, so several changes before it give the result of the last one alone.
         rescalePending_ = true;
+    }
+    if (params_.clock != oldClock)
+    {
+        // S9: the pending onset was drawn under the other clock, so the next grain sounds at the
+        // next schedule() call's blockStart, nothing is rescaled from before it, and it is a
+        // refresh.
+        onsetForced_ = true;
+        rescalePending_ = false;
+        refreshValid_ = false;
     }
 }
 
@@ -132,11 +153,23 @@ void CloudScheduler::reset() noexcept
     nextK_ = 0;
     hasLast_ = false;
     rescalePending_ = false;
+    refreshValid_ = false;
 }
 
 void CloudScheduler::updateDerived() noexcept
 {
-    if (params_.densityHz > 0.0)
+    if (params_.densityHz > 0.0 && params_.clock == Clock::Pitch)
+    {
+        // S2: f0 within [1 Hz, sampleRate / 4], at least four samples a period. S4: the refresh
+        // period, from a rate within [0.01 Hz, sampleRate]. The max()es keep the ranges valid at
+        // a tiny sample rate.
+        densityHz_ =
+            std::clamp(params_.densityHz, kMinPitchHz, std::max(kMinPitchHz, sampleRate_ / 4.0));
+        period_ = sampleRate_ / densityHz_;
+        refreshPeriod_ = sampleRate_ / std::clamp(params_.refreshHz, kMinDensityHz,
+                                                  std::max(kMinDensityHz, sampleRate_));
+    }
+    else if (params_.densityHz > 0.0)
     {
         // At most one onset per output sample on average, as in M0: the ceiling is the sample
         // rate (INTENT §23 #45, which amends ruling M1-a). The max() keeps the range valid
