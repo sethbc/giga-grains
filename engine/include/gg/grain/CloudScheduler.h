@@ -20,6 +20,14 @@
 
 namespace gg
 {
+/// A layer's Clock (M3 sub-project 3's spec §4.1): Free, M2's scheduler, or Pitch, one grain a
+/// period of the note's pitch.
+enum class Clock : uint8_t
+{
+    Free,
+    Pitch,
+};
+
 /// The controls of one Cloud grain stream. CloudScheduler::setParams sanitizes them: a
 /// non-finite value becomes the default, then every value is clamped to the range given here.
 /// Position and spray depend on the scheduler's source mode (ruling M1-k).
@@ -72,6 +80,15 @@ struct CloudParams
     /// The share of grains on the layer's second bus (extremes spec §6.3): a grain takes bus 1
     /// when uniform01(u) < busSplit; [0, 1].
     double busSplit{0.0};
+    /// The onset clock (M3 pitch-sync spec §4.2, SB2). At Free every other field means what it
+    /// says above, and refreshHz is ignored. At Pitch, densityHz is the note's f0 (0 or below
+    /// turns the stream off; a positive value is clamped to [1, sampleRate / 4]), grainDurationSec
+    /// is Size's seconds, read in periods (S3), and refreshHz is the refresh rate (S4). An enum,
+    /// so setParams copies it as given; the Cloud stream is always given Free.
+    Clock clock{Clock::Free};
+    /// Clock Pitch only: how often a voice draws a new grain shape, in Hz (S4). A non-finite value
+    /// means 16; then it is clamped to [0.01, sampleRate].
+    double refreshHz{0.0};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -103,7 +120,8 @@ struct GrainDraw
     double rate;
     /// Window length in output samples, at least 16: grainDurationSec × sampleRate, or with a
     /// size spread s, exp2Det(clamp(log2(grainDurationSec) + s × bipolar(u), log2 0.005,
-    /// log2 2)) × sampleRate, u keyed by SizeSpread (M2 spec §6.6).
+    /// log2 2)) × sampleRate, u keyed by SizeSpread (M2 spec §6.6). At Clock Pitch, that many
+    /// seconds × kPeriodsPerSizeSecond periods, within [16, 2 × sampleRate] (the class comment).
     double durationSamples;
     double texture{0.0}; ///< CloudParams::texture at the onset.
     float gain;
@@ -114,6 +132,9 @@ struct GrainDraw
     /// The layer bus the grain renders into, 0 or 1 (extremes spec §6.3): 1 when
     /// uniform01(u) < CloudParams::busSplit, u keyed by Bus; 0, with no draw, at a split of 0.
     uint8_t bus{0};
+    /// Clock Pitch: true when the grain isn't a refresh, so every draw but its onset's is the last
+    /// refresh's (S4), and the engine holds the ring's read anchor (§4.6). Always false at Free.
+    bool held{false};
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -174,11 +195,28 @@ struct GrainDraw
 /// Every random field of a grain has its own rng::Field, keyed by (seed, layer, stream, field,
 /// k), so the draws don't depend on block size, call order or each other.
 ///
+/// **Clock Pitch** (M3 pitch-sync spec §4.2, S2 to S6, S9, SB2 to SB4; a voice's stream). With
+/// CloudParams::clock Pitch, densityHz is the note's f0, clamped to [1, sampleRate / 4], and
+/// P = sampleRate / f0. The onsets follow Δ(k) = P × (1 + 0.5 × d³ × bipolar(u(k))), u keyed by
+/// Onset and the grain's own k, so the mean interval is P and every interval is within
+/// [0.5 P, 1.5 P]; ruling M1-h's rescale uses this law with the same draw. A grain is
+/// clamp(S × kPeriodsPerSizeSecond × P, 16, 2 × sampleRate) samples long, S Size's seconds (with
+/// a size spread, moved in the log2 domain within [5 ms, 2 s] first). Grain k is a refresh when
+/// no refresh is valid (since reset(), a Clock change or restartRefresh()) or when its onset is
+/// at least sampleRate / refreshHz samples (the rate in effect at its emission) after the last
+/// refresh's; every draw but the onset's is then keyed by the last refresh's index instead of k,
+/// so the grains between two refreshes repeat one shape (GrainDraw::held). A Clock change forces
+/// an onset at the next run's blockStart, drops any pending rescale and invalidates the refresh
+/// (S9). At Free none of this runs: the only new step on Free's path is the test of the clock.
+///
 /// All members are real-time safe. Nothing in schedule() calls libm except the exact floor:
 /// E(k) comes from logDet and the pitch ratios from exp2Det, so no libm value reaches a grain.
 class CloudScheduler
 {
   public:
+    /// Periods of the note's pitch in one second of Size (Pitch clock; spec S1): 40/3.
+    static constexpr double kPeriodsPerSizeSecond = 40.0 / 3.0;
+
     /// The floor on Δ(k) (ruling M1-g). At d = 1 an interval P × E(k) can be arbitrarily small
     /// (it is 0 when u(k) = 0), so without a floor nothing would bound the number of onsets in
     /// one sample, and schedule() would have no bounded loop. With it, one schedule() call
@@ -232,6 +270,10 @@ class CloudScheduler
     /// same path the first key held after none takes (setHeldKeys; the class comment's
     /// **Notes**). Engine::setEnabled calls it when a layer is switched on (spec §6.2).
     void forceNextOnset() noexcept { onsetForced_ = true; }
+
+    /// Clock Pitch: the next grain is a refresh, with draws of its own (SB4). Engine calls it when
+    /// it drops a voice's held anchor. The schedule doesn't move.
+    void restartRefresh() noexcept { refreshValid_ = false; }
 
     /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate, the
     /// controls, the held keys and the note gate.
@@ -318,8 +360,27 @@ class CloudScheduler
         const double t = nextOnset_;
         const uint64_t k = nextK_;
         const double whole = std::floor(t);
+        const bool pitch = params_.clock == Clock::Pitch;
+        bool held = false;
+        if (pitch)
+        {
+            // S4, SB4: a refresh when none is valid, or when the refresh period in effect has
+            // passed since the last one's onset; every other grain holds its draws.
+            if (!refreshValid_ || t - refreshOnset_ >= refreshPeriod_)
+            {
+                refreshK_ = k;
+                refreshOnset_ = t;
+                refreshValid_ = true;
+            }
+            else
+            {
+                held = true;
+            }
+        }
+        // At Clock Pitch every draw but the onset's is keyed by the last refresh's index (S4).
         const auto key = [&](rng::Field field) {
-            return rng::hash({seed, layer, stream, field, k});
+            return rng::hash(
+                {seed, layer, stream, field, pitch && field != rng::Field::Onset ? refreshK_ : k});
         };
         const uint64_t jitter = key(rng::Field::PositionJitter);
         int16_t note = -1;
@@ -356,7 +417,23 @@ class CloudScheduler
                            12.0);
         }
         double durationSamples = durationSamples_;
-        if (params_.sizeSpreadOctaves != 0.0)
+        if (pitch)
+        {
+            // S3: N = Size × 40/3 periods of the f0 at the onset, within [16 samples, 2 s]; a
+            // size spread moves Size's seconds first, within Size's range, as at Free.
+            double seconds = params_.grainDurationSec;
+            if (params_.sizeSpreadOctaves != 0.0)
+            {
+                seconds = exp2Det(
+                    std::clamp(durationLog2_ + params_.sizeSpreadOctaves *
+                                                   rng::bipolar(key(rng::Field::SizeSpread)),
+                               kMinSpreadLog2Seconds, kMaxSpreadLog2Seconds));
+            }
+            durationSamples =
+                std::clamp(seconds * kPeriodsPerSizeSecond * period_, kMinDurationSamples,
+                           std::max(kMinDurationSamples, 2.0 * sampleRate_));
+        }
+        else if (params_.sizeSpreadOctaves != 0.0)
         {
             // M2 spec §6.6: the spread is in the log2 domain, within Size's range.
             const double log2Seconds =
@@ -427,8 +504,12 @@ class CloudScheduler
             .tier = params_.quality,
             .key = note,
             .bus = bus,
+            .held = held,
         };
-        const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
+        // Free: a unit exponential (the class comment); Pitch: bipolar(u), for S5's jitter. Either
+        // is kept as lastE_, so ruling M1-h's rescale uses the clock's own law (SB3).
+        const double e = pitch ? rng::bipolar(key(rng::Field::Onset))
+                               : -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
         lastOnset_ = t;
         lastE_ = e;
         hasLast_ = true;
@@ -455,11 +536,18 @@ class CloudScheduler
 
     void updateDerived() noexcept;
 
-    /// Δ for the unit-exponential draw e, with the current period and distribution.
+    /// Δ for the draw e, with the current period and distribution: at Free e is a unit
+    /// exponential; at Pitch it is bipolar, and Δ = P × (1 + 0.5 d³ e) is within [0.5 P, 1.5 P]
+    /// with P at least 4 samples (at any rate of 4 Hz or more), so there is no floor (S5).
     double interval(double e) const noexcept
     {
         GG_FP_CONTRACT_OFF
         const double d = params_.distribution;
+        if (params_.clock == Clock::Pitch)
+        {
+            const double d3 = d * d * d;
+            return period_ * (1.0 + 0.5 * d3 * e);
+        }
         return std::max(period_ * ((1.0 - d) + d * e), kMinIntervalSamples);
     }
 
@@ -471,7 +559,7 @@ class CloudScheduler
 
     // Derived from params_ and sampleRate_ by updateDerived().
     double densityHz_{0.0}; // <= 0 when off
-    double period_{0.0};    // P = sampleRate_ / densityHz_, when on
+    double period_{0.0};    // P = sampleRate_ / densityHz_ (at Pitch, the clamped f0), when on
     double durationSamples_{0.0};
     // log2(grainDurationSec), for the size spread; log2 0.005 when the duration isn't positive.
     double durationLog2_{0.0};
@@ -482,7 +570,7 @@ class CloudScheduler
 
     // The last emitted grain, k − 1 = nextK_ − 1, for ruling M1-h.
     double lastOnset_{0.0}; // t(k − 1)
-    double lastE_{0.0};     // E(k − 1)
+    double lastE_{0.0};     // E(k − 1), or at Pitch its bipolar draw
     bool hasLast_{false};   // grain k − 1 was emitted since reset() or since the stream turned on
     bool rescalePending_{false}; // the period or distribution changed since the last schedule()
 
@@ -490,6 +578,13 @@ class CloudScheduler
     std::array<uint8_t, 128> keys_{};
     uint32_t keyCount_{0};
     bool noteGate_{false}; // no grain while no key is held (the instrument)
+
+    // Clock Pitch's refresh (SB4): the last refresh grain's index and onset, and whether one is
+    // valid since reset(), a Clock change or restartRefresh().
+    uint64_t refreshK_{0};
+    double refreshOnset_{0.0};
+    double refreshPeriod_{0.0}; // sampleRate_ / refreshHz, at Pitch
+    bool refreshValid_{false};
     // The held set went from empty to non-empty, or forceNextOnset() was called, since the
     // last run.
     bool onsetForced_{false};

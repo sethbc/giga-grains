@@ -2130,3 +2130,39 @@ TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud
         REQUIRE(added);
     }
 }
+
+TEST_CASE("the cloud stream ignores refreshHz at Free", "[cloud][pitchsync]")
+{
+    // SB2: the Pitch clock's refresh rate means nothing at Free, whatever it holds.
+    gg::CloudParams p{.densityHz = 300.0,
+                      .distribution = 0.6,
+                      .grainDurationSec = 0.06,
+                      .position = 0.4,
+                      .spray = 0.3,
+                      .pitchSemitones = 3.0,
+                      .stereo = 0.8,
+                      .gain = 0.6f,
+                      .pitchSpreadSemitones = 2.0,
+                      .sizeSpreadOctaves = 0.5,
+                      .smearJitterSec = 0.05,
+                      .smearDetuneSemitones = 0.3,
+                      .busSplit = 0.5};
+    REQUIRE(p.clock == gg::Clock::Free);
+    std::vector<std::vector<gg::GrainDraw>> runs;
+    for (const double refreshHz : {0.0, 400.0, std::numeric_limits<double>::quiet_NaN()})
+    {
+        p.refreshHz = refreshHz;
+        gg::CloudScheduler cloud;
+        cloud.prepare(48000.0);
+        cloud.setParams(p);
+        runs.push_back(collect(cloud, 0, 96000, 256, 1, 2));
+        REQUIRE(runs.back().size() >= 500);
+        runs.back().resize(500);
+        for (const gg::GrainDraw &d : runs.back())
+        {
+            REQUIRE_FALSE(d.held);
+        }
+    }
+    CHECK(runs[1] == runs[0]);
+    CHECK(runs[2] == runs[0]);
+}

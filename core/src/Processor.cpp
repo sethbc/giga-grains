@@ -176,7 +176,7 @@ bool anyTimeVarying(const ModRoutes &routes) noexcept
 }
 
 // sameCloud compares every field of CloudParams: a field added there must be added there too.
-static_assert(sizeof(CloudParams) == 120, "CloudParams changed: update sameCloud");
+static_assert(sizeof(CloudParams) == 136, "CloudParams changed: update sameCloud");
 
 /// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
 /// spared a value that would change a bit).
@@ -195,7 +195,8 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.pitchSpreadSemitones, b.pitchSpreadSemitones) &&
            same(a.sizeSpreadOctaves, b.sizeSpreadOctaves) &&
            same(a.smearJitterSec, b.smearJitterSec) &&
-           same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
+           same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit) &&
+           a.clock == b.clock && same(a.refreshHz, b.refreshHz);
 }
 
 /// log2(10): dB × kLog2Of10 / 20 is log2 of the linear gain (toWetParams' Level law).
