@@ -76,6 +76,9 @@ include(cmake/compiler-options.cmake)
 # editor's embedded notices (gg_license_files, gg_add_notices).
 include(cmake/licenses.cmake)
 
+# The vendored MTS-ESP client's files are exactly upstream's (libs/mts-esp-client/README.md).
+include(cmake/MtsEspGuard.cmake)
+gg_check_mts_esp()
 add_subdirectory(libs)
 
 enable_testing()

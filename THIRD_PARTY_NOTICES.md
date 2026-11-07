@@ -65,6 +65,7 @@ keeps its own copyright line.
 | sst-plugininfra (patch state; all but tinyxml) | Copyright 2019-2020, Paul Walker | `libs/sst/sst-plugininfra/LICENSE_MIT.md` | Both products |
 | simde | Copyright (c) 2017 Evan Nemerson | `libs/simde/COPYING` | Both products (SSE intrinsics on ARM) |
 | r8brain-free-src 7.6 | Copyright (c) 2013-2026 Aleksey Vaneev | `libs/r8brain/LICENSE` | Both products (sample-rate conversion; header-only) |
+| tuning-library `d6fcc08` (and our port of its mapping arithmetic, `core/src/Tuning.cpp`) | Copyright 2019-2020, Paul Walker | `libs/tuning-library/LICENSE.md` | Both products |
 | utf8proc 2.12.0 | See its own section below | `libs/utf8proc/LICENSE.md` | Both products (`gg-media`'s search for a missing sample) |
 | wil (v1.0.240803.1, fetched by clap-wrapper) | Copyright (c) Microsoft Corporation. All rights reserved. | `LICENSE` in the wil checkout | Windows standalone |
 
@@ -104,6 +105,25 @@ fmt, Copyright (c) 2012 - present, Victor Zverovich and {fmt} contributors, MIT 
 text in `libs/fmt/LICENSE`. Its optional exception applies to our builds: portions embedded in
 machine-executable object form may be redistributed without the copyright and permission
 notices. We carry them anyway.
+
+## MTS-ESP client (both products)
+
+MTS-ESP, https://github.com/ODDSound/MTS-ESP, commit `f214739`: the client's source
+(`libMTSClient.cpp`, which the plugins compile) and the master's (compiled into a test executable
+alone), vendored unmodified in `libs/mts-esp-client/` with its `LICENSE`, the 0BSD license, whose
+text follows. Their SHA-256s are in that folder's `README.md`, and the configure checks them.
+
+```
+Copyright (C) 2021 by ODDSound Ltd. info@oddsound.com
+
+Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+```
+
+libMTS, which the client loads at run time when the user has installed it, is ODDSound's separate
+program; Giga Grains neither includes nor distributes it.
 
 ## utf8proc (both products)
 
