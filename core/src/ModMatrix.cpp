@@ -13,11 +13,12 @@ namespace gg::core
 namespace
 {
 constexpr std::array<const char *, static_cast<size_t>(ModSource::Count)> kSourceNames{
-    "None",    "Macro 1",      "Macro 2",        "Macro 3",       "Macro 4",
-    "Macro 5", "Macro 6",      "Macro 7",        "Macro 8",       "LFO 1",
-    "LFO 2",   "Env 1",        "Env 2",          "Random 1",      "Random 2",
-    "Step",    "Mod Wheel",    "Aftertouch",     "Pitch Bend",    "Velocity",
-    "Key",     "Env Follower", "Transport Beat", "Transport Bar", "Transport Playing",
+    "None",     "Macro 1",      "Macro 2",        "Macro 3",          "Macro 4",
+    "Macro 5",  "Macro 6",      "Macro 7",        "Macro 8",          "LFO 1",
+    "LFO 2",    "Env 1",        "Env 2",          "Random 1",         "Random 2",
+    "Step",     "Mod Wheel",    "Aftertouch",     "Pitch Bend",       "Velocity",
+    "Key",      "Env Follower", "Transport Beat", "Transport Bar",    "Transport Playing",
+    "Pressure", "Timbre",       "Note Pitch",     "Release Velocity",
 };
 
 constexpr std::array<const char *, static_cast<size_t>(ModCurve::Count)> kCurveNames{
@@ -60,7 +61,8 @@ void applyRoutes(const ModRoutes &routes, const std::array<ModSourceValues, kLay
 {
     for (const ModRoute &r : routes)
     {
-        if (r.source == ModSource::None || r.source >= ModSource::Count || !isValidTarget(r.target))
+        if (r.voiceOnly || r.source == ModSource::None || r.source >= ModSource::Count ||
+            !isValidTarget(r.target))
         {
             continue;
         }
@@ -117,6 +119,17 @@ ModRoutes factoryRoutes(Mode mode) noexcept
     r[11] = mode == Mode::Instrument
                 ? route(ModSource::Macro8, ParamSlot::Level, 12.0f, ModCurve::Bipolar)
                 : route(ModSource::Macro8, ParamSlot::Mix, 0.5f, ModCurve::Bipolar);
+    // M3 Voice (spec 4.7): applied per voice only, so applyRoutes skips them.
+    const auto voice = [&route](ModSource source, ParamSlot target, float depth, ModCurve curve) {
+        ModRoute v = route(source, target, depth, curve);
+        v.voiceOnly = true;
+        return v;
+    };
+    r[43] = voice(ModSource::Pressure, ParamSlot::Density, 2.0f, ModCurve::Unipolar);
+    r[44] = voice(ModSource::Pressure, ParamSlot::Level, 6.0f, ModCurve::Unipolar);
+    r[45] = voice(ModSource::Timbre, ParamSlot::Position, 0.5f, ModCurve::Unipolar);
+    r[46] = voice(ModSource::Velocity, ParamSlot::Level, 6.0f, ModCurve::Bipolar);
+    r[47] = voice(ModSource::Velocity, ParamSlot::Size, 0.5f, ModCurve::Unipolar);
     return r;
 }
 

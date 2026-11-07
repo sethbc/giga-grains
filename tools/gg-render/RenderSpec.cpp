@@ -339,8 +339,9 @@ std::string modCurveNames()
 /// product. See RouteSpec.
 RouteSpec readRoute(const json &j, const std::string &name, gg::core::Mode mode)
 {
-    const Object o(j, name, name + ".",
-                   {"slot", "source", "sourceLayer", "target", "targetLayer", "depth", "curve"});
+    const Object o(
+        j, name, name + ".",
+        {"slot", "source", "sourceLayer", "target", "targetLayer", "depth", "curve", "voiceOnly"});
     RouteSpec r;
     const json &slot = o.member("slot");
     if (!slot.is_number_unsigned() || slot.get<uint64_t>() < 1 ||
@@ -431,6 +432,15 @@ RouteSpec readRoute(const json &j, const std::string &name, gg::core::Mode mode)
             throw SpecError(fmt::format(R"({}.curve must be one of {}, not "{}")", name,
                                         modCurveNames(), r.curve));
         }
+    }
+    if (o.has("voiceOnly"))
+    {
+        const json &v = o.member("voiceOnly");
+        if (!v.is_boolean())
+        {
+            throw SpecError(fmt::format("{}.voiceOnly must be true or false", name));
+        }
+        r.voiceOnly = v.get<bool>();
     }
     return r;
 }

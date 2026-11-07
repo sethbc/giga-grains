@@ -2127,3 +2127,45 @@ TEST_CASE("an empty <mod> is 48 empty slots", "[core]")
         CHECK(l.seed == 3u);
     }
 }
+
+TEST_CASE(
+    "a voiceOnly route round-trips through the patch, and an old patch reads as not voiceOnly",
+    "[core]")
+{
+    ModRoutes routes = kFxRoutes;
+    routes[20] = {ModSource::Pressure, kSameLayer, ParamSlot::Density, kAllLayers, 2.0f,
+                  ModCurve::Unipolar,  true};
+    routes[21] = {ModSource::Timbre, kSameLayer, ParamSlot::Position, 1, 0.5f, ModCurve::Unipolar};
+    const auto state = toStateXml(defaults(), 0, routes);
+    // Written only when true.
+    CHECK(state.find(R"(voiceOnly="1")") != std::string::npos);
+    size_t count = 0;
+    for (size_t at = state.find("voiceOnly"); at != std::string::npos;
+         at = state.find("voiceOnly", at + 1))
+    {
+        ++count;
+    }
+    size_t flagged = 0;
+    for (const ModRoute &r : routes)
+    {
+        flagged += r.voiceOnly ? 1u : 0u;
+    }
+    CHECK(flagged == 6); // the five factory routes and slot 21
+    CHECK(count == flagged);
+    Loaded l = distinct();
+    REQUIRE(l.load(state, Mode::Fx));
+    CHECK(sameRoutes(l.routes, routes));
+    CHECK(l.routes[20].voiceOnly);
+    CHECK_FALSE(l.routes[21].voiceOnly);
+    CHECK(toStateXml(l.values, l.seed, l.routes) == state);
+
+    // An old patch: no attribute anywhere.
+    auto old = state;
+    const auto at = old.find(R"( voiceOnly="1")");
+    REQUIRE(at != std::string::npos);
+    old.erase(at, std::string_view(R"( voiceOnly="1")").size());
+    Loaded o = distinct();
+    REQUIRE(o.load(old, Mode::Fx));
+    CHECK_FALSE(o.routes[20].voiceOnly);
+    CHECK(o.routes[20].source == ModSource::Pressure);
+}

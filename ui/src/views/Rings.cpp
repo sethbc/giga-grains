@@ -40,8 +40,9 @@ std::vector<RingSpec> ringsFor(const gg::core::ModRoutes &routes, gg::core::Para
     for (std::size_t i = 0; i < routes.size(); ++i)
     {
         const gg::core::ModRoute &r = routes[i];
-        if (r.source == ModSource::None || r.source >= ModSource::Count || r.target != target ||
-            !gg::core::isValidTarget(r.target) ||
+        // A Voice-only route modulates a voice, not the control's shown value (M3 Voice): no ring.
+        if (r.voiceOnly || r.source == ModSource::None || r.source >= ModSource::Count ||
+            r.target != target || !gg::core::isValidTarget(r.target) ||
             (layered && r.targetLayer != gg::core::kAllLayers && r.targetLayer != layer))
         {
             continue;
