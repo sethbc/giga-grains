@@ -17,7 +17,8 @@ namespace gg::ui
 /// What a chip dropped on a control did (M2 sub-project 6's spec §6.6).
 struct DropResult
 {
-    bool added;         ///< a new route went into `slot`
+    bool added;         ///< the routes changed: a new route went into `slot`, or the Voice-only
+                        ///< route there now applies on every layer
     uint8_t slot;       ///< 1 to 48: the new route's slot, or the existing route's; 0 for a refusal
     std::string notice; ///< "" unless the drop was refused: why, for the user
 };
@@ -32,8 +33,9 @@ std::pair<gg::core::ParamSlot, uint8_t> routeTargetOf(gg::core::ParamSlot contro
 ///
 /// - A route of the same source to the same target (and, for a layer target, layer) already
 ///   there (a layer target's route to every layer counts for each layer): nothing is added, `slot`
-///   is its slot and the notice is empty. A Voice-only route (M3 Voice's factory slots 44 to 48)
-///   doesn't count: the drop adds a normal route beside it.
+///   is its slot and the notice is empty. A Voice-only route of the same source (same layer) and
+///   target (M3 Voice's factory slots 44 to 48) instead loses its flag, so it applies on Cloud
+///   layers too: `added` is true and `slot` is its slot, and no second route is added.
 /// - A full matrix: nothing changes, notice "the matrix is full: 48 routes".
 /// - A macro or other invalid target (isValidTarget) or no source: nothing changes, with the
 ///   reason as the notice.

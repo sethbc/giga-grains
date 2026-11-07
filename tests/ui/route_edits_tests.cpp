@@ -7,17 +7,31 @@
 
 #include <cmath>
 
+#include <span>
+#include <vector>
+
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <sst/basic-blocks/params/ParamMetadata.h>
 
+#include "core/LayersFixture.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamIds.h"
+#include "gg/core/Processor.h"
 #include "gg/ui/RouteEdits.h"
 
+using gg::core::LayerParam;
+using gg::core::layerSlot;
 using gg::core::ModCurve;
+using gg::core::Mode;
 using gg::core::ModRoutes;
 using gg::core::ModSource;
+using gg::core::NoteEvent;
+using gg::core::NoteEventType;
 using gg::core::ParamSlot;
+using gg::core::Processor;
+using gg::core::ProcessorConfig;
+using gg::test::layers::Log;
 
 namespace
 {
@@ -162,39 +176,112 @@ TEST_CASE("a route target is layer A's slot for a layer parameter", "[ui]")
     CHECK(gg::ui::routeTargetOf(ParamSlot::Mix) == std::pair{ParamSlot::Mix, uint8_t{0}});
 }
 
-TEST_CASE("a drop beside a Voice-only factory route adds a normal route", "[ui][voice]")
+TEST_CASE("a drop on a Voice-only factory route makes it apply everywhere", "[ui][mod][voice]")
 {
-    // M3 Voice: slots 44 to 48 hold Voice-only routes, which a Cloud layer never applies, so a
-    // drop of the same source and target adds a normal route beside them instead of selecting
-    // the Voice-only one (Velocity to Level and Size are everyday M2 routes).
-    const auto mode = gg::core::Mode::Instrument;
-    ModRoutes routes = gg::core::factoryRoutes(mode);
-    REQUIRE(routes[46].voiceOnly);
-    REQUIRE(routes[46].source == ModSource::Velocity);
-    REQUIRE(routes[46].target == ParamSlot::Level);
+    // M3 Voice: slots 44 to 48 hold Voice-only routes, which a Cloud layer never applies. A drop
+    // of the same source and target clears the route's flag (the controller's ruling): one route,
+    // applied on Cloud and Voice layers alike, never doubled. A drop on a normal route still
+    // changes nothing.
+    const auto mode = Mode::Instrument;
+    const ModRoutes factory = gg::core::factoryRoutes(mode);
+    REQUIRE(factory[46].voiceOnly);
+    REQUIRE(factory[46].source == ModSource::Velocity);
+    REQUIRE(factory[46].target == ParamSlot::Level);
     const auto &level = gg::core::paramMeta(ParamSlot::Level, mode);
+    ModRoutes routes = factory;
     const auto result =
         gg::ui::addRouteForDrop(routes, ModSource::Velocity, ParamSlot::Level, 0, level);
     CHECK(result.added);
-    CHECK(result.slot == 13);
-    CHECK(routes[12].source == ModSource::Velocity);
-    CHECK(routes[12].target == ParamSlot::Level);
-    CHECK_FALSE(routes[12].voiceOnly);
-    CHECK(routes[46].voiceOnly);
-    // The others too: Velocity to Size, Pressure to Density and Level, Timbre to Position.
-    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Velocity, ParamSlot::Size, 0,
-                                  gg::core::paramMeta(ParamSlot::Size, mode))
-              .added);
-    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Pressure, ParamSlot::Density, 0,
-                                  gg::core::paramMeta(ParamSlot::Density, mode))
-              .added);
-    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Pressure, ParamSlot::Level, 0, level).added);
-    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Timbre, ParamSlot::Position, 0,
-                                  gg::core::paramMeta(ParamSlot::Position, mode))
-              .added);
-    // A second drop selects the normal route it added.
+    CHECK(result.slot == 47);
+    CHECK(result.notice.empty());
+    CHECK_FALSE(routes[46].voiceOnly);
+    ModRoutes expected = factory;
+    expected[46].voiceOnly = false;
+    CHECK(routes == expected); // the one route, nothing added
+    // Again: a normal route now, so nothing changes.
     const auto again =
         gg::ui::addRouteForDrop(routes, ModSource::Velocity, ParamSlot::Level, 0, level);
     CHECK_FALSE(again.added);
-    CHECK(again.slot == 13);
+    CHECK(again.slot == 47);
+    CHECK(routes == expected);
+    // The others too, each in its own slot: Velocity to Size, Pressure to Density and Level,
+    // Timbre to Position.
+    const struct
+    {
+        ModSource source;
+        ParamSlot target;
+        uint8_t slot;
+    } others[] = {{ModSource::Velocity, ParamSlot::Size, 48},
+                  {ModSource::Pressure, ParamSlot::Density, 44},
+                  {ModSource::Pressure, ParamSlot::Level, 45},
+                  {ModSource::Timbre, ParamSlot::Position, 46}};
+    for (const auto &o : others)
+    {
+        const auto r = gg::ui::addRouteForDrop(routes, o.source, o.target, 0,
+                                               gg::core::paramMeta(o.target, mode));
+        CHECK(r.added);
+        CHECK(r.slot == o.slot);
+        CHECK_FALSE(routes[o.slot - 1u].voiceOnly);
+    }
+    for (size_t i = 0; i < 43; ++i)
+    {
+        CHECK(routes[i] == factory[i]);
+    }
+
+    // What the Processor makes of it, after one note-on at velocity 1 (Bipolar: +6 dB of Level).
+    const auto play = [&](const ModRoutes &r, bool voice, Log &log) {
+        Processor p(ProcessorConfig{48000.0, 4096, 7, mode});
+        p.setSourceNow(0, gg::test::layers::sine(220.0));
+        p.setBase(layerSlot(LayerParam::Spray, 0), 0.0f);
+        p.setBase(layerSlot(LayerParam::Distribution, 0), 0.0f);
+        p.setBase(layerSlot(LayerParam::Density, 0), 6.0f);
+        p.setBase(layerSlot(LayerParam::Mode, 0), voice ? 1.0f : 0.0f);
+        p.setRoutes(r);
+        p.setEventSink(&Log::record, &log);
+        std::vector<float> left(256), right(256);
+        float *out[2] = {left.data(), right.data()};
+        const NoteEvent on{0, NoteEventType::On, 0, 60, 1.0f};
+        for (int k = 0; k < 40; ++k)
+        {
+            p.process(nullptr, 0, out, 2, 256, {},
+                      k == 0 ? std::span(&on, 1) : std::span<const NoteEvent>{});
+            ++log.call;
+        }
+        return p.effective(ParamSlot::Level);
+    };
+    ModRoutes dropped = factory;
+    REQUIRE(
+        gg::ui::addRouteForDrop(dropped, ModSource::Velocity, ParamSlot::Level, 0, level).added);
+    ModRoutes none = factory;
+    none[46] = gg::core::ModRoute{};
+    SECTION("A Cloud layer now gets the modulation")
+    {
+        Log a, b, c;
+        CHECK(play(factory, false, a) == 0.0f); // Voice only: not on a Cloud layer
+        CHECK(play(dropped, false, b) == 6.0f);
+        CHECK(play(none, false, c) == 0.0f);
+    }
+    SECTION("A Voice layer's voices count it once")
+    {
+        Log withFlag, withoutFlag, without;
+        CHECK(play(factory, true, withFlag) == 0.0f);
+        CHECK(play(dropped, true, withoutFlag) == 0.0f); // per voice, not the layer's Level
+        play(none, true, without);
+        const auto a = withFlag.layer(0);
+        const auto b = withoutFlag.layer(0);
+        const auto c = without.layer(0);
+        REQUIRE(a.size() > 10);
+        REQUIRE(b.size() == a.size());
+        REQUIRE(c.size() == a.size());
+        const double once = std::exp2(6.0 * std::log2(10.0) / 20.0); // +6 dB, once
+        for (size_t i = 0; i < a.size(); ++i)
+        {
+            CHECK(b[i].gain == a[i].gain); // the same route as Voice only: the same voices
+            if (c[i].gain > 0.0f)
+            {
+                CHECK(static_cast<double>(b[i].gain) / c[i].gain ==
+                      Catch::Approx(once).epsilon(1e-5));
+            }
+        }
+    }
 }
