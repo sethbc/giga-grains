@@ -295,7 +295,8 @@ Processor::Processor(const ProcessorConfig &config)
     grainQueue_ = std::make_unique<GrainQueue>();
     for (uint8_t L = 0; L < kLayers; ++L)
     {
-        const EngineConfig engine = engineConfig(config_, L);
+        EngineConfig engine = engineConfig(config_, L);
+        engine.keySemitones = engineKeys_.data(); // the tuning's key terms (M3 tuning spec §4.2)
         layers_[L] = std::make_unique<Layer>(engine);
         Layer &l = *layers_[L];
         l.diffuser.prepare(config_.sampleRate);
@@ -936,6 +937,46 @@ double Processor::bendSemitones(const NoteTable::Note &n) const noexcept
     return member + exactBend(noteTable_.channelBend(0)) * range(ParamSlot::BendRange);
 }
 
+double Processor::notePitch(const NoteTable::Note &n) const noexcept
+{
+    // The tuned note pitch (M3 tuning spec §5.3, A2): the voices' pitchIn, and the frequency
+    // source sub-project 3 (pitch-sync) reads (spec §9).
+    return (keyTerm(n.key) + bendSemitones(n)) + static_cast<double>(n.tuning);
+}
+
+void Processor::setTuning(const TuningTable &table) noexcept
+{
+    localTuning_ = table;
+    tuningDirty_ = true;
+}
+
+void Processor::setMtsTuning(const MtsTuning &mts) noexcept
+{
+    mtsTuning_ = mts;
+    tuningDirty_ = true;
+}
+
+void Processor::resolveTuning() noexcept
+{
+    // Spec §4.3: at the call's first sample, before its events.
+    const bool mtsOn = base_[static_cast<size_t>(ParamSlot::MtsEsp)] >= 0.5f;
+    if (!tuningDirty_ && mtsOn == mtsOn_)
+    {
+        return;
+    }
+    tuningDirty_ = false;
+    mtsOn_ = mtsOn;
+    effectiveTuning_ = mtsTuning_.connected && mtsOn ? mtsTuning_.table : localTuning_;
+    if (std::memcmp(effectiveTuning_.keySemitones.data(), engineKeys_.data(),
+                    sizeof(engineKeys_)) != 0)
+    {
+        // The Cloud streams read engineKeys_ at each onset; each voice's pitchIn compares bit for
+        // bit, so a changed key term recomputes its parameters here, before any render.
+        engineKeys_ = effectiveTuning_.keySemitones;
+        updateVoices();
+    }
+}
+
 void Processor::updateVoices() noexcept
 {
     bool any = false;
@@ -1019,9 +1060,8 @@ void Processor::updateVoices() noexcept
             set(ModSource::Key, static_cast<float>(note.key) / 127.0f);
             set(ModSource::Pressure, unitClamped(note.pressure));
             set(ModSource::Timbre, unitClamped(note.timbre));
-            set(ModSource::NotePitch,
-                unitClamped(
-                    static_cast<float>((static_cast<double>(note.key) + bend + tuning) / 127.0)));
+            set(ModSource::NotePitch, unitClamped(static_cast<float>(
+                                          ((60.0 + keyTerm(note.key)) + bend + tuning) / 127.0)));
             set(ModSource::ReleaseVelocity, v.released || note.state != NoteTable::State::Held
                                                 ? unitClamped(note.releaseVelocity)
                                                 : 0.0f);
@@ -1037,7 +1077,7 @@ void Processor::updateVoices() noexcept
             }
             offsets[kVoiceTargets.size()] = voiceOffsets_[levelIndex];
             voiceOffsets_[levelIndex] = 0.0f;
-            const double pitchIn = (static_cast<double>(note.key) - 60.0) + bend + tuning;
+            const double pitchIn = notePitch(note);
             const float volume = std::clamp(note.volume, 0.0f, 4.0f);
             const bool same =
                 cache.valid && cache.generation == l.voiceGeneration &&
@@ -1193,7 +1233,7 @@ void Processor::updateNoteSources() noexcept
     notePressure_ = unitClamped(newest->pressure);
     noteTimbre_ = unitClamped(newest->timbre);
     notePitch_ =
-        unitClamped(static_cast<float>((static_cast<double>(newest->key) + bendSemitones(*newest) +
+        unitClamped(static_cast<float>(((60.0 + keyTerm(newest->key)) + bendSemitones(*newest) +
                                         static_cast<double>(newest->tuning)) /
                                        127.0));
 }
@@ -1271,6 +1311,17 @@ void Processor::stepSources(const Buffers &b, int64_t upTo, int64_t scanTo) noex
 
 void Processor::applyNote(const NoteEvent &n) noexcept
 {
+    // M3 tuning spec §4.4 (T7, A1): a note-on the effective table leaves unmapped never enters
+    // the note table (no ordinal, no Velocity or Key) and ends at once.
+    if (n.type == NoteEventType::On && effectiveTuning_.isUnmapped(n.key))
+    {
+        NoteTable::Note dropped{};
+        dropped.id = n.noteId;
+        dropped.channel = n.channel;
+        dropped.key = n.key;
+        pushEnded(dropped);
+        return;
+    }
     // A note-on into a full table replaces a note the host knows (held, pedal-held or released):
     // it ends there, so its NOTE_END isn't lost (clap-wrapper's VST3 keeps an active-note record
     // until it comes).
@@ -2117,6 +2168,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     tapPeakFadeFirst_ = -1;
     tapPeakFadeLast_ = -1;
     takeOffers();
+    resolveTuning();
     // The input feeds the rings in both products (M2 sub-project 1's spec §6.2), and the mix in
     // the FX alone (render).
     if (in == nullptr)
