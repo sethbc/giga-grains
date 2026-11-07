@@ -34,6 +34,7 @@
 #include "gg/core/SourceExchange.h"
 #include "gg/core/SpaceReverb.h"
 #include "gg/core/UiSnapshot.h"
+#include "gg/core/VoiceAllocator.h"
 #include "gg/engine/Engine.h"
 #include "gg/engine/TaskRunner.h"
 #include "gg/grain/Budget.h"
@@ -98,6 +99,15 @@ struct CommandEvent
     /// A double, so a frame is exact to 2^53; gg-render's and the tests' float seconds widen to it
     /// exactly, as Processor::applyCommands took them before.
     double value;
+};
+
+/// A note that has ended (M3 Voice spec §4.5): released, and no Voice layer has a spawning voice
+/// for it any more, for the plugin's CLAP_EVENT_NOTE_END (Processor::takeEndedNotes).
+struct EndedNote
+{
+    int32_t noteId; ///< CLAP's note ID, or −1 for none.
+    int16_t channel;
+    int16_t key;
 };
 
 /// What the main thread needs to read a layer's ring without stopping the audio thread (spec
@@ -321,6 +331,37 @@ struct RingMeta
 /// have the note gate on (Engine::setNoteGate): no grain spawns while nothing is held. Construction
 /// and reset() clear the held set.
 ///
+/// **Voices** (M3 Voice spec §3, §3a, §4.2–§4.5). A layer whose Mode is Voice (layerModeOf) puts
+/// its engine in voice mode (Engine::setVoiceMode): its Cloud stream doesn't schedule, and each
+/// note-on of a group starts a voice (VoiceAllocator: up to kMaxVoices a layer, the 17th
+/// stealing the oldest released or pedal-held voice, else the oldest held one) whose grains
+/// stream 1 + its ordinal draws. A note that starts and ends in one group starts its voice and
+/// closes its gate one cell later (B5). Each voice runs its own Env 1 and Env 2, stepped at every
+/// boundary with the other sources, gated by its note and the pedal; Env 1 is its amplitude
+/// (V1: each grain's gain takes Env 1's value at the grain's peak, from the state handed over at
+/// the grain's cell). A voice finishes (stops spawning; its grains play out) at the boundary its
+/// Env 1 goes idle after its release, or sits at 0 in Sustain (B8), at a steal, a switch of its
+/// layer to Cloud, a reset, or the layer ramping off (with its grains, as Engine::setEnabled
+/// clears them). While a Voice layer has a spawning voice, every grid boundary is applied, as for
+/// a time-varying route (B1), so each voice's envelopes and its end reach the engine at the cell
+/// they happen.
+///
+/// Per voice, at every applied boundary: its sources (the layer's, with Env 1, Env 2, Velocity,
+/// Key, Pressure, Timbre, Note Pitch and Release Velocity its own note's), the routes that act
+/// per voice on its layer (actsPerVoice; Voice only or not) added to the layer's offsets on the
+/// engine's slots and Level (applyVoiceRoutes), and only those slots re-clamped. The layer-wide
+/// pass leaves those routes out on a Voice layer (B2). Its CloudParams are recomputed only when
+/// its inputs changed. Its pitch is the layer's Pitch + its routes' Pitch offsets + (key − 60) +
+/// its bend + its note's tuning, clamped to ±48: with MPE Off the bend is its channel's × Bend
+/// Range; with MPE On a member channel's × MPE Bend Range plus the master channel's (0) × Bend
+/// Range, each bend (v14 − 8192) / 8192 of the 14-bit value (B7: exactly 0 at the center). Its
+/// gain is exp10(Level offset / 20), the layer's Level and the offset clamped to Level's range
+/// together, times its note's volume expression. Targets that aren't per voice, and Cloud layers,
+/// read the instance-wide values (B4): Velocity and Key the last note-on's, Env 1 and Env 2 the
+/// layer's, gated by the held set; Pressure, Timbre and Note Pitch the newest held note's;
+/// Release Velocity the last note-off's. A note released with no voice left for it (or whose
+/// last voice finishes) ends (takeEndedNotes) and leaves the note table.
+///
 /// **Freeze is live until toggled** (INTENT §14; ruling M1-ac), per layer: each layer's Freeze
 /// engages its own engine's, and is armed on its own. The ring isn't saved (an M2
 /// non-goal), so a Freeze that is on when a fresh ring starts would hold that ring's first 20 ms,
@@ -343,10 +384,10 @@ struct RingMeta
 ///
 /// **Notes freeze the FX** (spec §6.3). In the FX a layer's engine's freeze is on while its
 /// effective Freeze is on and armed, as above, **or** any key is held: a held key freezes every
-/// layer. A note-on needs no arming: it
-/// freezes even right after a reset or an activation. Notes never change Freeze's base(),
-/// effective() or arming. Releasing every note unfreezes the ring unless the parameter is
-/// engaged; the freeze changes at the same boundaries as the held set.
+/// layer at Mode Cloud (a Voice layer's voices play the live input: M3 Voice spec V2). A note-on
+/// needs no arming: it freezes even right after a reset or an activation. Notes never change
+/// Freeze's base(), effective() or arming. Releasing every note unfreezes the ring unless the
+/// parameter is engaged; the freeze changes at the same boundaries as the held set.
 ///
 /// **The sample source** (spec §6.4), per layer. The plugin's main thread offers prepared sources
 /// through sources(layer) (sources() is layer A's), each with the parameter values of a session
@@ -640,6 +681,21 @@ class Processor
     /// The distinct keys held now, ascending (for tests and the editor): the held set as of the
     /// last applied boundary, so a pending note doesn't show until its boundary.
     std::span<const uint8_t> heldKeys() const noexcept { return {keys_.data(), keyCount_}; }
+
+    /// The most ended notes kept for takeEndedNotes.
+    static constexpr size_t kMaxEndedNotes = NoteTable::kMaxNotes;
+    /// Moves the notes that ended (the class comment's Voices; EndedNote) into `out`, oldest
+    /// first, up to out.size(); returns how many. Those left over wait for the next call. A note
+    /// ends at the boundary it is released when no Voice layer has a spawning voice for it, else
+    /// at the boundary its last voice finishes; reset() ends every note it releases. Past
+    /// kMaxEndedNotes waiting, a note's end is dropped (endedNotesDropped). Real-time safe; call
+    /// it between process() calls.
+    size_t takeEndedNotes(std::span<EndedNote> out) noexcept;
+    /// The ended notes dropped from a full queue since construction.
+    uint64_t endedNotesDropped() const noexcept { return endedDropped_; }
+    /// Whether some layer at Mode Voice has a spawning voice (the class comment's B1), as of the
+    /// last applied boundary or piece.
+    bool voicesSounding() const noexcept { return voicesSounding_; }
 
     /// Not real-time safe: while process() isn't running, for an inactive plugin, gg-render and
     /// tests. Layer `layer`'s sources(layer) holds `s` (SourceExchange::hold), and its engine
@@ -982,6 +1038,22 @@ class Processor
         // order from Lfo1 to Step.
         LayerModulators modulators;
         std::array<float, kModulatorSources> modulatorValues{};
+        // The voices (the class comment's Voices): the Mode in effect (syncModes), the slots, and
+        // per slot what its parameters were last computed from (updateVoices).
+        LayerMode mode{LayerMode::Cloud};
+        VoiceAllocator voices;
+        struct VoiceCache
+        {
+            bool valid{false};
+            uint64_t generation{0};
+            ModSourceValues sources{};
+            NoteTable::Note note{}; // as last seen in the table
+            double pitchIn{0.0};    // (key − 60) + bend + tuning
+            float volume{1.0f};
+            CloudParams cloud{};
+            float gain{1.0f};
+        };
+        std::array<VoiceCache, kMaxVoices> voiceCache{};
     };
 
     /// One process() call's buffers.
@@ -1076,6 +1148,27 @@ class Processor
     /// Makes the note table's held keys the held set in effect: rebuilds keys_ and gives every
     /// engine its keys.
     void updateKeys() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The voices (the class comment's Voices). syncModes gives each engine its layer's Mode
+    /// (clamp(base + modulation): no route targets it), finishing every voice of a layer that
+    /// switches. commitVoices takes the group's note-ons and releases at the boundary b.
+    /// stepVoices steps every voice's envelopes at c and finishes those whose Env 1 is idle.
+    /// updateVoices computes each voice's parameters and hands them to its engine.
+    void syncModes() noexcept SST_CPPUTILS_NONBLOCKING;
+    void commitVoices(int64_t b) noexcept SST_CPPUTILS_NONBLOCKING;
+    void stepVoices(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
+    void updateVoices() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Recomputes voicesSounding_.
+    void updateVoicesSounding() noexcept;
+    /// The note voice v plays, if the table still holds it there; else nullptr.
+    const NoteTable::Note *noteOf(const VoiceAllocator::Voice &v) const noexcept;
+    /// Note n's bend in semitones (the class comment's Voices): MPE and the bend ranges.
+    double bendSemitones(const NoteTable::Note &n) const noexcept;
+    /// Ends every released note no spawning voice plays (EndedNote) and frees it in the table.
+    void collectEndedNotes() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Queues n's end.
+    void pushEnded(const NoteTable::Note &n) noexcept;
+    /// The instance-wide Pressure, Timbre and Note Pitch: the newest held note's (B4).
+    void updateNoteSources() noexcept;
     /// Applies the pending commands at the boundary b (CommandEvent), in order, and empties them.
     void applyCommands(int64_t b) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Has layer l's ring adopt `offer`'s storage (the class comment's ring exchange), handing
@@ -1145,6 +1238,28 @@ class Processor
     bool hasPendingNotes_{false};
     std::array<uint8_t, 128> keys_{};
     size_t keyCount_{0};
+    // The voices' shared state (the class comment's Voices): MPE in effect, whether a Voice layer
+    // has a spawning voice, the ended notes waiting, the instance-wide note sources (B4), and the
+    // scratch updateVoices computes a voice's values in: the layer-wide route offsets of the last
+    // updateEffective, a copy of the effective values, a voice's route offsets (zero between
+    // voices) and the inputs a voice's parameters depend on, with their generation.
+    bool mpe_{false};
+    bool voicesSounding_{false};
+    std::array<EndedNote, kMaxEndedNotes> ended_{};
+    size_t endedCount_{0};
+    uint64_t endedDropped_{0};
+    float notePressure_{0.0f};
+    float noteTimbre_{0.0f};
+    float notePitch_{0.0f};
+    float releaseVelocity_{0.0f};
+    float pendingReleaseVelocity_{0.0f};
+    ParamValues offsets_{};
+    ParamValues voiceScratch_{};
+    ParamValues voiceOffsets_{};
+    ParamValues inputsBase_{};
+    ParamValues inputsMod_{};
+    ParamValues inputsOffsets_{};
+    uint64_t inputsGeneration_{0};
 
     // The mod matrix (the class comment): its routes, whether one moves with time alone, and the
     // sources' values per layer, filled by updateEffective. The global sources: the MIDI ones in

@@ -24,6 +24,7 @@ add_library(gg-core STATIC
         src/ModSources.cpp
         src/Mutate.cpp
         src/NoteTable.cpp
+        src/VoiceAllocator.cpp
         src/ParamIds.cpp
         src/ParamMap.cpp
         src/Patch.cpp

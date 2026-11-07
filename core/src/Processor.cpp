@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -195,6 +196,35 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
            same(a.sizeSpreadOctaves, b.sizeSpreadOctaves) &&
            same(a.smearJitterSec, b.smearJitterSec) &&
            same(a.smearDetuneSemitones, b.smearDetuneSemitones) && same(a.busSplit, b.busSplit);
+}
+
+/// log2(10): dB × kLog2Of10 / 20 is log2 of the linear gain (toWetParams' Level law).
+constexpr double kLog2Of10 = 3.321928094887362;
+
+/// A voice's pitch bound (M3 Voice spec §4.5), the scheduler's.
+constexpr double kVoicePitchLimit = 48.0;
+
+/// The note table's bend, (v − 0.5) × 2 of a 0..1 value, as (v14 − 8192) / 8192 of the 14-bit
+/// value v14 = round(v × 16383) it came from (spec B7: exactly 0 at the center, 8192). The
+/// table's subtraction is exact for v ≥ 0.25 and within 2^-25 below, so v, and v14, come back
+/// exactly.
+double exactBend(float bend) noexcept
+{
+    const double v = static_cast<double>(bend) * 0.5 + 0.5;
+    return static_cast<double>(std::lround(std::clamp(v, 0.0, 1.0) * 16383.0) - 8192) / 8192.0;
+}
+
+/// The layer parameters a voice can carry (isVoiceTarget), Level aside.
+constexpr std::array<LayerParam, 12> kVoiceTargets{
+    LayerParam::Density, LayerParam::Size,    LayerParam::Position,     LayerParam::Pitch,
+    LayerParam::Spray,   LayerParam::Stereo,  LayerParam::Distribution, LayerParam::Texture,
+    LayerParam::Smear,   LayerParam::Quality, LayerParam::PitchSpread,  LayerParam::SizeSpread,
+};
+
+/// Whether the note state holds the note (its gate open or the pedal holding it).
+bool heldState(NoteTable::State s) noexcept
+{
+    return s == NoteTable::State::Held || s == NoteTable::State::PedalHeld;
 }
 
 /// The delay damper's cross weight for the ping-pong switch: 1 on, 0 off (Delay's law).
@@ -646,6 +676,15 @@ float Processor::sourceValue(ModSource s, uint8_t layer) const noexcept
         return transportBar_;
     case ModSource::TransportPlaying:
         return transportPlaying_;
+    // M3 Voice spec B4: the instance-wide values, for Cloud layers and targets not per voice.
+    case ModSource::Pressure:
+        return notePressure_;
+    case ModSource::Timbre:
+        return noteTimbre_;
+    case ModSource::NotePitch:
+        return notePitch_;
+    case ModSource::ReleaseVelocity:
+        return releaseVelocity_;
     default:
         return 0.0f; // None, Count and beyond
     }
@@ -697,16 +736,416 @@ void Processor::commitPending() noexcept
     }
     hasPendingBase_.fill(false);
     hasPendingMod_.fill(false);
+    // The group's Modes first, so its note-ons start voices on the layers at Mode Voice from b.
+    syncModes();
     if (hasPendingNotes_)
     {
         hasPendingNotes_ = false;
         updateKeys();
     }
-    // The table's per-group lists are for the voices (M3 Voice spec §4.2); nothing reads them
-    // yet, so a group's end empties them.
+    // The table's per-group lists (M3 Voice spec §4.2) start and release the voices, before the
+    // group's end empties them; then the notes that ended leave the table.
+    commitVoices(pendingAt_);
+    collectEndedNotes();
     noteTable_.beginGroup();
     midi_ = pendingMidi_;
+    releaseVelocity_ = pendingReleaseVelocity_;
+    updateNoteSources();
     hasPending_ = false;
+}
+
+void Processor::syncModes() noexcept
+{
+    bool changed = false;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        const auto s = static_cast<size_t>(layerSlot(LayerParam::Mode, L));
+        const LayerMode mode = layerModeOf(clampToRange(s, base_[s] + mod_[s]));
+        if (mode == l.mode)
+        {
+            continue;
+        }
+        // M3 Voice spec §4.3: a switch finishes every voice at its boundary. To Cloud the engine
+        // finishes them and forces the Cloud stream's next onset, so Cloud resumes from the held
+        // set there; to Voice it drops any voice it holds first, so none fires stale.
+        l.voices.clear();
+        for (auto &cache : l.voiceCache)
+        {
+            cache.valid = false;
+        }
+        if (mode == LayerMode::Voice)
+        {
+            l.engine.clearVoices();
+        }
+        l.engine.setVoiceMode(mode == LayerMode::Voice);
+        l.mode = mode;
+        changed = true;
+    }
+    if (changed)
+    {
+        collectEndedNotes();
+        updateVoicesSounding();
+    }
+}
+
+const NoteTable::Note *Processor::noteOf(const VoiceAllocator::Voice &v) const noexcept
+{
+    const std::span<const NoteTable::Note> notes = noteTable_.notes();
+    const NoteTable::Note &n = notes[std::min<size_t>(v.note, notes.size() - 1)];
+    return n.state != NoteTable::State::Free && n.ordinal == v.noteOrdinal ? &n : nullptr;
+}
+
+void Processor::commitVoices(int64_t b) noexcept
+{
+    const std::span<const NoteTable::Note> notes = noteTable_.notes();
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        if (l.mode != LayerMode::Voice)
+        {
+            continue;
+        }
+        // The group's note-ons, in event order: each starts a voice (the engine is told with
+        // its parameters at updateVoices).
+        for (const uint8_t index : noteTable_.startedThisGroup())
+        {
+            const NoteTable::Note &n = notes[std::min<size_t>(index, notes.size() - 1)];
+            if (n.state == NoteTable::State::Free)
+            {
+                continue;
+            }
+            uint32_t ordinal = 0;
+            int stolen = -1;
+            const int slot = l.voices.start(index, n.ordinal, b, ordinal, stolen);
+            l.voiceCache[static_cast<size_t>(slot)].valid = false;
+        }
+        // Each voice follows its note: released (or gone from the table), its gate closes, at
+        // b or, for a note that started in this group too, one cell later (B5); pedal-held, it
+        // ranks with the released ones for a steal.
+        for (VoiceAllocator::Voice &v : l.voices.voices())
+        {
+            if (!v.spawning || v.released)
+            {
+                continue;
+            }
+            const NoteTable::Note *n = noteOf(v);
+            const NoteTable::State state = n != nullptr ? n->state : NoteTable::State::Released;
+            if (state == NoteTable::State::PedalHeld)
+            {
+                v.weak = true;
+            }
+            else if (!heldState(state))
+            {
+                v.weak = true;
+                if (v.startedAt == b)
+                {
+                    v.releaseLater = true;
+                }
+                else
+                {
+                    v.released = true;
+                }
+            }
+        }
+    }
+    updateVoicesSounding();
+}
+
+void Processor::stepVoices(int64_t c) noexcept
+{
+    bool finished = false;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        if (l.mode != LayerMode::Voice)
+        {
+            continue;
+        }
+        const AdsrParams env1 = envParams(effective_, L, 0);
+        const AdsrParams env2 = envParams(effective_, L, 1);
+        const std::span<VoiceAllocator::Voice> voices = l.voices.voices();
+        for (size_t slot = 0; slot < voices.size(); ++slot)
+        {
+            VoiceAllocator::Voice &v = voices[slot];
+            if (!v.spawning)
+            {
+                continue;
+            }
+            if (v.releaseLater && c > v.startedAt)
+            {
+                v.releaseLater = false; // B5: the short tap's Off, one cell after its On
+                v.released = true;
+            }
+            const bool gate = !v.released;
+            v.envValue[0] = v.env[0].step(env1, gate, cellSeconds_);
+            v.envValue[1] = v.env[1].step(env2, gate, cellSeconds_);
+            // V1, B8: Env 1 idle after its release, or at 0 in Sustain, ends the voice here.
+            if (v.env[0].idle())
+            {
+                if (v.told)
+                {
+                    l.engine.finishVoice(static_cast<uint32_t>(slot));
+                }
+                l.voices.finish(static_cast<int>(slot));
+                finished = true;
+            }
+        }
+    }
+    if (finished)
+    {
+        collectEndedNotes();
+        updateVoicesSounding();
+    }
+}
+
+double Processor::bendSemitones(const NoteTable::Note &n) const noexcept
+{
+    // M3 Voice spec §4.5, B7.
+    const auto range = [this](ParamSlot slot) {
+        return static_cast<double>(effective_[static_cast<size_t>(slot)]);
+    };
+    if (!mpe_)
+    {
+        return exactBend(n.bend) * range(ParamSlot::BendRange);
+    }
+    const double member = n.channel != 0 ? exactBend(n.bend) * range(ParamSlot::MpeBendRange) : 0.0;
+    return member + exactBend(noteTable_.channelBend(0)) * range(ParamSlot::BendRange);
+}
+
+void Processor::updateVoices() noexcept
+{
+    bool any = false;
+    for (const auto &l : layers_)
+    {
+        any = any || (l->mode == LayerMode::Voice && l->voices.anySpawning());
+    }
+    if (!any)
+    {
+        voicesSounding_ = false;
+        return;
+    }
+    // The inputs every voice's parameters depend on, besides its own: a change of any moves the
+    // generation, and a voice whose own inputs are unchanged too keeps its CloudParams (spec
+    // §4.4: so ruling M1-h's rescale doesn't fire every cell).
+    if (std::memcmp(base_.data(), inputsBase_.data(), sizeof(base_)) != 0 ||
+        std::memcmp(mod_.data(), inputsMod_.data(), sizeof(mod_)) != 0 ||
+        std::memcmp(offsets_.data(), inputsOffsets_.data(), sizeof(offsets_)) != 0)
+    {
+        inputsBase_ = base_;
+        inputsMod_ = mod_;
+        inputsOffsets_ = offsets_;
+        ++inputsGeneration_;
+    }
+    voiceScratch_ = effective_;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        Layer &l = *layers_[L];
+        if (l.mode != LayerMode::Voice)
+        {
+            continue;
+        }
+        const SourceMode material = layerMaterial(L);
+        const AdsrParams env1 = envParams(effective_, L, 0);
+        const auto pitchSlot = static_cast<size_t>(layerSlot(LayerParam::Pitch, L));
+        const auto levelIndex = static_cast<size_t>(levelSlot(L));
+        const std::span<VoiceAllocator::Voice> voices = l.voices.voices();
+        for (size_t slot = 0; slot < voices.size(); ++slot)
+        {
+            VoiceAllocator::Voice &v = voices[slot];
+            if (!v.spawning)
+            {
+                continue;
+            }
+            Layer::VoiceCache &cache = l.voiceCache[slot];
+            // The note as the table holds it, or as last seen once its slot is gone.
+            if (const NoteTable::Note *n = noteOf(v))
+            {
+                cache.note = *n;
+            }
+            const NoteTable::Note &note = cache.note;
+            const double bend = bendSemitones(note);
+            const double tuning = static_cast<double>(note.tuning);
+            // The voice's sources: the layer's, with its own note's and envelopes'.
+            ModSourceValues vs = sources_[L];
+            const auto set = [&vs](ModSource s, float value) {
+                vs.v[static_cast<size_t>(s)] = value;
+            };
+            set(ModSource::Env1, v.envValue[0]);
+            set(ModSource::Env2, v.envValue[1]);
+            set(ModSource::Velocity, unitClamped(note.velocity));
+            set(ModSource::Key, static_cast<float>(note.key) / 127.0f);
+            set(ModSource::Pressure, unitClamped(note.pressure));
+            set(ModSource::Timbre, unitClamped(note.timbre));
+            set(ModSource::NotePitch,
+                unitClamped(
+                    static_cast<float>((static_cast<double>(note.key) + bend + tuning) / 127.0)));
+            set(ModSource::ReleaseVelocity, v.released || note.state != NoteTable::State::Held
+                                                ? unitClamped(note.releaseVelocity)
+                                                : 0.0f);
+            // The note's own pitch and gain inputs (§4.3, §4.5).
+            const double pitchIn = (static_cast<double>(note.key) - 60.0) + bend + tuning;
+            const float volume = std::clamp(note.volume, 0.0f, 4.0f);
+            const bool same =
+                cache.valid && cache.generation == inputsGeneration_ &&
+                std::memcmp(cache.sources.v.data(), vs.v.data(), sizeof(vs.v)) == 0 &&
+                std::bit_cast<uint64_t>(cache.pitchIn) == std::bit_cast<uint64_t>(pitchIn) &&
+                std::bit_cast<uint32_t>(cache.volume) == std::bit_cast<uint32_t>(volume);
+            if (!same)
+            {
+                // The voice's route offsets, then only the slots they touch re-clamped (spec
+                // §4.4); Pitch and Level are the voice's own (§4.3, §4.5). applyVoiceRoutes
+                // writes the layer's voice targets alone, and each is zeroed again here.
+                applyVoiceRoutes(routes_, L, vs, voiceOffsets_);
+                float pitchOffset = 0.0f;
+                std::array<size_t, kVoiceTargets.size()> touched{};
+                size_t touchedCount = 0;
+                for (const LayerParam p : kVoiceTargets)
+                {
+                    const auto s = static_cast<size_t>(layerSlot(p, L));
+                    const float off = voiceOffsets_[s];
+                    voiceOffsets_[s] = 0.0f;
+                    if (off == 0.0f)
+                    {
+                        continue;
+                    }
+                    if (s == pitchSlot)
+                    {
+                        pitchOffset = off;
+                        continue;
+                    }
+                    const float sum = base_[s] + mod_[s] + (offsets_[s] + off);
+                    voiceScratch_[s] = clampToRange(s, std::isnan(sum) ? base_[s] + mod_[s] : sum);
+                    touched[touchedCount++] = s;
+                }
+                const float levelOffset = voiceOffsets_[levelIndex];
+                voiceOffsets_[levelIndex] = 0.0f;
+                CloudParams cloud = toCloudParams(voiceScratch_, config_.mode, L, material);
+                // Back to the layer's values for the next voice.
+                for (size_t i = 0; i < touchedCount; ++i)
+                {
+                    voiceScratch_[touched[i]] = effective_[touched[i]];
+                }
+                const double pitch = static_cast<double>(effective_[pitchSlot]) +
+                                     static_cast<double>(pitchOffset) + pitchIn;
+                cloud.pitchSemitones = std::isnan(pitch)
+                                           ? 0.0
+                                           : std::clamp(pitch, -kVoicePitchLimit, kVoicePitchLimit);
+                // Level and the voice's offset clamped together to Level's range; exact in
+                // double, so an offset that fits is the offset itself.
+                const auto layerDb = static_cast<double>(effective_[levelIndex]);
+                const double totalDb = std::clamp(layerDb + static_cast<double>(levelOffset),
+                                                  static_cast<double>(minVal_[levelIndex]),
+                                                  static_cast<double>(maxVal_[levelIndex]));
+                const double gain =
+                    exp2Det((totalDb - layerDb) * kLog2Of10 / 20.0) * static_cast<double>(volume);
+                cache.cloud = cloud;
+                cache.gain = static_cast<float>(gain);
+                cache.sources = vs;
+                cache.pitchIn = pitchIn;
+                cache.volume = volume;
+                cache.generation = inputsGeneration_;
+                cache.valid = true;
+            }
+            VoiceParams params;
+            params.cloud = cache.cloud;
+            params.amp = v.env[0].envelope(lastStepped_, env1, config_.sampleRate);
+            params.gain = cache.gain;
+            if (!v.told)
+            {
+                l.engine.startVoice(static_cast<uint32_t>(slot), v.ordinal, params);
+                v.told = true;
+            }
+            else
+            {
+                l.engine.setVoiceParams(static_cast<uint32_t>(slot), params);
+            }
+        }
+    }
+    updateVoicesSounding();
+}
+
+void Processor::updateVoicesSounding() noexcept
+{
+    bool any = false;
+    for (const auto &l : layers_)
+    {
+        any = any || (l->mode == LayerMode::Voice && l->voices.anySpawning());
+    }
+    voicesSounding_ = any;
+}
+
+void Processor::collectEndedNotes() noexcept
+{
+    // The notes a spawning voice still plays, on any layer.
+    std::array<bool, NoteTable::kMaxNotes> playing{};
+    for (const auto &l : layers_)
+    {
+        for (const VoiceAllocator::Voice &v : l->voices.voices())
+        {
+            if (v.spawning && noteOf(v) != nullptr)
+            {
+                playing[std::min<size_t>(v.note, playing.size() - 1)] = true;
+            }
+        }
+    }
+    const std::span<const NoteTable::Note> notes = noteTable_.notes();
+    for (size_t i = 0; i < notes.size(); ++i)
+    {
+        if (notes[i].state == NoteTable::State::Released && !playing[i])
+        {
+            pushEnded(notes[i]);
+            noteTable_.free(i);
+        }
+    }
+}
+
+void Processor::pushEnded(const NoteTable::Note &n) noexcept
+{
+    if (endedCount_ < ended_.size())
+    {
+        ended_[endedCount_++] = {n.id, n.channel, n.key};
+    }
+    else
+    {
+        ++endedDropped_;
+    }
+}
+
+size_t Processor::takeEndedNotes(std::span<EndedNote> out) noexcept
+{
+    const size_t n = std::min(out.size(), endedCount_);
+    std::copy_n(ended_.begin(), n, out.begin());
+    std::copy(ended_.begin() + static_cast<std::ptrdiff_t>(n),
+              ended_.begin() + static_cast<std::ptrdiff_t>(endedCount_), ended_.begin());
+    endedCount_ -= n;
+    return n;
+}
+
+void Processor::updateNoteSources() noexcept
+{
+    // B4: the newest held note's Pressure, Timbre and Note Pitch; 0 with none held (V6).
+    const NoteTable::Note *newest = nullptr;
+    for (const NoteTable::Note &n : noteTable_.notes())
+    {
+        if (heldState(n.state) && (newest == nullptr || n.ordinal > newest->ordinal))
+        {
+            newest = &n;
+        }
+    }
+    if (newest == nullptr)
+    {
+        notePressure_ = 0.0f;
+        noteTimbre_ = 0.0f;
+        notePitch_ = 0.0f;
+        return;
+    }
+    notePressure_ = unitClamped(newest->pressure);
+    noteTimbre_ = unitClamped(newest->timbre);
+    notePitch_ =
+        unitClamped(static_cast<float>((static_cast<double>(newest->key) + bendSemitones(*newest) +
+                                        static_cast<double>(newest->tuning)) /
+                                       127.0));
 }
 
 void Processor::scanInput(const Buffers &b, int64_t to) noexcept
@@ -754,6 +1193,8 @@ void Processor::stepSourcesAt(int64_t c) noexcept
                                 rng::Field::ModRandom2);
         v[6] = m.stepSeq.step(stepParams(effective_, L), cellSeconds_);
     }
+    // Each voice's own envelopes, gated by its note (M3 Voice spec §4.4), and its end (V1, B8).
+    stepVoices(c);
     // The previous cell's input peak, [c − 32, c).
     const float peak = cellPeak_;
     const float *peakChannel = &peak;
@@ -787,6 +1228,11 @@ void Processor::applyNote(const NoteEvent &n) noexcept
         // Spec §6.8: the last note-on's velocity and key / 127, from its boundary.
         pendingMidi_.velocity = unitClamped(n.velocity);
         pendingMidi_.key = static_cast<float>(n.key) / 127.0f;
+    }
+    else if (n.type == NoteEventType::Off)
+    {
+        // M3 Voice spec B4: the last note-off's release velocity, from its boundary.
+        pendingReleaseVelocity_ = unitClamped(n.releaseVelocity);
     }
 }
 
@@ -824,13 +1270,23 @@ void Processor::updateEffective() noexcept
             sources_[L].v[i] = sourceValue(static_cast<ModSource>(i), L);
         }
     }
-    ParamValues offsets{};
-    applyRoutes(routes_, sources_, offsets);
+    // M3 Voice spec B2: on a layer at Mode Voice the routes that act per voice are its voices'.
+    syncModes();
+    uint8_t voiceLayers = 0;
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        voiceLayers |= layers_[L]->mode == LayerMode::Voice ? static_cast<uint8_t>(1u << L) : 0u;
+    }
+    offsets_.fill(0.0f);
+    applyRoutes(routes_, sources_, offsets_, voiceLayers);
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        const float sum = base_[s] + mod_[s] + offsets[s];
+        const float sum = base_[s] + mod_[s] + offsets_[s];
         effective_[s] = clampToRange(s, std::isnan(sum) ? base_[s] + mod_[s] : sum);
     }
+    // The MIDI settings (not automatable): MPE reaches the note table's pedal and channels.
+    mpe_ = effective_[static_cast<size_t>(ParamSlot::Mpe)] > 0.5f;
+    noteTable_.setMpe(mpe_);
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
@@ -861,6 +1317,8 @@ void Processor::updateEffective() noexcept
     delay_.setTimeSamples(static_cast<double>(delayParams_.timeSeconds) * config_.sampleRate);
     limiterParams_ = limiterParams(effective_);
     limiterReleaseCoeff_ = releaseCoefficient(limiterParams_.releaseSeconds, config_.sampleRate);
+    // Each voice's parameters, from these values (M3 Voice spec §4.4).
+    updateVoices();
 }
 
 SourceMode Processor::layerMaterial(uint8_t layer) const noexcept
@@ -913,7 +1371,8 @@ void Processor::syncFreeze() noexcept
         {
             l.freezeArmed = true; // off seen: the next on engages
         }
-        l.engineFrozen = (on && l.freezeArmed) || noteHeld;
+        // M3 Voice spec V2: notes freeze the layers at Mode Cloud alone.
+        l.engineFrozen = (on && l.freezeArmed) || (noteHeld && l.mode == LayerMode::Cloud);
         l.engine.setFreeze(l.engineFrozen);
     }
 }
@@ -929,6 +1388,24 @@ void Processor::reset() noexcept
     // below set its time, which then applies at once; the limiter is reset after them, by jump.
     delay_.reset();
     // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
+    // Every note still in the table ends (M3 Voice spec §4.5's NOTE_END), and every voice with
+    // it: the engines cleared theirs with their pools.
+    for (const NoteTable::Note &n : noteTable_.notes())
+    {
+        if (n.state != NoteTable::State::Free)
+        {
+            pushEnded(n);
+        }
+    }
+    for (const auto &l : layers_)
+    {
+        l->voices.reset();
+        for (auto &cache : l->voiceCache)
+        {
+            cache.valid = false;
+        }
+    }
+    voicesSounding_ = false;
     noteTable_.reset();
     noteOrdinal_ = 0;
     updateKeys();
@@ -937,6 +1414,11 @@ void Processor::reset() noexcept
     // at the next call's first boundary.
     midi_ = {};
     pendingMidi_ = {};
+    notePressure_ = 0.0f;
+    noteTimbre_ = 0.0f;
+    notePitch_ = 0.0f;
+    releaseVelocity_ = 0.0f;
+    pendingReleaseVelocity_ = 0.0f;
     for (const auto &l : layers_)
     {
         l->modulators.reset();
@@ -1615,13 +2097,15 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     // next boundary to step is the next to apply: every one before it was applied, and a pending
     // group is never past it (its events' joins applied the cells before them). One before it
     // (events joining the boundary already applied, at `rendered`) applies there first.
+    // So do the cells while a Voice layer has a spawning voice (M3 Voice spec B1): a voice that
+    // starts or finishes at a boundary turns it on or off from there.
     const auto applyCellsBelow = [&](int64_t limit) {
-        if (!timeVarying_)
-        {
-            return;
-        }
         for (;;)
         {
+            if (!timeVarying_ && !voicesSounding_)
+            {
+                return;
+            }
             const int64_t c = lastStepped_ + static_cast<int64_t>(kControlGrid);
             if (c >= limit || c >= end)
             {
@@ -1655,6 +2139,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         if (hasPending_ && b > pendingAt_)
         {
             applyPending();
+            applyCellsBelow(b); // the group may have started a voice (B1)
         }
         if (!hasPending_)
         {
@@ -1747,8 +2232,8 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
                 continue;
             }
             join(c.offset);
-            // The table keeps the per-channel and per-note state; MPE has no parameter yet.
-            noteTable_.applyControl(c, false);
+            // The table keeps the per-channel and per-note state, with MPE as in effect.
+            noteTable_.applyControl(c, mpe_);
             if (c.kind == ControlKind::Sustain)
             {
                 // A pedal change can move the held set.
@@ -1777,6 +2262,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
     if (hasPending_ && pendingAt_ < end)
     {
         applyPending();
+        applyCellsBelow(end); // the group may have started a voice (B1)
     }
     render(buffers, rendered, end);
     // A source that retired in this call goes back now, not at the next call's start: the host
@@ -2093,10 +2579,26 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
         }
 
         // Which layers render, and their weights, fixed before any layer renders (spec §6.7).
+        bool voicesCleared = false;
         for (size_t L = 0; L < kLayers; ++L)
         {
-            const Ramp &on = layers_[L]->on;
+            Layer &l = *layers_[L];
+            const Ramp &on = l.on;
             rendering_[L] = on.to != 0.0f || on.at(from, rampSamples_) != 0.0f;
+            // M3 Voice spec §4.3: a layer that doesn't render has no voices; its engine clears
+            // them with its grains at its gate's turn, here (Engine::setEnabled), and one started
+            // while it was off never fires.
+            if (!rendering_[L] && l.voices.anySpawning())
+            {
+                l.voices.clear();
+                l.engine.clearVoices();
+                voicesCleared = true;
+            }
+        }
+        if (voicesCleared)
+        {
+            collectEndedNotes();
+            updateVoicesSounding();
         }
         // The quotas (M2 engine spec §6.4): the Budget split equally among the layers rendering
         // this piece, given here, serially, before any task runs. A layer not rendering keeps its
