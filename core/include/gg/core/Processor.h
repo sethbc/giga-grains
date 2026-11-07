@@ -66,6 +66,7 @@ struct ParamEvent
     ParamSlot slot;    ///< Events for ParamSlot::Count are ignored.
     bool isModulation; ///< An offset added to the base value, rather than the base value itself.
     double value;      ///< In the parameter's units (paramMeta). Converted to float on receipt.
+    uint32_t seq{0};   ///< As NoteEvent::seq (M3 expression spec E8).
 };
 
 /// What a CommandEvent does to its layer's ring (M2 sub-project 2's spec §6.4).
