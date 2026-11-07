@@ -31,6 +31,7 @@
 #include "gg/core/PatchState.h"
 #include "gg/core/Rng.h"
 #include "gg/core/SessionState.h"
+#include "gg/core/Tuning.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/DeepXml.h"
 #include "support/StateContainer.h"
@@ -259,6 +260,7 @@ struct Decoded
                state.sampleAudioMissing == o.state.sampleAudioMissing &&
                state.ringAudioMissing == o.state.ringAudioMissing &&
                state.newerMedia == o.state.newerMedia && state.newerAudio == o.state.newerAudio &&
+               state.tuning == o.state.tuning && state.newerTuning == o.state.newerTuning &&
                sameRoutes(state.routes, o.state.routes) &&
                migratedFromVersion == o.migratedFromVersion;
     }
@@ -271,6 +273,7 @@ Decoded distinct()
     Decoded d;
     d.state.values.fill(0.125f);
     d.state.seed = 42;
+    d.state.tuning = gg::core::TuningFiles{"x", "y", "z", "w"};
     MediaEntry e;
     e.sha256Hex = std::string(64, 'f');
     e.absolutePath = "/distinct.wav";
@@ -2073,4 +2076,181 @@ TEST_CASE("a ring holds at most kMaxSplices marks", "[core]")
     marks.resize(marks.rfind(' ')); // 32
     REQUIRE(d.decode(with(marks)));
     CHECK(d.state.rings[1]->splices.size() == 32);
+}
+
+// ---- TUNE (the tuning spec §5.4) ----
+
+namespace
+{
+using gg::core::TuningFiles;
+
+// A TUNE payload from its fields: version, then each as a u32 length and its bytes.
+std::string tunePayload(const TuningFiles &t, uint32_t version = 1)
+{
+    std::string out = gg::test::littleEndian(version, 4);
+    for (const std::string *f : {&t.scl, &t.kbm, &t.sclName, &t.kbmName})
+    {
+        out += gg::test::littleEndian(f->size(), 4);
+        out += *f;
+    }
+    return out;
+}
+
+// A well-formed state's container with `chunk` appended after INST.
+std::string withChunk(const std::string &chunk)
+{
+    const auto bytes = encodeState(someState(false));
+    return bytes + chunk;
+}
+
+const TuningFiles kJust{"! just.scl\r\nJust\r\n 2\r\n 9/8\r\n 2/1\r\n", "", "j\xfc.scl", ""};
+} // namespace
+
+TEST_CASE("TUNE round-trips bit for bit", "[core]")
+{
+    TuningFiles odd;
+    odd.scl = std::string("! caf\xe9\r\n\xff\x00\x80 x\r\n", 14); // Latin-1, CRLF, a NUL
+    odd.kbm = "";                                                 // an empty .kbm
+    for (const TuningFiles &t : {odd, kJust, TuningFiles{}})
+    {
+        SessionState s = someState(false);
+        s.tuning = t;
+        const auto bytes = encodeState(s);
+        REQUIRE(stateChunkPayload(bytes, "TUNE").has_value());
+        Decoded d = distinct();
+        REQUIRE(d.decode(bytes));
+        REQUIRE(d.state.tuning.has_value());
+        CHECK(*d.state.tuning == t);
+        CHECK_FALSE(d.state.newerTuning.has_value());
+        CHECK(encodeState(d.state) == bytes);
+    }
+}
+
+TEST_CASE("a state without a tuning writes no TUNE", "[core]")
+{
+    const SessionState s = someState(false);
+    const auto bytes = encodeState(s);
+    CHECK_FALSE(stateChunkPayload(bytes, "TUNE").has_value());
+    // The bytes are today's: PTCH, MEDI, INST and nothing else (the pinned hash in
+    // preset_tests.cpp holds the same bytes).
+    CHECK(bytes ==
+          stateContainer({stateChunk("PTCH", *stateChunkPayload(bytes, "PTCH")),
+                          stateChunk("MEDI", kEmptyMedia2), stateChunk("INST", kDefaultInst)}));
+    Decoded d = distinct();
+    REQUIRE(d.decode(bytes));
+    CHECK_FALSE(d.state.tuning.has_value());
+}
+
+TEST_CASE("TUNE refuses a length past the payload", "[core]")
+{
+    Decoded d = distinct();
+    const auto ok = tunePayload(kJust);
+    REQUIRE(d.decode(withChunk(stateChunk("TUNE", ok))));
+    for (const std::size_t cut : {std::size_t{0}, std::size_t{3}, std::size_t{6}, ok.size() - 1})
+    {
+        Decoded e = distinct();
+        CHECK_FALSE(e.decode(withChunk(stateChunk("TUNE", ok.substr(0, cut)))));
+        CHECK(e.sameAs(distinct()));
+    }
+    // scl's length names more than the payload holds.
+    std::string bad = ok;
+    bad.replace(4, 4, gg::test::littleEndian(ok.size(), 4));
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", bad))));
+    // A length of 2^32 - 1.
+    bad.replace(4, 4, gg::test::littleEndian(0xffffffffu, 4));
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", bad))));
+}
+
+TEST_CASE("TUNE refuses an oversized text", "[core]")
+{
+    TuningFiles t;
+    t.scl = std::string(gg::core::kMaxTuningTextBytes, 'a');
+    t.kbm = std::string(gg::core::kMaxTuningTextBytes, 'b');
+    REQUIRE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(t))))); // exactly the limit
+    TuningFiles over = t;
+    over.scl += 'a';
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(over)))));
+    over = t;
+    over.kbm += 'b';
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(over)))));
+}
+
+TEST_CASE("TUNE refuses a long name", "[core]")
+{
+    TuningFiles t;
+    t.sclName = std::string(gg::core::kMaxTuningNameBytes, 'n');
+    t.kbmName = std::string(gg::core::kMaxTuningNameBytes, 'k');
+    Decoded d = distinct();
+    REQUIRE(d.decode(withChunk(stateChunk("TUNE", tunePayload(t))))); // exactly 255
+    CHECK(d.state.tuning->sclName.size() == 255);
+    TuningFiles over = t;
+    over.sclName += 'n';
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(over)))));
+    over = t;
+    over.kbmName += 'k';
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(over)))));
+}
+
+TEST_CASE("TUNE refuses trailing bytes", "[core]")
+{
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(kJust) + 'x'))));
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", tunePayload(kJust) + '\0'))));
+}
+
+TEST_CASE("a repeated TUNE fails the state", "[core]")
+{
+    const auto one = stateChunk("TUNE", tunePayload(kJust));
+    CHECK(distinct().decode(withChunk(one)));
+    CHECK_FALSE(distinct().decode(withChunk(one + one)));
+}
+
+TEST_CASE("a newer TUNE is kept and written back", "[core]")
+{
+    // Version 2 with fields this build doesn't know.
+    const std::string payload = tunePayload(kJust, 2) + std::string("\x07extra\x00\xff", 8);
+    const auto bytes = withChunk(stateChunk("TUNE", payload));
+    Decoded d = distinct();
+    REQUIRE(d.decode(bytes));
+    CHECK_FALSE(d.state.tuning.has_value());
+    REQUIRE(d.state.newerTuning.has_value());
+    CHECK(*d.state.newerTuning == payload);
+    CHECK(encodeState(d.state) == bytes);
+
+    // Both set: the tuning is written, never both.
+    d.state.tuning = kJust;
+    const auto both = encodeState(d.state);
+    CHECK(*stateChunkPayload(both, "TUNE") == tunePayload(kJust));
+    CHECK(both.size() == encodeState(someState(false)).size() + 12 + tunePayload(kJust).size());
+
+    // Even a payload too short to hold a version is only "newer" if it has one: three bytes fail.
+    CHECK_FALSE(distinct().decode(withChunk(stateChunk("TUNE", "abc"))));
+}
+
+TEST_CASE("an unparseable version 1 TUNE still decodes", "[core]")
+{
+    TuningFiles t;
+    t.scl = "not a scala file\r\n";
+    t.kbm = "\x01\x02";
+    t.sclName = "bad.scl";
+    const auto bytes = withChunk(stateChunk("TUNE", tunePayload(t)));
+    Decoded d = distinct();
+    REQUIRE(d.decode(bytes));
+    REQUIRE(d.state.tuning.has_value());
+    CHECK(*d.state.tuning == t);
+    CHECK_FALSE(gg::core::tuningFromScala(d.state.tuning->scl, d.state.tuning->kbm).has_value());
+    CHECK(encodeState(d.state) == bytes);
+}
+
+TEST_CASE("an older build ignores TUNE", "[core]")
+{
+    SessionState s = someState(false);
+    s.tuning = kJust;
+    auto bytes = encodeState(s);
+    const auto at = bytes.rfind("TUNE");
+    REQUIRE(at != std::string::npos);
+    bytes.replace(at, 4, "TUN2");
+    Decoded d = distinct();
+    REQUIRE(d.decode(bytes));
+    CHECK_FALSE(d.state.tuning.has_value());
+    CHECK_FALSE(d.state.newerTuning.has_value());
 }

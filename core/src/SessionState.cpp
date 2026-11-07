@@ -19,6 +19,7 @@
 #include "StateChunks.h"
 #include "XmlText.h"
 #include "gg/core/PatchState.h"
+#include "gg/core/Tuning.h"
 #include "tinyxml/tinyxml.h"
 
 namespace gg::core
@@ -33,6 +34,8 @@ constexpr std::string_view kInstanceChunk = "INST";
 constexpr std::size_t kHeaderBytes = 8;         // the magic and the version
 constexpr std::size_t kChunkHeaderBytes = 12;   // the ID and the length
 constexpr std::size_t kPayloadHeaderBytes = 12; // AUDI's: a payload's id and length
+constexpr std::string_view kTuningChunk = "TUNE";
+constexpr uint32_t kTuningVersion = 1;
 constexpr int kMediaVersion = 2;
 constexpr int kInstanceVersion = 1;
 
@@ -77,6 +80,75 @@ void appendChunk(std::string &out, std::string_view id, std::string_view payload
     out += id;
     appendLittleEndian(out, payload.size(), 8);
     out += payload;
+}
+
+// TUNE's version-1 payload.
+bool tuningWritable(const TuningFiles &t) noexcept
+{
+    return t.scl.size() <= kMaxTuningTextBytes && t.kbm.size() <= kMaxTuningTextBytes &&
+           t.sclName.size() <= kMaxTuningNameBytes && t.kbmName.size() <= kMaxTuningNameBytes;
+}
+
+std::string tuningPayload(const TuningFiles &t)
+{
+    std::string out;
+    appendLittleEndian(out, kTuningVersion, 4);
+    for (const std::string *field : {&t.scl, &t.kbm, &t.sclName, &t.kbmName})
+    {
+        appendLittleEndian(out, field->size(), 4);
+        out += *field;
+    }
+    return out;
+}
+
+// Parses a TUNE payload: false for a version-1 payload with a length past the end, a text or name
+// over its limit or bytes left over. A newer version sets `newer` and reads nothing more. The
+// texts are never parsed here.
+bool parseTuning(std::string_view payload, TuningFiles &out, bool &newer)
+{
+    newer = false;
+    if (payload.size() < 4)
+    {
+        return false;
+    }
+    const uint64_t version = readLittleEndian(payload, 0, 4);
+    if (version > kTuningVersion)
+    {
+        newer = true;
+        return true;
+    }
+    if (version != kTuningVersion)
+    {
+        return false;
+    }
+    std::size_t at = 4;
+    TuningFiles t;
+    const std::array<std::pair<std::string *, std::size_t>, 4> fields{
+        {{&t.scl, kMaxTuningTextBytes},
+         {&t.kbm, kMaxTuningTextBytes},
+         {&t.sclName, kMaxTuningNameBytes},
+         {&t.kbmName, kMaxTuningNameBytes}}};
+    for (const auto &[field, limit] : fields)
+    {
+        if (payload.size() - at < 4)
+        {
+            return false;
+        }
+        const uint64_t length = readLittleEndian(payload, at, 4);
+        at += 4;
+        if (length > limit || length > payload.size() - at)
+        {
+            return false;
+        }
+        field->assign(payload.substr(at, static_cast<std::size_t>(length)));
+        at += static_cast<std::size_t>(length);
+    }
+    if (at != payload.size())
+    {
+        return false;
+    }
+    out = std::move(t);
+    return true;
 }
 
 // An unsigned or signed integer in decimal, never locale-dependent.
@@ -709,9 +781,23 @@ std::string encodeState(const SessionState &state)
     const std::string instance =
         instanceXml(std::clamp(state.memoryCapMiB, kMemoryCapMinMiB, kMemoryCapMaxMiB));
 
+    // TUNE: the files when they're writable, else a newer build's payload as it came.
+    std::string tune;
+    bool writeTune = false;
+    if (state.tuning && tuningWritable(*state.tuning))
+    {
+        tune = tuningPayload(*state.tuning);
+        writeTune = true;
+    }
+    else if (!state.tuning && state.newerTuning)
+    {
+        tune = *state.newerTuning;
+        writeTune = true;
+    }
+
     std::string out;
-    out.reserve(kHeaderBytes + 4 * kChunkHeaderBytes + patch.size() + media.size() + audio.size() +
-                instance.size());
+    out.reserve(kHeaderBytes + 5 * kChunkHeaderBytes + patch.size() + media.size() + audio.size() +
+                instance.size() + tune.size());
     out += kMagic;
     appendLittleEndian(out, kStateContainerVersion, 4);
     appendChunk(out, kPatchChunk, patch);
@@ -721,12 +807,17 @@ std::string encodeState(const SessionState &state)
         appendChunk(out, kAudioChunk, audio);
     }
     appendChunk(out, kInstanceChunk, instance);
+    if (writeTune)
+    {
+        appendChunk(out, kTuningChunk, tune);
+    }
     return out;
 }
 
 bool findStateChunks(std::string_view bytes, std::string_view &patch, std::string_view &media,
                      std::optional<std::string_view> *audio,
-                     std::optional<std::string_view> *instance)
+                     std::optional<std::string_view> *instance,
+                     std::optional<std::string_view> *tune)
 {
     if (bytes.size() < kHeaderBytes || bytes.substr(0, kMagic.size()) != kMagic ||
         readLittleEndian(bytes, kMagic.size(), 4) != kStateContainerVersion)
@@ -737,6 +828,7 @@ bool findStateChunks(std::string_view bytes, std::string_view &patch, std::strin
     std::optional<std::string_view> foundMedia;
     std::optional<std::string_view> foundAudio;
     std::optional<std::string_view> foundInstance;
+    std::optional<std::string_view> foundTune;
     std::size_t at = kHeaderBytes;
     while (at < bytes.size())
     {
@@ -759,12 +851,13 @@ bool findStateChunks(std::string_view bytes, std::string_view &patch, std::strin
                      : id == kMediaChunk    ? &foundMedia
                      : id == kAudioChunk    ? &foundAudio
                      : id == kInstanceChunk ? &foundInstance
+                     : id == kTuningChunk   ? &foundTune
                                             : nullptr;
         if (slot != nullptr)
         {
             if (slot->has_value())
             {
-                return false; // a repeated PTCH, MEDI, AUDI or INST
+                return false; // a repeated PTCH, MEDI, AUDI, INST or TUNE
             }
             *slot = payload;
         }
@@ -782,6 +875,10 @@ bool findStateChunks(std::string_view bytes, std::string_view &patch, std::strin
     if (instance != nullptr)
     {
         *instance = foundInstance;
+    }
+    if (tune != nullptr)
+    {
+        *tune = foundTune;
     }
     return true;
 }
@@ -809,13 +906,31 @@ bool decodeState(std::string_view bytes, Mode mode, SessionState &out,
         std::string_view media;
         std::optional<std::string_view> audio;
         std::optional<std::string_view> instance;
+        std::optional<std::string_view> tune;
         Manifest manifest;
-        if (!findStateChunks(bytes, patch, media, &audio, &instance) ||
+        if (!findStateChunks(bytes, patch, media, &audio, &instance, &tune) ||
             patch.find('\0') != std::string_view::npos ||
             (instance && !parseInstance(*instance, loaded.memoryCapMiB)) ||
             !parseMedia(media, manifest))
         {
             return false;
+        }
+        if (tune)
+        {
+            TuningFiles files;
+            bool newer = false;
+            if (!parseTuning(*tune, files, newer))
+            {
+                return false;
+            }
+            if (newer)
+            {
+                loaded.newerTuning.emplace(*tune);
+            }
+            else
+            {
+                loaded.tuning = std::move(files);
+            }
         }
         // Beside a newer manifest AUDI is kept unread: it carries no version, and a newer build's
         // may be laid out otherwise.
