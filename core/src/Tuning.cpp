@@ -85,8 +85,9 @@ double scaleByPow10(double m, int64_t exponent) noexcept
 }
 
 /// Spec §5.2 step 3: the decimal in `text`, divided by 10^shift (2 turns cents into semitones in
-/// the same single division).
-bool parseDecimalShifted(std::string_view text, int shift, double &out) noexcept
+/// the same single division). `end`, when given, receives the index just past the number.
+bool parseDecimalShifted(std::string_view text, int shift, double &out,
+                         size_t *end = nullptr) noexcept
 {
     GG_FP_CONTRACT_OFF
     if (const auto bang = text.find('!'); bang != std::string_view::npos)
@@ -124,6 +125,10 @@ bool parseDecimalShifted(std::string_view text, int shift, double &out) noexcept
     if (intDigits.empty() && fracDigits.empty())
     {
         return false;
+    }
+    if (end != nullptr)
+    {
+        *end = i;
     }
 
     // N exactly, when it is below 2^53.
@@ -544,6 +549,7 @@ std::expected<TuningTable, std::string> mapKeys(const Tunings::KeyboardMapping &
         }
     }
 
+    // The pin reads past its table here when no key of the 512 is mapped; we refuse first.
     if (std::find(mapped.begin(), mapped.end(), true) == mapped.end())
     {
         return std::unexpected(std::string("the mapping maps no key"));
@@ -608,6 +614,10 @@ std::expected<TuningTable, std::string> mapKeys(const Tunings::KeyboardMapping &
             table.unmapped[k64 >> 6u] |= uint64_t{1} << (k64 & 63u);
         }
     }
+    // Stricter than the pin, on purpose: tuning-library accepts a mapping whose mapped keys all
+    // fall outside 0 to 127 (a 300-key map with one degree mapped, its window at key 200, maps
+    // only keys −100 and 200). Every note-on would then be dropped (T7) and the table would hold
+    // nothing but interpolations, so spec §5.2 step 4 refuses a mapping with no mapped key.
     if (!anyMapped)
     {
         return std::unexpected(std::string("the mapping maps no key"));
@@ -668,13 +678,34 @@ std::string refuseMapping(const Tunings::KeyboardMapping &k, int scaleCount)
     return {};
 }
 
-/// A `.kbm`'s bytes past ASCII outside its comments: tuning-library would pass them to
-/// std::isdigit as negative chars, which is undefined (MSVC's debug CRT asserts).
+/// A byte past ASCII on a line readKBMStream passes to std::isdigit: a negative char there is
+/// undefined (MSVC's debug CRT asserts). Those are its lines before its trailing state: the
+/// seven header values, then the keys while it reads them (as many as the first value says, by
+/// atoi; none when it is 0; every later line when it is negative), never a comment (`!` first)
+/// and never a line that is exactly `x`. Such a line is refused by tuning-library anyway (a byte
+/// past ASCII is no digit), so this refuses nothing it accepts; trailing lines may hold anything.
 bool kbmHasHighByte(std::string_view kbm)
 {
+    int64_t index = 0; // the non-comment line's position: 0 to 6 the header, then the keys
+    int64_t keys = 0;  // the first value, as atoi reads it
     for (const auto line : splitLines(kbm))
     {
         if (!line.empty() && line[0] == '!')
+        {
+            continue;
+        }
+        const int64_t at = index++;
+        if (at == 0)
+        {
+            int64_t v = 0;
+            keys = line == "x" ? -1 : (parseInt64(line, v) ? v : 0);
+        }
+        const bool validated = at < 7 || keys < 0 || at - 7 < keys;
+        if (!validated)
+        {
+            return false; // the trailing state: nothing later is validated
+        }
+        if (line == "x")
         {
             continue;
         }
@@ -764,9 +795,26 @@ std::expected<TuningTable, std::string> fromScala(std::string_view sclIn, std::s
         double semitones = 0.0;
         if (tone.type == Tunings::Tone::kToneCents)
         {
-            if (!parseDecimalShifted(line, 2, semitones) || !std::isfinite(semitones))
+            size_t end = 0;
+            if (!parseDecimalShifted(line, 2, semitones, &end) || !std::isfinite(semitones))
             {
                 return std::unexpected(std::string("a cents value in the scale is out of range"));
+            }
+            // tuning-library's stream reads an exponent (1.2e2 is 120 cents); Scala's form has
+            // none, and our exact parse would read 1.2, so a number followed directly by `e` or
+            // `E`, an optional sign and a digit is refused.
+            if (end < line.size() && (line[end] == 'e' || line[end] == 'E'))
+            {
+                size_t j = end + 1;
+                if (j < line.size() && (line[j] == '+' || line[j] == '-'))
+                {
+                    ++j;
+                }
+                if (j < line.size() && isDigit(line[j]))
+                {
+                    return std::unexpected(
+                        std::string("a cents value in the scale has an exponent"));
+                }
             }
         }
         else

@@ -303,6 +303,10 @@ TEST_CASE("tuning ignores the locale", "[core][tuning]")
     const auto kbm = makeKbm(0, 0, 127, 60, 69, "432.5", 0);
     const auto before = tuningFromScala(scl, kbm);
     REQUIRE(before.has_value());
+    struct RestoreLocale
+    {
+        ~RestoreLocale() { std::setlocale(LC_ALL, "C"); }
+    } restore;
     if (std::setlocale(LC_ALL, "de_DE.UTF-8") == nullptr)
     {
         SUCCEED("no de_DE.UTF-8 locale here; the check is skipped");
@@ -310,7 +314,6 @@ TEST_CASE("tuning ignores the locale", "[core][tuning]")
     }
     REQUIRE(std::strtod("1,5", nullptr) == 1.5); // the comma locale is in effect
     const auto during = tuningFromScala(scl, kbm);
-    std::setlocale(LC_ALL, "C");
     REQUIRE(during.has_value());
     CHECK(sameBytes(*before, *during));
 }
@@ -369,6 +372,77 @@ TEST_CASE("tuning refuses oversized texts, NULs and bad mappings", "[core][tunin
           "the mapping holds a byte past ASCII outside a comment");
     CHECK(tuningFromScala("", "! a comment \xE9 is fine\n" + makeKbm(0, 0, 127, 60, 69, "440.0", 0))
               .has_value());
+}
+
+TEST_CASE("tuning agrees with tuning-library at the edges of its parse", "[core][tuning]")
+{
+    const auto theyAccept = [](const std::string &kbm) {
+        try
+        {
+            (void)Tunings::Tuning(Tunings::evenTemperament12NoteScale(),
+                                  Tunings::parseKBMData(kbm));
+            return true;
+        }
+        catch (const std::exception &)
+        {
+            return false;
+        }
+    };
+
+    SECTION("a byte past ASCII after the keys is trailing data, accepted by both")
+    {
+        const std::string kbm = "0\n0\n127\n60\n69\n440.0\n0\nnot\xE9s\n";
+        REQUIRE(theyAccept(kbm));
+        const auto ours = tuningFromScala("", kbm);
+        REQUIRE(ours.has_value());
+        const auto plain = tuningFromScala("", "0\n0\n127\n60\n69\n440.0\n0\n");
+        REQUIRE(plain.has_value());
+        CHECK(sameBytes(*ours, *plain));
+        // After a one-key map's key line, too.
+        const std::string afterKey = "1\n0\n127\n60\n60\n440\n1\n0\n\xE9t\xE9\n";
+        REQUIRE(theyAccept(afterKey));
+        CHECK(tuningFromScala("", afterKey).has_value());
+    }
+    SECTION("a byte past ASCII in a header or key line is refused by both")
+    {
+        for (const std::string &kbm : {std::string("0\n0\n127\n60\n69\n440.0\xE9\n0\n"),
+                                       std::string("1\n0\n127\n60\n60\n440\n1\n0\xE9\n")})
+        {
+            CAPTURE(kbm);
+            const auto ours = tuningFromScala("", kbm);
+            REQUIRE_FALSE(ours.has_value());
+            CHECK(ours.error() == "the mapping holds a byte past ASCII outside a comment");
+        }
+    }
+    SECTION("a cents value with an exponent is refused")
+    {
+        for (const char *tone : {"1.2e2", "1.2E2", "1.e+2", "100.0e-1"})
+        {
+            CAPTURE(tone);
+            const auto scl = makeScl("exponent", {tone, "2/1"});
+            // tuning-library's stream reads the exponent (120 cents for 1.2e2); our exact parse
+            // doesn't, so rather than read 1.2 we refuse.
+            CHECK(Tunings::parseSCLData(scl).tones[0].cents != 1.2);
+            const auto ours = tuningFromScala(scl, "");
+            REQUIRE_FALSE(ours.has_value());
+            CHECK(ours.error() == "a cents value in the scale has an exponent");
+        }
+        // An `e` that starts trailing text is no exponent.
+        CHECK(tuningFromScala(makeScl("text", {"100.0 east", "2/1"}), "").has_value());
+    }
+    SECTION("a mapping whose 128 keys are all unmapped is refused, stricter than the pin")
+    {
+        // 300 keys, only the first mapped, its window starting at key 200: the mapped keys of the
+        // 512 are -100 and 200, none of 0 to 127. tuning-library accepts it; we refuse (spec §5.2
+        // step 4: a table with no mapped key plays nothing).
+        std::vector<std::string> keys(300, "x");
+        keys[0] = "0";
+        const auto kbm = makeKbm(300, 0, 127, 200, 200, "440.0", 0, keys);
+        REQUIRE(theyAccept(kbm));
+        const auto ours = tuningFromScala("", kbm);
+        REQUIRE_FALSE(ours.has_value());
+        CHECK(ours.error() == "the mapping maps no key");
+    }
 }
 
 TEST_CASE("tuning refuses a nonpositive or nonfinite reference", "[core][tuning]")
@@ -553,10 +627,11 @@ TEST_CASE("the port matches tuning-library over its corpus", "[core][tuning]")
         }
     };
 
+    // Every .scl and .kbm of every folder but bad/, each scale with every mapping (spec §7).
+    std::vector<fs::path> scls;
+    std::vector<fs::path> kbms;
     for (const auto &dir : dirs)
     {
-        std::vector<fs::path> scls;
-        std::vector<fs::path> kbms;
         for (const auto &e : fs::directory_iterator(dir))
         {
             if (!e.is_regular_file())
@@ -572,23 +647,26 @@ TEST_CASE("the port matches tuning-library over its corpus", "[core][tuning]")
                 kbms.push_back(e.path());
             }
         }
-        std::sort(scls.begin(), scls.end());
-        std::sort(kbms.begin(), kbms.end());
+    }
+    std::sort(scls.begin(), scls.end());
+    std::sort(kbms.begin(), kbms.end());
+    const auto name = [&](const fs::path &p) { return fs::relative(p, root).generic_string(); };
+    compare("(12-EDO) alone", "", "");
+    for (const auto &k : kbms)
+    {
+        compare("(12-EDO) + " + name(k), "", readFile(k));
+    }
+    for (const auto &sp : scls)
+    {
+        const auto sclText = readFile(sp);
+        compare(name(sp) + " alone", sclText, "");
         for (const auto &k : kbms)
         {
-            compare("(12-EDO) + " + k.filename().string(), "", readFile(k));
-        }
-        for (const auto &s : scls)
-        {
-            const auto sclText = readFile(s);
-            compare(s.filename().string() + " alone", sclText, "");
-            for (const auto &k : kbms)
-            {
-                compare(s.filename().string() + " + " + k.filename().string(), sclText,
-                        readFile(k));
-            }
+            compare(name(sp) + " + " + name(k), sclText, readFile(k));
         }
     }
+    const int pairs = accepted + refused;
+    CHECK(pairs == static_cast<int>(1 + kbms.size() + scls.size() * (kbms.size() + 1)));
 
     // bad/: each .scl alone and each .kbm over 12-EDO, where we agree with tuning-library. It
     // refuses all but three, whose trailing data it accepts by design (its own alltests.cpp:
@@ -623,8 +701,8 @@ TEST_CASE("the port matches tuning-library over its corpus", "[core][tuning]")
           std::vector<std::string>{"empty-extra.kbm", "extraline-long.kbm", "extraline.scl"});
     CHECK(bad - (accepted - acceptedBefore) >= 7);
 
-    INFO("accepted " << accepted << ", refused " << refused << ", bad " << bad << ", largest "
-                     << largest);
+    INFO("pairs " << pairs << "; with bad/, accepted " << accepted << ", refused " << refused
+                  << ", bad " << bad << ", largest " << largest);
     CHECK(accepted > 100);
     CHECK(bad >= 8);
     CHECK(largest < 1e-9);
