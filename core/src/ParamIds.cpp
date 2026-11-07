@@ -302,6 +302,16 @@ md_t layerMeta(LayerParam p, Mode mode)
             .withDimensionlessFormatting()
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 
+    // M3 sub-project 1's spec §4.1.
+    case LayerParam::Mode:
+        // how the layer plays notes, stepped 0..1 (LayerMode): Cloud, M2's, by default.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 1.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting({{0, "Cloud"}, {1, "Voice"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
     // M2 sub-project 3's spec §6.1, §6.8.
     case LayerParam::Quality:
         // the grains' interpolation tier, stepped 0..2 (gg::Tier): Normal, M1's, by default.
@@ -505,6 +515,29 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
             .withName("Limiter Release")
             .asLog2SecondsRange(-6.643856189774724f, 0.f, -3.321928094887362f)
             .withMilisecondsBelowOneSecond();
+    // M3 sub-project 1's MIDI settings (its spec §4.1), the same in both products and neither
+    // automatable nor modulatable (stepped alone): the instance's, kept by a preset load.
+    at(ParamSlot::Mpe) = base(ParamSlot::Mpe)
+                             .withName("MPE")
+                             .asOnOffBool()
+                             .withDefault(0.0f)
+                             .withFlags(CLAP_PARAM_IS_STEPPED);
+    // semitones, 1..96, 48 by default (the MPE specification's).
+    at(ParamSlot::MpeBendRange) = base(ParamSlot::MpeBendRange)
+                                      .withName("MPE Bend Range")
+                                      .asInt()
+                                      .withRange(1.f, 96.f)
+                                      .withDefault(48.0f)
+                                      .withLinearScaleFormatting("st")
+                                      .withFlags(CLAP_PARAM_IS_STEPPED);
+    // semitones, 0..24, 2 by default.
+    at(ParamSlot::BendRange) = base(ParamSlot::BendRange)
+                                   .withName("Bend Range")
+                                   .asInt()
+                                   .withRange(0.f, 24.f)
+                                   .withDefault(2.0f)
+                                   .withLinearScaleFormatting("st")
+                                   .withFlags(CLAP_PARAM_IS_STEPPED);
     return t;
 }
 } // namespace

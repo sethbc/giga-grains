@@ -108,7 +108,7 @@ void keepRingParams(const ParamValues &current, ParamValues &loaded) noexcept
 {
     for (size_t s = 0; s < kParamCount; ++s)
     {
-        if (isRingParam(static_cast<ParamSlot>(s)))
+        if (isRingParam(static_cast<ParamSlot>(s)) || isMidiSetting(static_cast<ParamSlot>(s)))
         {
             loaded[s] = current[s];
         }

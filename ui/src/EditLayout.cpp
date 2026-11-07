@@ -48,6 +48,8 @@ constexpr Row fx(ParamSlot slot, Panel panel, uint8_t order)
 constexpr std::array kRows{
     // Source: the kind (the sample strip is the Source panel's own, not a parameter's).
     edit(ParamSlot::Source, Panel::Source, 0),
+    // Mode (M3 sub-project 1, the Voice slice): beside Source, in the same row of the panel.
+    edit(ParamSlot::Mode, Panel::Source, 1),
     // Ring: M2 sub-project 2's ring parameters, in the Source panel from its merge (ruling SP-M7,
     // after VW-T19a) until PR 2 gave them a panel of their own.
     edit(ParamSlot::RingLength, Panel::Ring, 0),
@@ -140,6 +142,10 @@ constexpr std::array kRows{
     fx(ParamSlot::LimiterMode, Panel::Limiter, 0),
     fx(ParamSlot::LimiterCeiling, Panel::Limiter, 1),
     fx(ParamSlot::LimiterRelease, Panel::Limiter, 2),
+    // The MIDI settings (M3 sub-project 1's spec §4.1): the FX view's last panel.
+    fx(ParamSlot::Mpe, Panel::Midi, 0),
+    fx(ParamSlot::MpeBendRange, Panel::Midi, 1),
+    fx(ParamSlot::BendRange, Panel::Midi, 2),
     // The Perform view: the strip's On switches (Layer B On to D On through A's), the pad, the
     // macros.
     Row{ParamSlot::LayerAOn, View::Perform, Panel::Strip, 0, kNone},
@@ -156,7 +162,7 @@ constexpr std::array kRows{
 };
 
 // One row per layer parameter, per-layer global (Level, Layer On) and other global: 62 + 2 + 27.
-static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 27);
+static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 30);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer
 /// parameter or a per-layer global; the slot itself and layer 0 for any other.
@@ -298,6 +304,8 @@ const char *panelName(Panel panel) noexcept
         return "Delay";
     case Panel::Limiter:
         return "Limiter";
+    case Panel::Midi:
+        return "MIDI";
     case Panel::Count:
         break;
     }

@@ -22,7 +22,8 @@ struct ParamMetaData;
 /// M2's layers (M2 sub-project 1's spec §6.9): 48 parameters per layer, A to D, and nine new
 /// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), M2 sub-project 3's
 /// Quality, per layer, and Budget (its spec §6.8), and the Extremes' eight per layer and eight
-/// globals (M2 sub-project 4's spec §6.7): 62 per layer and 283 in all. Their slots, CLAP IDs and
+/// globals (M2 sub-project 4's spec §6.7), and M3 sub-project 1's Mode per layer and three MIDI
+/// settings (its spec §4.1): 63 per layer and 290 in all. Their slots, CLAP IDs and
 /// metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
@@ -36,23 +37,23 @@ enum class Mode
     Fx,         ///< The input feeds the live ring and the dry side of the Mix.
 };
 
-/// The 62 parameters of a layer (M2 sub-project 1's spec §6.9, M2 sub-project 2's five ring
-/// parameters in its reserved block, its spec §6.3, M2 sub-project 3's Quality in its, its spec
-/// §6.8, and sub-project 4's eight in its, its spec §6.7), one row each, in index order:
-/// `X(name, index, "Display Name")`. A layer parameter's CLAP ID is `(layer + 1) << 16 | index`,
-/// the same index in each of the scopes 1 to 4, and it is displayed with its layer's letter ("A
-/// Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot entries and their IDs are
-/// generated from it, so no name is typed four times. Append-only, as the IDs are. A wave-2
-/// sub-project (M2 program design §7.1) appends `X(Name, 0x4N, "Name")`, its index inside its
-/// reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list GG_LAYER_PARAMS_M2_<name> to
-/// GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 2's GG_LAYER_PARAMS_M2_SOURCES and
-/// sub-project 3's GG_LAYER_PARAMS_M2_ENGINE are,
-/// and its index to the reserved-block static_assert below. The index column must stay strictly
-/// ascending (validIndexColumn): a list whose block lies below 0x50 goes between
-/// GG_LAYER_PARAMS_M2 and GG_LAYER_PARAMS_M2_ENGINE in both macros, not after the latter. Rows stay
-/// in index order, and an index left unused stays unused: an index is read from this column
-/// (layerParamIndex, slotForId), never from a row's position. The GG_LAYER_PARAMS* macros stay
-/// defined on purpose: ParamIds.cpp and tools/gg-render/RenderSpec.cpp expand them too.
+/// The 63 parameters of a layer (M3 sub-project 1's Mode, its spec §4.1; M2 sub-project 1's spec
+/// §6.9, M2 sub-project 2's five ring parameters in its reserved block, its spec §6.3, M2
+/// sub-project 3's Quality in its, its spec §6.8, and sub-project 4's eight in its, its spec §6.7),
+/// one row each, in index order: `X(name, index, "Display Name")`. A layer parameter's CLAP ID is
+/// `(layer + 1) << 16 | index`, the same index in each of the scopes 1 to 4, and it is displayed
+/// with its layer's letter ("A Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot
+/// entries and their IDs are generated from it, so no name is typed four times. Append-only, as the
+/// IDs are. A wave-2 sub-project (M2 program design §7.1) appends `X(Name, 0x4N, "Name")`, its
+/// index inside its reserved block, at the end of GG_LAYER_PARAMS_M2, or adds a list
+/// GG_LAYER_PARAMS_M2_<name> to GG_LAYER_PARAMS and GG_LAYER_PARAMS_SINCE_M1, as sub-project 2's
+/// GG_LAYER_PARAMS_M2_SOURCES and sub-project 3's GG_LAYER_PARAMS_M2_ENGINE are, and its index to
+/// the reserved-block static_assert below. The index column must stay strictly ascending
+/// (validIndexColumn): a list whose block lies below 0x50 goes between GG_LAYER_PARAMS_M2 and
+/// GG_LAYER_PARAMS_M2_ENGINE in both macros, not after the latter. Rows stay in index order, and an
+/// index left unused stays unused: an index is read from this column (layerParamIndex, slotForId),
+/// never from a row's position. The GG_LAYER_PARAMS* macros stay defined on purpose: ParamIds.cpp
+/// and tools/gg-render/RenderSpec.cpp expand them too.
 #define GG_LAYER_PARAMS_M1(X)                                                                      \
     X(Position, 0x01, "Position")                                                                  \
     X(Size, 0x02, "Size")                                                                          \
@@ -103,6 +104,9 @@ enum class Mode
     X(Step14, 0x2E, "Step 14")                                                                     \
     X(Step15, 0x2F, "Step 15")                                                                     \
     X(Step16, 0x30, "Step 16")
+/// M3 sub-project 1's (the Voice slice; its spec §4.1): a layer's Mode, 0 Cloud or 1 Voice, in the
+/// first free index (kNextFreeLayerIndex was 0x31) between M2's rows and the reserved blocks.
+#define GG_LAYER_PARAMS_M3(X) X(Mode, 0x31, "Mode")
 /// M2 sub-project 2's (Sources and persistence; its spec §6.3), in its reserved block 0x40-0x4F;
 /// 0x45-0x4F stay unused.
 #define GG_LAYER_PARAMS_M2_SOURCES(X)                                                              \
@@ -128,10 +132,12 @@ enum class Mode
 #define GG_LAYER_PARAMS(X)                                                                         \
     GG_LAYER_PARAMS_M1(X)                                                                          \
     GG_LAYER_PARAMS_M2(X)                                                                          \
+    GG_LAYER_PARAMS_M3(X)                                                                          \
     GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
 #define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
     GG_LAYER_PARAMS_M2(X)                                                                          \
+    GG_LAYER_PARAMS_M3(X)                                                                          \
     GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
@@ -148,7 +154,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 62;
+inline constexpr size_t kLayerParamCount = 63;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -224,7 +230,7 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// The 28 M1 slots come first, in their order (layer A's eleven M1 parameters among them, under
 /// their M1 names), then layer A's 51 new parameters (M2 sub-project 1's 37, sub-project 2's five,
 /// sub-project 3's Quality and sub-project 4's eight), then layers B, C and D in full
-/// (`B_Position` ... `D_Bus2Resonance`, 62 each, in row order), then the nine new globals (M2
+/// (`B_Position` ... `D_Bus2Resonance`, 63 each, in row order), then the nine new globals (M2
 /// sub-project 1's spec §6.9), Budget (M2 sub-project 3's spec §6.8) and the Extremes' eight
 /// globals (M2 sub-project 4's spec §6.7). A layer row appended to GG_LAYER_PARAMS moves the later
 /// layers' slots, never an ID.
@@ -294,6 +300,11 @@ enum class ParamSlot : uint16_t
     LimiterMode,
     LimiterCeiling,
     LimiterRelease,
+    // M3 sub-project 1's MIDI settings (its spec §4.1): neither automatable nor modulatable, kept
+    // by a preset load (isMidiSetting).
+    Mpe,
+    MpeBendRange,
+    BendRange,
     Count
 };
 
@@ -346,7 +357,7 @@ constexpr bool isMacro(ParamSlot slot) noexcept
 /// The next free index below the reserved blocks in every layer scope (1 to 4) and in scope 0 (M2
 /// sub-project 1's spec §6.9): a new parameter outside wave 2's blocks takes it, and a test pins
 /// each as one past the table's largest index below kReservedIndexBegin.
-inline constexpr uint32_t kNextFreeLayerIndex = 0x31, kNextFreeGlobalIndex = 0x22;
+inline constexpr uint32_t kNextFreeLayerIndex = 0x32, kNextFreeGlobalIndex = 0x25;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
 /// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
@@ -397,7 +408,7 @@ enum class LfoShape : uint8_t
 
 namespace detail
 {
-/// The first slot of layer A's new parameters, and of layer B's 62.
+/// The first slot of layer A's new parameters, and of layer B's 63.
 inline constexpr size_t kLayerANewFirst = static_cast<size_t>(ParamSlot::Source);
 inline constexpr size_t kLayerBFirst = static_cast<size_t>(ParamSlot::B_Position);
 inline constexpr size_t kLayersEnd = static_cast<size_t>(ParamSlot::MorphX);
@@ -480,6 +491,10 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x000065, // LimiterMode
     0x000066, // LimiterCeiling
     0x000067, // LimiterRelease
+    // M3 sub-project 1's MIDI settings (its spec §4.1), the next free scope-0 indices.
+    0x000022, // Mpe
+    0x000023, // MpeBendRange
+    0x000024, // BendRange
 };
 
 /// Scope 0's slots by index, 0x00 to 0x7F, so that wave 2's reserved blocks work as in the layer
@@ -617,6 +632,15 @@ constexpr bool isRingParam(ParamSlot slot) noexcept
     return ref && (ref->param == LayerParam::RingLength || ref->param == LayerParam::Loop ||
                    ref->param == LayerParam::LoopLength || ref->param == LayerParam::Overdub ||
                    ref->param == LayerParam::Splice);
+}
+
+/// Whether `slot` is one of the three MIDI settings (M3 sub-project 1's spec §4.1: MPE, MPE Bend
+/// Range, Bend Range): the instance's, which a preset load keeps and Mutate locks, and no mod route
+/// targets. False for ParamSlot::Count.
+constexpr bool isMidiSetting(ParamSlot slot) noexcept
+{
+    return slot == ParamSlot::Mpe || slot == ParamSlot::MpeBendRange ||
+           slot == ParamSlot::BendRange;
 }
 
 /// Layer `layer`'s Level (0 to 3: Level, Level B, Level C, Level D); ParamSlot::Count out of

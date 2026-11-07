@@ -1145,6 +1145,37 @@ TEST_CASE("a preset load keeps each layer's ring parameters", "[plugin][preset]"
     CHECK(plugin.impl().media().status(0).find("resizing") == std::string::npos);
 }
 
+TEST_CASE("preset load keeps MPE and the bend ranges", "[plugin][preset]")
+{
+    // M3 sub-project 1's spec §4.1 (program P2): MPE, MPE Bend Range and Bend Range are the
+    // instance's, kept by a preset file load as the ring parameters are, and a change to one
+    // doesn't mark the loaded preset edited. The preset's other values apply.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    SessionState session = gg::core::initState(mode);
+    session.values[at(ParamSlot::Mpe)] = 1.0f;
+    session.values[at(ParamSlot::MpeBendRange)] = 24.0f;
+    session.values[at(ParamSlot::BendRange)] = 7.0f;
+    SessionState preset = fixtureState(mode);
+    preset.values[at(ParamSlot::Mpe)] = 0.0f;
+    preset.values[at(ParamSlot::MpeBendRange)] = 12.0f;
+    preset.values[at(ParamSlot::BendRange)] = 12.0f;
+    const std::string location =
+        utf8(gg::test::writePresetFile("midi-" + tagOf(mode), infoFor(mode), preset));
+
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    CHECK(plugin.value(paramId(ParamSlot::Mpe)) == 1.0);
+    CHECK(plugin.value(paramId(ParamSlot::MpeBendRange)) == 24.0);
+    CHECK(plugin.value(paramId(ParamSlot::BendRange)) == 7.0);
+    CHECK(plugin.value(paramId(ParamSlot::Size)) ==
+          static_cast<double>(preset.values[at(ParamSlot::Size)]));
+    CHECK_FALSE(plugin.impl().presetEdited());
+}
+
 // R4's active params.flush path (the residuals re-review's (d)): a load taken by params.flush
 // while active, not by process(), applies its routes before its values too, so FR-8's Freeze
 // arming sees the new routes, as the inactive load does (the test above, through process()).

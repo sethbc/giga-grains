@@ -284,9 +284,13 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         ParamSlot::LimiterMode,
         ParamSlot::LimiterCeiling,
         ParamSlot::LimiterRelease,
+        ParamSlot::Mpe,
+        ParamSlot::MpeBendRange,
+        ParamSlot::BendRange,
     };
-    for (const LayerParam p : {LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
-                               LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
+    for (const LayerParam p :
+         {LayerParam::Mode, LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
+          LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
     {
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
@@ -298,7 +302,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 62);
+    REQUIRE(expectedStructural.count() == 62 + 4 + 3);
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -323,7 +327,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 168);
+    CHECK(bOn.count() == 175);
     LockSet unlocked = ~bOn;
     CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
@@ -364,7 +368,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 221);
+    CHECK(bOff.count() == 228);
     CHECK((bOff & ~bOn).count() == 53);
 
     // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".

@@ -127,11 +127,12 @@ constexpr bool isModulatorControl(LayerParam p) noexcept
 /// Whether `target` may be a route's target (spec §6.8): any parameter but the macros, the
 /// modulators' own controls (isModulatorControl, in every layer) and Ring Length, which is
 /// neither automatable nor modulatable (M2 sub-project 2's spec §6.3: the main thread resizes the
-/// ring from its base value, so a route to it would do nothing). Every other layer parameter is
-/// one, wave 2's included (the program manager's ruling PM-1, 2026-10-30; M2 sub-project 3's
-/// spec §6.1). A per-layer kind is named by layer A's slot (Level and Layer A On for the per-layer
-/// globals), so layers B to D's slots, Level B to D and Layer B to D On are refused: a route
-/// reaches them through its targetLayer.
+/// ring from its base value, so a route to it would do nothing), nor Mode or the three MIDI
+/// settings (M3 sub-project 1's spec §4.1: structure and the instance's, not sound). Every other
+/// layer parameter is one, wave 2's included (the program manager's ruling PM-1, 2026-10-30; M2
+/// sub-project 3's spec §6.1). A per-layer kind is named by layer A's slot (Level and Layer A On
+/// for the per-layer globals), so layers B to D's slots, Level B to D and Layer B to D On are
+/// refused: a route reaches them through its targetLayer.
 constexpr bool isValidTarget(ParamSlot target) noexcept
 {
     if (static_cast<size_t>(target) >= kParamCount || isMacro(target))
@@ -141,7 +142,11 @@ constexpr bool isValidTarget(ParamSlot target) noexcept
     if (const auto ref = layerOf(target))
     {
         return ref->layer == 0 && !isModulatorControl(ref->param) &&
-               ref->param != LayerParam::RingLength;
+               ref->param != LayerParam::RingLength && ref->param != LayerParam::Mode;
+    }
+    if (isMidiSetting(target))
+    {
+        return false;
     }
     return !perLayerGlobalLayer(target) || target == ParamSlot::Level ||
            target == ParamSlot::LayerAOn;
