@@ -244,13 +244,15 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
     // elements, 2,047 bytes, to sub-project 2's merge's (13,048, 6e2115f1...; 13,157,
     // 5573ae15...). Retaken once more for M3 sub-project 1's seven parameters (A to D Mode, MPE,
-    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...).
+    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...), and
+    // once more for M3 sub-project 3b's twelve (A to D Scan Speed, Edge and Track), 621 bytes
+    // (15,447, 252fd91e...; 15,556, 79706b53...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 15447);
-    CHECK(sha256Of(ptch) == "252fd91eccd37cf3fed3ff550e00a6b11feac948914c80b7dee970a986eb11bc");
-    CHECK(session.size() == 15556);
-    CHECK(sha256Of(session) == "79706b53e86d6f2390d709fab76b219dc93e5fab3cdedca751151027d3182f59");
+    CHECK(ptch.size() == 16068);
+    CHECK(sha256Of(ptch) == "0eefa7889b64cae02bde8c933d1edd70824958a11ba2c0dd37736ef719045e36");
+    CHECK(session.size() == 16177);
+    CHECK(sha256Of(session) == "c0e794946c6b9d5e3bbf972294dcedcf6390859b47a3ea6cd8d05ac6a5fd871a");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -522,12 +524,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 17655);
-    CHECK(sha256Of(fxBytes) == "5337a57bc546f56960c233796bf1c6cef26547c632db1563054ad02fc36e1355");
+    CHECK(fxBytes.size() == 18276);
+    CHECK(sha256Of(fxBytes) == "9b40d46079751e771ff5564dd2d37053cdf814c12b40716dce0b766997d944fd");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 17656);
+    CHECK(instBytes.size() == 18277);
     CHECK(sha256Of(instBytes) ==
-          "81fb0c5209bb7ff0fd75b80cfba4aa1164decd13c13cca6f6f01758f9e92df2e");
+          "1e313f780b9fac0c3882dce9d752fe4d919cd6f62d61b2766ec8da450c7293e4");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());

@@ -24,6 +24,7 @@
 
 #include "Palette.h"
 #include "ParamValue.h"
+#include "gg/core/ParamMap.h"
 #include "gg/ui/LayerColors.h"
 
 namespace gg::ui
@@ -73,8 +74,32 @@ struct ContinuousSource final : jdata::Continuous
     float getDefaultValue() const override { return value.meta().defaultVal; }
     float getMin() const override { return value.meta().minVal; }
     float getMax() const override { return value.meta().maxVal; }
+    // Typed entry: Scan Speed reads times real time, as the plugin's text does (the base class
+    // would take the raw value, so "1x" would be 8.00x).
+    void setValueAsString(const std::string &s) override { (void)trySetValueAsString(s); }
+    bool trySetValueAsString(const std::string &s) override
+    {
+        if (!gg::core::isScanSpeed(value.slot()))
+        {
+            const float v =
+                std::clamp(static_cast<float>(std::atof(s.c_str())), getMin(), getMax());
+            setValueFromGUI(v);
+            return true;
+        }
+        const auto v = gg::core::scanSpeedFromText(s);
+        if (!v.has_value())
+        {
+            return false;
+        }
+        setValueFromGUI(*v);
+        return true;
+    }
     std::string getValueAsStringFor(float f) const override
     {
+        if (gg::core::isScanSpeed(value.slot()))
+        {
+            return gg::core::scanSpeedText(f); // times real time (M3 sub-project 3b)
+        }
         return value.meta().valueToString(f).value_or(std::string());
     }
 
@@ -410,6 +435,10 @@ juce::String ParamControl::tooltip() const
 
 juce::String ParamControl::shownText() const
 {
+    if (gg::core::isScanSpeed(impl_->value.slot()))
+    {
+        return juce::String::fromUTF8(gg::core::scanSpeedText(impl_->value.value()).c_str());
+    }
     const auto text = impl_->value.meta().valueToString(impl_->value.value());
     return juce::String::fromUTF8(text ? text->c_str() : "");
 }

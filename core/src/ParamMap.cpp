@@ -7,9 +7,15 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <optional>
+#include <string>
+#include <system_error>
 
 #include "gg/core/MathDet.h"
 
@@ -81,6 +87,94 @@ SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept
 LayerMode layerModeOf(float value) noexcept
 {
     return value >= 0.5f ? LayerMode::Voice : LayerMode::Cloud;
+}
+
+double scanSpeedOf(float v) noexcept
+{
+    if (!(v == v))
+    {
+        return 0.0;
+    }
+    const double c = static_cast<double>(std::clamp(v, -1.0f, 1.0f));
+    return 8.0 * c * c * c;
+}
+
+std::string scanSpeedText(float v)
+{
+    const double speed = scanSpeedOf(v);
+    if (speed == 0.0)
+    {
+        return "0.00x";
+    }
+    // Three significant digits: the decimals follow the magnitude, read from the value rounded
+    // to three digits ("%.2e") so that 0.99996 shows "1.00x", not "1.000x".
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.2e", std::fabs(speed));
+    const int exponent = std::atoi(std::strchr(buf, 'e') + 1);
+    const int decimals = std::max(2, 2 - exponent);
+    if (decimals > 24)
+    {
+        return "0.00x"; // too small to show: no "-0.000...0x"
+    }
+    std::snprintf(buf, sizeof buf, "%.*fx", decimals, speed);
+    return buf;
+}
+
+std::optional<float> scanSpeedFromText(std::string_view text)
+{
+    auto blank = [](char c) { return c == ' ' || c == '\t'; };
+    while (!text.empty() && blank(text.front()))
+    {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && blank(text.back()))
+    {
+        text.remove_suffix(1);
+    }
+    if (!text.empty() && (text.back() == 'x' || text.back() == 'X'))
+    {
+        text.remove_suffix(1);
+        while (!text.empty() && blank(text.back()))
+        {
+            text.remove_suffix(1);
+        }
+    }
+    if (!text.empty() && text.front() == '+')
+    {
+        text.remove_prefix(1);
+    }
+    double speed = 0.0;
+    const char *const end = text.data() + text.size();
+    const auto r = std::from_chars(text.data(), end, speed);
+    if (text.empty() || r.ec == std::errc::invalid_argument || r.ptr != end ||
+        !std::isfinite(speed))
+    {
+        return std::nullopt;
+    }
+    if (r.ec == std::errc::result_out_of_range)
+    {
+        // Out of range is an overflow or an underflow: a huge magnitude clamps, a tiny one is 0.
+        const std::size_t e = text.find_first_of("eE");
+        bool overflow = false;
+        if (e != std::string_view::npos)
+        {
+            overflow = e + 1 < text.size() && text[e + 1] != '-';
+        }
+        else
+        {
+            const std::size_t point = text.find('.');
+            const std::string_view whole = text.substr(0, point);
+            overflow = whole.find_first_of("123456789") != std::string_view::npos;
+        }
+        return overflow ? (text.front() == '-' ? -1.0f : 1.0f) : 0.0f;
+    }
+    return std::clamp(static_cast<float>(std::cbrt(speed / 8.0)), -1.0f, 1.0f);
+}
+
+bool isScanSpeed(ParamSlot slot) noexcept
+{
+    const auto ref = layerOf(slot);
+    return ref && ref->param == LayerParam::ScanSpeed;
 }
 
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept

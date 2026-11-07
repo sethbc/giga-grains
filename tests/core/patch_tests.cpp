@@ -7,7 +7,7 @@
 // §6.9: 48 per layer, A to D, and nine globals; 218 in all), M2 sub-project 2's five ring
 // parameters per layer (its spec §6.3), M2 sub-project 3's Quality, per layer, and Budget (its
 // spec §6.8), and the Extremes' eight per layer and eight globals (M2 sub-project 4's spec §6.7;
-// and M3 sub-project 1's Mode per layer and three MIDI globals; 63 per layer, 290 in all), and
+// and M3 sub-project 1's Mode per layer and three MIDI globals; 66 per layer, 302 in all), and
 // their versioned XML state, through gg-core's public API (gg/core/ParamIds.h,
 // gg/core/PatchState.h) and its tinyxml-free internal core/src/PatchXml.h, for each product's patch
 // XML. This file never includes sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges
@@ -299,8 +299,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 290);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 290>>);
+    STATIC_REQUIRE(kParamCount == 302);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 302>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -367,7 +367,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3);
+        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3 + 4 * 2);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -409,7 +409,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     for (clap_id unknown :
          {0x000000u, 0x00000Au, 0x000010u, 0x000025u,      0x010000u, 0x010032u, 0x020000u,
           0x020032u, 0x040032u, 0x050001u, 0x000040u,      0x01004Fu, 0x010045u, 0x040045u,
-          0x000041u, 0x000051u, 0x010051u, 0x04005Fu,      0x030068u, 0x04007Fu, 0x000068u,
+          0x000041u, 0x000051u, 0x010051u, 0x04005Fu,      0x03006Bu, 0x04007Fu, 0x000068u,
           0x050050u, 0x050060u, 0x777777u, CLAP_INVALID_ID})
     {
         INFO("id " << unknown);
@@ -466,11 +466,11 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     {
         INFO("scope " << scope);
         CHECK(reservedUsed[scope] ==
-              (scope == 0
-                   ? std::vector<uint32_t>{0x50u, 0x60u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u,
-                                           0x67u}
-                   : std::vector<uint32_t>{0x40u, 0x41u, 0x42u, 0x43u, 0x44u, 0x50u, 0x60u, 0x61u,
-                                           0x62u, 0x63u, 0x64u, 0x65u, 0x66u, 0x67u}));
+              (scope == 0 ? std::vector<uint32_t>{0x50u, 0x60u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u,
+                                                  0x66u, 0x67u}
+                          : std::vector<uint32_t>{0x40u, 0x41u, 0x42u, 0x43u, 0x44u, 0x50u, 0x60u,
+                                                  0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u, 0x67u,
+                                                  0x68u, 0x69u, 0x6Au}));
     }
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::Quality) == 0x010050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::B_Quality) == 0x020050u);
@@ -482,7 +482,8 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(static_cast<size_t>(ParamSlot::LimiterRelease) == kParamCount - 4);
 
     // M2 sub-project 4's block (its spec §6.7): 0x60 to 0x67 are used in every scope, each the
-    // table's parameter, and 0x68 to 0x7F are free in every scope.
+    // table's parameter, and 0x68 to 0x6A are the playhead's in the layer scopes (M3 sub-project
+    // 3b), and the rest to 0x7F are free.
     for (clap_id scope = 0; scope <= 4; ++scope)
     {
         for (clap_id index = 0x60; index <= 0x7F; ++index)
@@ -490,7 +491,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
             const clap_id id = scope << 16 | index;
             INFO("id " << id);
             const auto slot = gg::core::slotForId(id);
-            CHECK(slot.has_value() == (index <= 0x67));
+            CHECK(slot.has_value() == (index <= 0x67 || (scope >= 1 && index <= 0x6A)));
             if (slot)
             {
                 CHECK(kTable[static_cast<size_t>(*slot)].id == id);
@@ -502,7 +503,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 63);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 66);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
@@ -724,8 +725,9 @@ TEST_CASE("the next free indices are unchanged", "[core]")
         {
             const clap_id id = scope << 16 | index;
             INFO("id " << id);
-            const bool ours =
-                (scope >= 1 && index <= 0x44) || index == 0x50 || (index >= 0x60 && index <= 0x67);
+            const bool ours = (scope >= 1 && index <= 0x44) || index == 0x50 ||
+                              (index >= 0x60 && index <= 0x67) ||
+                              (scope >= 1 && index >= 0x68 && index <= 0x6A);
             CHECK(gg::core::slotForId(id).has_value() == ours);
         }
     }

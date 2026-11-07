@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 #include <clap/clap.h>
@@ -293,6 +294,19 @@ std::string valueToText(const PluginUnderTest &plugin, clap_id id, double value)
 }
 } // namespace
 
+TEST_CASE("the plugin shows scan speed in times real time", "[plugin]")
+{
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    CHECK(valueToText(plugin, 0x010068, 0.5) == "1.00x");
+    CHECK(valueToText(plugin, 0x040068, -0.25) == "-0.125x");
+    double back = 0.0;
+    REQUIRE(plugin.params()->text_to_value(plugin.clap(), 0x010068, "-1x", &back));
+    CHECK_THAT(back, Catch::Matchers::WithinAbs(-0.5, 1e-6));
+    CHECK_FALSE(plugin.params()->text_to_value(plugin.clap(), 0x010068, "fast", &back));
+}
+
 TEST_CASE("plugin exposes every param", "[plugin]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);
@@ -303,7 +317,7 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     const auto *params = plugin.params();
     REQUIRE(params != nullptr);
     REQUIRE(params->count(plugin.clap()) == kParamCount);
-    REQUIRE(params->count(plugin.clap()) == 290);
+    REQUIRE(params->count(plugin.clap()) == 302);
 
     for (uint32_t i = 0; i < kParamCount; ++i)
     {

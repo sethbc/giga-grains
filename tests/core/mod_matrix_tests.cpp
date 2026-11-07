@@ -523,9 +523,9 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     }
     // Mode and the three MIDI settings (M3 sub-project 1) are no target: none is counted here.
     // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length),
-    // sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven but
-    // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
-    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8);
+    // sub-project 3's Quality, the Extremes' 8 and the playhead's 3, Level and Layer A On, Mix,
+    // Space's seven but Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
+    CHECK(valid == 14 + 4 + 1 + 8 + 3 + 2 + 1 + 7 + 2 + 1 + 8);
     CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
     CHECK(isLayerTarget(ParamSlot::Position));

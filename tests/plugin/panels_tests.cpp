@@ -689,6 +689,28 @@ TEST_CASE("mod mode drags the Edit view's rings and nothing else", "[plugin]")
     handler->getValueInterface()->setValue(0.5);
     CHECK(recording.kinds() == "bve");
 }
+TEST_CASE("typing a speed into Scan Speed's control reads times real time", "[plugin]")
+{
+    const juce::ScopedJuceInitialiser_GUI juceGui;
+    RecordingContext recording(gg::core::Mode::Fx);
+    gg::ui::EditView view(recording.context);
+    view.setSize(900, 500);
+    view.refresh();
+    auto *scan = dynamic_cast<gg::ui::ParamControl *>(
+        findDeep(view, controlId(ParamSlot::ScanSpeed).toRawUTF8()));
+    REQUIRE(scan != nullptr);
+    auto *knob = childOfType<sst::jucegui::components::Knob>(*scan);
+    REQUIRE(knob != nullptr);
+    const std::unique_ptr<juce::AccessibilityHandler> handler(knob->createAccessibilityHandler());
+    REQUIRE(handler != nullptr);
+    REQUIRE(handler->getValueInterface() != nullptr);
+    handler->getValueInterface()->setValueAsString("1x");
+    CHECK(scan->shownValue() == 0.5f);
+    CHECK(scan->shownText() == "1.00x");
+    handler->getValueInterface()->setValueAsString("-1");
+    CHECK(scan->shownValue() == -0.5f);
+}
+
 TEST_CASE("the Filter panel puts each bus on its own line", "[plugin]")
 {
     const juce::ScopedJuceInitialiser_GUI juceGui;
