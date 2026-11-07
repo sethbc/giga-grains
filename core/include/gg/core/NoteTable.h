@@ -26,7 +26,9 @@ namespace gg::core
 ///   channel and key both given releases the OLDEST held note on that pair (row 184); with
 ///   either −1 it releases every held note that matches, as the M2 held set did (ruling R15).
 ///   AllOff (CC 123, ruling R14) releases every note on its channel, or every note for −1,
-///   pedal-held ones too (a panic).
+///   pedal-held ones too (a panic). A Choke addresses notes as an Off does, but every note it
+///   matches, Held, PedalHeld or Released (by ID: the note with it), becomes Released and
+///   `choked` at once, the pedal ignored; a Held or PedalHeld one is listed as released.
 /// - **The pedal.** Sustain >= 0.5 is down, per channel. While a channel's pedal is down, an
 ///   Off moves a Held note to PedalHeld; pedal up moves the channel's PedalHeld notes to
 ///   Released. With MPE On the master channel (0) pedal acts on every channel: pedalDown(ch,
@@ -42,13 +44,17 @@ namespace gg::core
 ///   startedThisGroup() and releasedThisGroup() list, in event order, the slots of the Ons and of
 ///   the Held/PedalHeld -> Released moves since beginGroup(), so a note that starts and ends in
 ///   one group is in both. (A Held -> PedalHeld move is not a release.) Each list holds at most
-///   kMaxNotes entries; later ones are not listed.
+///   kMaxNotes entries; later ones are not listed. An On that replaces a note (a full table)
+///   first drops its slot from both lists, so a slot is listed once, for the note it holds.
 /// - **Expression.** Per channel: bend (the raw 0..1 value of PitchBend mapped to −1..1 as
 ///   (v − 0.5) × 2, which is not exact at center for a 14-bit value: a later task derives the
 ///   exact one, spec §3a B7), pressure (ControlKind::Aftertouch), timbre (Timbre, CC 74 / 127);
 ///   all clamped to 0..1 but the bend. A channel's value applies to its notes now and to a note
 ///   that starts later (note_table_bend_before_on); with MPE On the master channel (0) values
-///   are kept for channelBend/channelPressure/channelTimbre but not copied into notes. A note's
+///   are kept for channelBend/channelPressure/channelTimbre but not copied into notes, and a
+///   member channel's reach only its Held and PedalHeld notes: a Released note keeps its last
+///   values, so a sender reusing the channel for a new note doesn't move a release. With MPE Off
+///   they reach Released notes too (a keyboard's wheel still moves a release). A note's
 ///   pressure follows its channel's until it has had a PolyPressure (then hadPolyPressure and
 ///   only polyphonic pressure moves it). Per note, by ID, else by (channel, key) among held
 ///   notes: tuning (−120..120 semitones), pressure (0..1), timbre (0..1), volume (0..4).
@@ -81,6 +87,7 @@ class NoteTable
         float tuning{0.0f};   ///< Semitones, −120..120.
         float volume{1.0f};   ///< 0..4.
         bool hadPolyPressure{false};
+        bool choked{false}; ///< Ended by a Choke: its voices finish at once, with no release.
         uint64_t ordinal{0};
     };
 
@@ -136,6 +143,14 @@ class NoteTable
     void setPedal(int ch, bool down) noexcept;
     void unpedal() noexcept;
     bool channelValuesCopied(int ch) const noexcept { return !(mpe_ && ch == 0); }
+    /// Whether a channel value reaches note `n` now: not a Free one, nor with MPE On a
+    /// Released one.
+    bool followsChannel(const Note &n) const noexcept
+    {
+        return n.state != State::Free && !(mpe_ && n.state == State::Released);
+    }
+    void choke(size_t i) noexcept;
+    void unlist(size_t i) noexcept;
 
     std::array<Note, kMaxNotes> notes_{};
     std::array<float, kChannels> bend_{};
