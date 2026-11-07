@@ -45,16 +45,20 @@ AGPL-3.0-or-later.
   `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the
   consistency pass, the carry-over burned down to 15 open rows, the from-scratch build setup, the
   gate, the idle figures and the release commit for v0.2.0 (the program manager tags it). **M3 is
-  in progress** (since 2026-11-07), run as M1 was: one session, serial sub-projects, parallel
-  tasks inside each (INTENT §20, §23 #87, #94; `docs/superpowers/specs/2026-11-07-m3-program-design.md`:
-  0 row 405, 1 Voice slice, 2 Full expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets,
-  6 Close). **M3 sub-project 1, the Voice slice, is built** (INTENT §23 #95; branch `m3-voice`,
-  draft PR #37; spec `docs/superpowers/specs/2026-11-07-m3-voice-design.md`): a per-layer Mode
-  (Cloud or Voice), up to 16 voices a layer, the note table and the sustain pedal, MPE and CLAP
-  note expressions, per-voice modulation with the Voice-only routes (factory slots 44 to 48),
-  290 parameter slots (four parameters: Mode in each of four layers, plus MPE, MPE Bend Range and
-  Bend Range, seven slots), eight voice goldens, and the carry-over in `docs/m3-carry-over.md`
-  (`docs/m2-carry-over.md` is M2's frozen record). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  in progress** (since 2026-11-07). It began as M1 was run, one session with serial
+  sub-projects (§23 #87), and since 2026-11-07 its sub-projects run in parallel on their own
+  branches, merging as each is ready (the director; INTENT §20, §23 #87, #94, #96;
+  `docs/superpowers/specs/2026-11-07-m3-program-design.md`: 0 row 405, 1 Voice slice, 2 Full
+  expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets, 6 Close). **Sub-projects 2, 3
+  and 4 are specified and being planned in parallel**, on `m3-sp2-expression`,
+  `m3-sp3-pitchsync` and `m3-sp4-tuning`. **M3 sub-project 1, the Voice slice, is built** (INTENT
+  §23 #95; branch `m3-voice`, draft PR #37; spec
+  `docs/superpowers/specs/2026-11-07-m3-voice-design.md`): a per-layer Mode (Cloud or Voice), up
+  to 16 voices a layer with automatic headroom (V7), the note table and the sustain pedal, MPE
+  and CLAP note expressions, per-voice modulation with the Voice-only routes (factory slots 44
+  to 48), 290 parameter slots (four parameters: Mode in each of four layers, plus MPE, MPE Bend
+  Range and Bend Range, seven slots), eight voice goldens, and the carry-over in
+  `docs/m3-carry-over.md` (`docs/m2-carry-over.md` is M2's frozen record). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -971,10 +975,11 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     - `inst-voice-dup`: two notes on one (channel, key) with IDs 1 and 2, released one at a time
       (row 184);
     - `fx-voice`: the FX, layer A Voice over a live 330 Hz sine at amplitude 0.1, a three-note
-      chord (at 0.5 it saturated, carry-over row 411);
+      chord (at 0.5 it saturated before V7's headroom, carry-over row 411);
     - `inst-voice-layers`: layers A Voice and B Cloud (a sweep sample, +7) together, three notes.
-    - Every one of the 108 earlier cases' WAV SHA-256 was unchanged: a voice change that moves
-      one is a regression.
+    - V7's headroom (`1 / sqrt(n)` per voice grain) regenerated seven of them (all but
+      `inst-voice-release`); every one of the 108 earlier cases' WAV SHA-256 was unchanged: a voice
+      change that moves one is a regression.
   - **M2 sub-project 5's 48 preset goldens** (its spec §10; labels `golden` and `presets`), one
     per factory preset, in their own folder: `tests/golden/presets/cases/<fx|inst>-NN-<slug>.json`,
     expected files in `tests/golden/presets/expected/`, tests `golden_preset_<case>`, each 6 s
