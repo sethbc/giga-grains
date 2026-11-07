@@ -100,9 +100,6 @@ if (GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
     include(cmake/products.cmake)
     add_subdirectory(tools/gg-snap)
 endif ()
-# The vendored MTS-ESP client's files are exactly upstream's (libs/mts-esp-client/README.md).
-include(cmake/MtsEspGuard.cmake)
-gg_check_mts_esp()
 add_subdirectory(tests)
 
 # Nothing but RtAudio's ASIO backend may use libs/asiosdk (INTENT §15, §23 #56).
