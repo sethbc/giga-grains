@@ -1029,7 +1029,7 @@ TEST_CASE("the FX view lays out any panel list", "[plugin]")
     // Every control the view holds lies inside the content, so scrolling reaches it.
     std::vector<gg::ui::ParamControl *> controls;
     collect(*content, controls);
-    CHECK(controls.size() == 20); // the FX's 5 + 7 + 3 + 2 + 3 (MIDI)
+    CHECK(controls.size() == 24); // the FX's 5 + 7 + 3 + 2 + 7 (MIDI)
     for (const gg::ui::ParamControl *control : controls)
     {
         INFO(control->getComponentID());

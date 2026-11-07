@@ -53,11 +53,23 @@ LockSet buildStructuralLocks() noexcept
         lock(layerSlot(LayerParam::Quality, layer));
         // M3 sub-project 1: Mode is structure, as Source is.
         lock(layerSlot(LayerParam::Mode, layer));
+        // M3 sub-project 2: Pan, the note routing and the envelope curves are the layer's setup
+        // (a press must not silence a layer by moving its channel or keys).
+        lock(layerSlot(LayerParam::Pan, layer));
+        lock(layerSlot(LayerParam::NoteChannel, layer));
+        lock(layerSlot(LayerParam::KeyLow, layer));
+        lock(layerSlot(LayerParam::KeyHigh, layer));
+        lock(layerSlot(LayerParam::Env1Curve, layer));
+        lock(layerSlot(LayerParam::Env2Curve, layer));
     }
     // The MIDI settings are the instance's, not the sound's (M3 sub-project 1's spec §4.1).
     lock(ParamSlot::Mpe);
     lock(ParamSlot::MpeBendRange);
     lock(ParamSlot::BendRange);
+    lock(ParamSlot::MpeLowerZone);
+    lock(ParamSlot::MpeUpperZone);
+    lock(ParamSlot::MpeUpperBendRange);
+    lock(ParamSlot::UpperBendRange);
     // Every layer's five ring parameters: capture and memory (sub-project 2), which a preset load
     // keeps too (isRingParam). Ring Length would never move anyway (SP-M8, below).
     for (size_t s = 0; s < kParamCount; ++s)

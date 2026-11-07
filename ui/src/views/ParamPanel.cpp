@@ -53,6 +53,12 @@ juce::String shortLabel(const ParamControl &control, const char *panelTitle)
             name = name.dropLastCharacters(2);
         }
     }
+    // M3 sub-project 2: "Upper Bend Range" doesn't fit a knob's label (DejaVu, as row 405 taught);
+    // the host and the tooltip keep the full name.
+    if (control.slot() == ParamSlot::UpperBendRange)
+    {
+        return "Upper Bend";
+    }
     const juce::String prefix = juce::String(panelTitle) + " ";
     return name.startsWith(prefix) && name.length() > prefix.length()
                ? name.substring(prefix.length())

@@ -130,7 +130,8 @@ TEST_CASE("the hidden slots", "[ui]")
 TEST_CASE("the panel order is the spec's", "[ui]")
 {
     CHECK(gg::ui::slotsIn(Panel::Source, 0) ==
-          std::vector<ParamSlot>{ParamSlot::Source, ParamSlot::Mode});
+          std::vector<ParamSlot>{ParamSlot::Source, ParamSlot::Mode, ParamSlot::NoteChannel,
+                                 ParamSlot::KeyLow, ParamSlot::KeyHigh});
     // Smear sits beside Texture, before Quality (M2 sub-project 6's PR 2).
     CHECK(gg::ui::slotsIn(Panel::Grain, 0) ==
           std::vector<ParamSlot>{ParamSlot::Size, ParamSlot::SizeSpread, ParamSlot::Position,
@@ -152,8 +153,8 @@ TEST_CASE("the panel order is the spec's", "[ui]")
                                                                          ParamSlot::B_Distribution,
                                                                          ParamSlot::B_Freeze});
     CHECK(gg::ui::slotsIn(Panel::Space, 1) ==
-          std::vector<ParamSlot>{ParamSlot::B_Stereo, ParamSlot::B_Diffusion, ParamSlot::B_Feedback,
-                                 ParamSlot::LevelB});
+          std::vector<ParamSlot>{ParamSlot::B_Stereo, ParamSlot::B_Pan, ParamSlot::B_Diffusion,
+                                 ParamSlot::B_Feedback, ParamSlot::LevelB});
     // The bus split, then each bus on a line of its own (M2 sub-project 4; PR 2).
     CHECK(gg::ui::slotsIn(Panel::Filter, 2) ==
           std::vector<ParamSlot>{ParamSlot::C_BusSplit, ParamSlot::C_Bus1Filter,
@@ -220,16 +221,22 @@ TEST_CASE("the Filter panel breaks before each bus", "[ui]")
 
 TEST_CASE("Mode sits beside Source and the MIDI settings are the FX view's", "[ui]")
 {
-    // M3 sub-project 1's spec §4.1: each layer's Mode follows its Source in the Source panel.
+    // M3 sub-project 1's spec §4.1: each layer's Mode follows its Source in the Source panel,
+    // then M3 sub-project 2's note routing (Note Channel, Key Low, Key High).
     for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
     {
         INFO("layer " << int(layer));
         CHECK(gg::ui::slotsIn(Panel::Source, layer) ==
               std::vector<ParamSlot>{gg::core::layerSlot(LayerParam::Source, layer),
-                                     gg::core::layerSlot(LayerParam::Mode, layer)});
+                                     gg::core::layerSlot(LayerParam::Mode, layer),
+                                     gg::core::layerSlot(LayerParam::NoteChannel, layer),
+                                     gg::core::layerSlot(LayerParam::KeyLow, layer),
+                                     gg::core::layerSlot(LayerParam::KeyHigh, layer)});
     }
     CHECK(gg::ui::slotsIn(Panel::Midi, 0) ==
-          std::vector<ParamSlot>{ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange});
+          std::vector<ParamSlot>{ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange,
+                                 ParamSlot::MpeLowerZone, ParamSlot::MpeUpperZone,
+                                 ParamSlot::MpeUpperBendRange, ParamSlot::UpperBendRange});
     CHECK(gg::ui::slotsIn(Panel::Midi, 3) == gg::ui::slotsIn(Panel::Midi, 0));
     CHECK(std::string(gg::ui::panelName(Panel::Midi)) == "MIDI");
     for (const ParamSlot slot : gg::ui::slotsIn(Panel::Midi, 0))

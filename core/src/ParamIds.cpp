@@ -312,6 +312,48 @@ md_t layerMeta(LayerParam p, Mode mode)
             .withUnorderedMapFormatting({{0, "Cloud"}, {1, "Voice"}})
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 
+    // M3 sub-project 2's spec §4.1, §8.1.
+    case LayerParam::Pan:
+        // the layer's stereo position, -1..1, shown -100%..+100%.
+        return fresh().asPercentBipolar();
+    case LayerParam::NoteChannel:
+    {
+        // which MIDI channel's notes the layer plays: 0 All, 1..16, 17 the lower zone, 18 the upper
+        // zone. Automatable, not modulatable.
+        std::unordered_map<int, std::string> names{
+            {0, "All"}, {17, "Lower zone"}, {18, "Upper zone"}};
+        for (int c = 1; c <= 16; ++c)
+        {
+            names[c] = std::to_string(c);
+        }
+        return fresh()
+            .asInt()
+            .withRange(0.f, 18.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting(names)
+            .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
+    }
+    case LayerParam::KeyLow:
+        // the lowest key the layer plays, a MIDI key.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 127.f)
+            .withDefault(0.0f)
+            .withDimensionlessFormatting()
+            .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
+    case LayerParam::KeyHigh:
+        // the highest key the layer plays, a MIDI key.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 127.f)
+            .withDefault(127.0f)
+            .withDimensionlessFormatting()
+            .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
+    case LayerParam::Env1Curve:
+    case LayerParam::Env2Curve:
+        // the envelope's curve, -1..1, 0 linear as before; shown ×100 with "%".
+        return fresh().asPercentBipolar();
+
     // M2 sub-project 3's spec §6.1, §6.8.
     case LayerParam::Quality:
         // the grains' interpolation tier, stepped 0..2 (gg::Tier): Normal, M1's, by default.
@@ -538,6 +580,38 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                                    .withDefault(2.0f)
                                    .withLinearScaleFormatting("st")
                                    .withFlags(CLAP_PARAM_IS_STEPPED);
+    // M3 sub-project 2's MIDI settings (its spec §4.1): the MPE zones' member channels, 0..15
+    // (Lower 15, Upper 0 by default: the MPE specification's Lower Zone alone), and the bend
+    // ranges of the upper zone's members (1..96, 48) and of the upper conventional channels (0..24,
+    // 2).
+    at(ParamSlot::MpeLowerZone) = base(ParamSlot::MpeLowerZone)
+                                      .withName("MPE Lower Zone")
+                                      .asInt()
+                                      .withRange(0.f, 15.f)
+                                      .withDefault(15.0f)
+                                      .withDimensionlessFormatting()
+                                      .withFlags(CLAP_PARAM_IS_STEPPED);
+    at(ParamSlot::MpeUpperZone) = base(ParamSlot::MpeUpperZone)
+                                      .withName("MPE Upper Zone")
+                                      .asInt()
+                                      .withRange(0.f, 15.f)
+                                      .withDefault(0.0f)
+                                      .withDimensionlessFormatting()
+                                      .withFlags(CLAP_PARAM_IS_STEPPED);
+    at(ParamSlot::MpeUpperBendRange) = base(ParamSlot::MpeUpperBendRange)
+                                           .withName("MPE Upper Bend Range")
+                                           .asInt()
+                                           .withRange(1.f, 96.f)
+                                           .withDefault(48.0f)
+                                           .withLinearScaleFormatting("st")
+                                           .withFlags(CLAP_PARAM_IS_STEPPED);
+    at(ParamSlot::UpperBendRange) = base(ParamSlot::UpperBendRange)
+                                        .withName("Upper Bend Range")
+                                        .asInt()
+                                        .withRange(0.f, 24.f)
+                                        .withDefault(2.0f)
+                                        .withLinearScaleFormatting("st")
+                                        .withFlags(CLAP_PARAM_IS_STEPPED);
     return t;
 }
 } // namespace

@@ -1199,6 +1199,39 @@ TEST_CASE("preset load keeps MPE and the bend ranges", "[plugin][preset]")
     CHECK_FALSE(plugin.impl().presetEdited());
 }
 
+TEST_CASE("preset load keeps the MPE zones and upper ranges", "[plugin][preset]")
+{
+    // M3 sub-project 2's spec §4.1, E15: the four settings added with the zones are the instance's,
+    // kept by a preset file load like the first three.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    SessionState session = gg::core::initState(mode);
+    session.values[at(ParamSlot::MpeLowerZone)] = 7.0f;
+    session.values[at(ParamSlot::MpeUpperZone)] = 7.0f;
+    session.values[at(ParamSlot::MpeUpperBendRange)] = 12.0f;
+    session.values[at(ParamSlot::UpperBendRange)] = 5.0f;
+    SessionState preset = fixtureState(mode);
+    preset.values[at(ParamSlot::MpeLowerZone)] = 3.0f;
+    preset.values[at(ParamSlot::MpeUpperZone)] = 2.0f;
+    preset.values[at(ParamSlot::MpeUpperBendRange)] = 24.0f;
+    preset.values[at(ParamSlot::UpperBendRange)] = 12.0f;
+    const std::string location =
+        utf8(gg::test::writePresetFile("zones-" + tagOf(mode), infoFor(mode), preset));
+
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    CHECK(plugin.value(paramId(ParamSlot::MpeLowerZone)) == 7.0);
+    CHECK(plugin.value(paramId(ParamSlot::MpeUpperZone)) == 7.0);
+    CHECK(plugin.value(paramId(ParamSlot::MpeUpperBendRange)) == 12.0);
+    CHECK(plugin.value(paramId(ParamSlot::UpperBendRange)) == 5.0);
+    CHECK(plugin.value(paramId(ParamSlot::Size)) ==
+          static_cast<double>(preset.values[at(ParamSlot::Size)]));
+    CHECK_FALSE(plugin.impl().presetEdited());
+}
+
 // R4's active params.flush path (the residuals re-review's (d)): a load taken by params.flush
 // while active, not by process(), applies its routes before its values too, so FR-8's Freeze
 // arming sees the new routes, as the inactive load does (the test above, through process()).

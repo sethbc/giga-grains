@@ -50,6 +50,10 @@ constexpr std::array kRows{
     edit(ParamSlot::Source, Panel::Source, 0),
     // Mode (M3 sub-project 1, the Voice slice): beside Source, in the same row of the panel.
     edit(ParamSlot::Mode, Panel::Source, 1),
+    // M3 sub-project 2: the layer's note routing, after Mode.
+    edit(ParamSlot::NoteChannel, Panel::Source, 2),
+    edit(ParamSlot::KeyLow, Panel::Source, 3),
+    edit(ParamSlot::KeyHigh, Panel::Source, 4),
     // Ring: M2 sub-project 2's ring parameters, in the Source panel from its merge (ruling SP-M7,
     // after VW-T19a) until PR 2 gave them a panel of their own.
     edit(ParamSlot::RingLength, Panel::Ring, 0),
@@ -75,9 +79,11 @@ constexpr std::array kRows{
     edit(ParamSlot::PitchSpread, Panel::Pitch, 1),
     // Space: the layer's diffuser, Feedback and Level (Level B to D through Level's row).
     edit(ParamSlot::Stereo, Panel::Space, 0),
-    edit(ParamSlot::Diffusion, Panel::Space, 1),
-    edit(ParamSlot::Feedback, Panel::Space, 2),
-    edit(ParamSlot::Level, Panel::Space, 3),
+    // M3 sub-project 2: Pan, beside Stereo.
+    edit(ParamSlot::Pan, Panel::Space, 1),
+    edit(ParamSlot::Diffusion, Panel::Space, 2),
+    edit(ParamSlot::Feedback, Panel::Space, 3),
+    edit(ParamSlot::Level, Panel::Space, 4),
     // Filter: the bus split, then each bus's filter on a line of its own (M2 sub-project 4;
     // ruling VW-T19b, one wrapped row until PR 2).
     edit(ParamSlot::BusSplit, Panel::Filter, 0),
@@ -96,10 +102,12 @@ constexpr std::array kRows{
     edit(ParamSlot::Env1Decay, Panel::Env1, 1),
     edit(ParamSlot::Env1Sustain, Panel::Env1, 2),
     edit(ParamSlot::Env1Release, Panel::Env1, 3),
+    edit(ParamSlot::Env1Curve, Panel::Env1, 4),
     edit(ParamSlot::Env2Attack, Panel::Env2, 0),
     edit(ParamSlot::Env2Decay, Panel::Env2, 1),
     edit(ParamSlot::Env2Sustain, Panel::Env2, 2),
     edit(ParamSlot::Env2Release, Panel::Env2, 3),
+    edit(ParamSlot::Env2Curve, Panel::Env2, 4),
     edit(ParamSlot::Random1Rate, Panel::Random1, 0),
     edit(ParamSlot::Random1Smooth, Panel::Random1, 1),
     edit(ParamSlot::Random2Rate, Panel::Random2, 0),
@@ -146,6 +154,11 @@ constexpr std::array kRows{
     fx(ParamSlot::Mpe, Panel::Midi, 0),
     fx(ParamSlot::MpeBendRange, Panel::Midi, 1),
     fx(ParamSlot::BendRange, Panel::Midi, 2),
+    // M3 sub-project 2's: the zones and the upper bend ranges, after Bend Range.
+    fx(ParamSlot::MpeLowerZone, Panel::Midi, 3),
+    fx(ParamSlot::MpeUpperZone, Panel::Midi, 4),
+    fx(ParamSlot::MpeUpperBendRange, Panel::Midi, 5),
+    fx(ParamSlot::UpperBendRange, Panel::Midi, 6),
     // The Perform view: the strip's On switches (Layer B On to D On through A's), the pad, the
     // macros.
     Row{ParamSlot::LayerAOn, View::Perform, Panel::Strip, 0, kNone},
@@ -161,8 +174,9 @@ constexpr std::array kRows{
     Row{ParamSlot::Macro8, View::Perform, Panel::Macros, 7, kNone},
 };
 
-// One row per layer parameter, per-layer global (Level, Layer On) and other global: 62 + 2 + 27.
-static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 30);
+// One row per layer parameter, per-layer global (Level, Layer On) and other global: the layer
+// parameters, 2, and 34 globals (30 before M3 sub-project 2's four MIDI settings).
+static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 34);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer
 /// parameter or a per-layer global; the slot itself and layer 0 for any other.
