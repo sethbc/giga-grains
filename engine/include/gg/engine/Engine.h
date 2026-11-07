@@ -117,7 +117,23 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// process() call, so one voice is unchanged and n is block-size invariant); GrainSpec::voice
 /// carries the ordinal. A finished voice (finishVoice) stops spawning and its grains play out their
 /// windows: no grain is cut. The Spectral Smear keeps reading the layer's Cloud parameters'
-/// Position. With voice mode off (the default) the engine is the Cloud engine above, bit for bit.
+/// Position, moved by the Cloud stream's playhead, which restarts at every startVoice in Spectral
+/// mode (M3 playhead spec H9). With voice mode off (the default) the engine is the Cloud engine
+/// above, bit for bit.
+///
+/// **The playhead** (M3 playhead spec H1 to H5, §3a HB1 to HB9). Each stream (the Cloud stream and
+/// each voice) has its own CloudScheduler playhead, synced at every block start, before the smear
+/// writes and any grain is drawn, whether or not the stream schedules, with the geometry of the
+/// source in effect (scanGeometry): a Sample of F frames at rate R moves R / (F − 1) of itself a
+/// second at 1x over [0, 1] (no source, or F < 2, holds); the live ring moves −1 s of lag a second
+/// over [0, W], W its window at the block start; the Spectral kind takes its material's. A
+/// Sample's point is folded by the scheduler; a ring's by liveGrain, with the window at the
+/// grain's onset; the smear's at each hop (SpectralSource's ScanPosition). A source-mode change
+/// restarts every stream's playhead (HB9), and so does, for the Cloud stream in Spectral mode, a
+/// change of the smear's material kind (a sample loaded or removed: a fraction against seconds of
+/// lag, ruling R9); a new sample otherwise rebases it at the next block, so the point keeps its
+/// fraction (HB8). At speed 0 every path is the one before the playhead, bit for
+/// bit.
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
 /// positions), the output and the grain events are bit-identical however the host splits blocks
@@ -149,7 +165,8 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// sample t (LiveSource). Each grain's GrainSpec::startPos is a ring-time position, and its rate
 /// is the pitch ratio (the ring runs at the output rate). At its onset T = onsetSample +
 /// onsetFrac, with the head at ρ = R(T) (R advances linearly between samples while it moves),
-/// the grain asks to start at s* = ρ − positionDraw × sampleRate, clamped to [lo, hi]:
+/// the grain asks to start at s* = ρ − positionDraw × sampleRate (a scanning draw's lag is its
+/// folded point plus positionDraw: the playhead paragraph above), clamped to [lo, hi]:
 ///
 ///     hi = ρ − 3 − M − max(0, dur × rate − span)
 ///     lo = ρ − N + 1 + M + max(0, span × (1 − rate))
@@ -591,6 +608,13 @@ class Engine
     /// Sets the source mode in effect (mode_, config_.liveSeconds) on the Cloud stream and on
     /// every voice stream.
     void applySourceMode() noexcept;
+    /// The geometry of the source in effect at clock_ (M3 playhead spec HB2), after the block's
+    /// live write: Sample {R / (F − 1), 0, 1} ({0, 0, 1} with no source or F < 2), Live {−1, 0,
+    /// W / sampleRate} with W the live window at clock_, Spectral its material's (the sample's,
+    /// else the live ring's).
+    ScanGeometry scanGeometry() const noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Restarts every stream's playhead at the next block (a source-mode change, HB9).
+    void restartPlayheads() noexcept;
     /// Adds every pool grain into its row's bus over [from, to), in spawn order, with each grain's
     /// latched tier and source, whatever the mode in effect: the SIMD live kernel for a grain of
     /// kLiveSlot over the live ring, and for one of kSpectralSlot over the smear's ring, otherwise
@@ -670,6 +694,9 @@ class Engine
     // mode_ is the kind new grains read; it never chooses a sounding grain's kernel.
     SourceMode mode_{SourceMode::Sample};
     SourceMode requestedMode_{SourceMode::Sample};
+    // Whether the last block's smear material was the live ring (no sample in the current slot),
+    // for ruling R9's restart; true as constructed, with no sample.
+    bool materialRing_{true};
     bool enabled_{true};
     bool requestedEnabled_{true};
     bool freeze_{false};

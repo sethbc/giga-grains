@@ -1479,3 +1479,147 @@ TEST_CASE("voices are block-size invariant", "[determinism][voice]")
     REQUIRE(sameBits(ref.audio.left, r.audio.left));
     REQUIRE(sameBits(ref.audio.right, r.audio.right));
 }
+
+namespace
+{
+// The playhead (M3 playhead spec H5, §4.6): every kind scanning, its speed and edge changed at
+// kScanChange between process() calls (a grid sample), a frozen ring frozen at kScanFreeze.
+constexpr int64_t kScanFrames = 48000;
+constexpr int64_t kScanFreeze = 4800;
+constexpr int64_t kScanChange = 9600;
+
+enum class ScanKind : uint8_t
+{
+    Sample,
+    LiveFrozen,
+    LiveMoving,
+    SpectralSample,
+    SpectralRing,
+};
+
+struct ScanLeg
+{
+    double speed;
+    gg::ScanEdge edge;
+};
+
+struct ScanCase
+{
+    ScanKind kind;
+    const char *name;
+    double position; // in the kind's units
+    ScanLeg legs[2]; // before and from kScanChange
+};
+
+// Each case wraps, bounces or stops inside its 1 s: the Sample at 4x from 0.85 wraps within
+// 0.15 s, the rings' lags cross their 2 s windows' ends or the head.
+constexpr ScanCase kScanCases[] = {
+    {ScanKind::Sample, "sample", 0.85, {{4.0, gg::ScanEdge::Wrap}, {-3.0, gg::ScanEdge::Bounce}}},
+    {ScanKind::LiveFrozen,
+     "live frozen",
+     0.3,
+     {{-1.0, gg::ScanEdge::Wrap}, {2.5, gg::ScanEdge::Bounce}}},
+    {ScanKind::LiveMoving,
+     "live moving",
+     0.6,
+     {{0.5, gg::ScanEdge::Stop}, {-1.5, gg::ScanEdge::Wrap}}},
+    {ScanKind::SpectralSample,
+     "spectral over a sample",
+     0.5,
+     {{3.0, gg::ScanEdge::Bounce}, {-0.75, gg::ScanEdge::Stop}}},
+    {ScanKind::SpectralRing,
+     "spectral over the ring",
+     0.4,
+     {{-2.0, gg::ScanEdge::Wrap}, {1.0, gg::ScanEdge::Bounce}}},
+};
+
+struct ScanRender
+{
+    Render audio;
+    GrainLog log;
+};
+
+void renderScan(const ScanCase &sc, const LiveInput &input,
+                const std::shared_ptr<const gg::SampleBuffer> &source,
+                const std::vector<uint32_t> &blockSizes, bool scan, ScanRender &r)
+{
+    gg::EngineConfig c{kSampleRate, kMaxBlock, 4096, 42};
+    c.liveSeconds = 2.0;
+    c.spectral = true;
+    c.layer = 3;
+    gg::Engine engine(c);
+    if (sc.kind == ScanKind::Sample || sc.kind == ScanKind::SpectralSample)
+    {
+        engine.setSource(source);
+    }
+    engine.setSourceMode(sc.kind == ScanKind::Sample ? gg::SourceMode::Sample
+                         : sc.kind == ScanKind::LiveFrozen || sc.kind == ScanKind::LiveMoving
+                             ? gg::SourceMode::Live
+                             : gg::SourceMode::Spectral);
+    gg::CloudParams p = kParams;
+    p.position = sc.position;
+    p.spray = 0.1;
+    const auto leg = [&](const ScanLeg &l) {
+        p.scanSpeed = scan ? l.speed : 0.0;
+        p.scanEdge = l.edge;
+        engine.setCloudParams(p);
+    };
+    leg(sc.legs[0]);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kScanFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kScanFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    for (const int64_t end : {kScanFreeze, kScanChange, kScanFrames})
+    {
+        while (done < end)
+        {
+            const uint32_t want = blockSizes[next++ % blockSizes.size()];
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(want, end - done));
+            const float *in[2] = {input.left.data() + done, input.right.data() + done};
+            float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+            engine.process(in, 2, out, 2, n);
+            done += n;
+        }
+        if (end == kScanFreeze && sc.kind == ScanKind::LiveFrozen)
+        {
+            engine.setFreeze(true);
+        }
+        if (end == kScanChange)
+        {
+            leg(sc.legs[1]);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("a scanning engine is block-size invariant", "[determinism][playhead]")
+{
+    const auto input = liveNoise();
+    const auto source = noiseSource(input);
+    for (const ScanCase &sc : kScanCases)
+    {
+        INFO(sc.name);
+        ScanRender ref;
+        renderScan(sc, input, source, {kMaxBlock}, true, ref);
+        REQUIRE_FALSE(ref.log.overflowed);
+        REQUIRE(ref.log.grains.size() > 20);
+        REQUIRE(allFinite(ref.audio.left));
+        REQUIRE(allFinite(ref.audio.right));
+        // Not vacuous: the scan changes what is heard.
+        ScanRender still;
+        renderScan(sc, input, source, {kMaxBlock}, false, still);
+        REQUIRE_FALSE(sameBits(still.audio.left, ref.audio.left));
+        for (const uint32_t block : {1u, 7u, 32u, 64u, 256u, 333u})
+        {
+            INFO("block size " << block);
+            ScanRender r;
+            renderScan(sc, input, source, {block}, true, r);
+            REQUIRE_FALSE(r.log.overflowed);
+            REQUIRE(r.log.grains == ref.log.grains);
+            REQUIRE(sameBits(ref.audio.left, r.audio.left));
+            REQUIRE(sameBits(ref.audio.right, r.audio.right));
+        }
+    }
+}

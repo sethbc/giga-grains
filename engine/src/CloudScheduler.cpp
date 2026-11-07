@@ -12,6 +12,8 @@ namespace
 {
 constexpr double kMinDensityHz = 0.01;
 constexpr float kMaxGain = 4.0f;
+// The bound on CloudParams::scanSpeed, × real time (M3 playhead spec H7, HB6).
+constexpr double kMaxScanSpeed = 64.0;
 
 double finiteOr(double v, double fallback) noexcept { return std::isfinite(v) ? v : fallback; }
 float finiteOr(float v, float fallback) noexcept { return std::isfinite(v) ? v : fallback; }
@@ -82,6 +84,12 @@ void CloudScheduler::setParams(const CloudParams &in) noexcept
     p.smearDetuneSemitones = std::clamp(finiteOr(in.smearDetuneSemitones, d.smearDetuneSemitones),
                                         0.0, kMaxSmearDetuneSemitones);
     p.busSplit = std::clamp(finiteOr(in.busSplit, d.busSplit), 0.0, 1.0);
+    // M3 playhead spec HB6: a non-finite speed is 0 (today's read), clamped to ±64×; an edge out
+    // of range is Wrap.
+    p.scanSpeed = std::clamp(finiteOr(in.scanSpeed, d.scanSpeed), -kMaxScanSpeed, kMaxScanSpeed);
+    p.scanEdge = static_cast<uint8_t>(in.scanEdge) <= static_cast<uint8_t>(ScanEdge::Stop)
+                     ? in.scanEdge
+                     : ScanEdge::Wrap;
 
     const double oldPeriod = period_;
     const double oldDistribution = params_.distribution;
@@ -122,6 +130,10 @@ void CloudScheduler::setHeldKeys(std::span<const uint8_t> keys) noexcept
     else if (keyCount_ == 0)
     {
         onsetForced_ = true; // empty to non-empty (spec §6.2–§6.3)
+        // And the playhead with it (M3 playhead spec H4). Emptied again before the next block, the
+        // onset is no longer forced but the restart stays pending (Playhead has no cancel): a
+        // note was played, so the playhead restarts at that block (the controller's ruling).
+        playhead_.requestRestart();
     }
     keyCount_ = n;
 }
@@ -132,6 +144,7 @@ void CloudScheduler::reset() noexcept
     nextK_ = 0;
     hasLast_ = false;
     rescalePending_ = false;
+    playhead_.requestRestart(); // M3 playhead spec H4: at reset (activation) and a voice's start
 }
 
 void CloudScheduler::updateDerived() noexcept

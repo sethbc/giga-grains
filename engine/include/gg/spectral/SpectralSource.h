@@ -11,6 +11,7 @@
 
 #include <sst/cpputils/rtsan_support.h>
 
+#include "gg/grain/Playhead.h"
 #include "gg/source/LiveSource.h"
 #include "gg/spectral/SpectralConstants.h"
 
@@ -33,6 +34,19 @@ struct SpectralMaterial
     /// The live ring, already written for the block process() is given; read when there is no
     /// sample. Null, or a ring without frames, is no material: the frame is silent.
     const LiveSource *ring{nullptr};
+};
+
+/// Where the smear analyses its material (M3 playhead spec H9, HB5): Position, moved by the layer's
+/// playhead. Each hop at sample t reads `position` while playhead.offsetAt(t) is exactly 0, and
+/// otherwise scanFold(position + offsetAt(t), 0, hi, playhead.edge()), hi being `sampleHi` (1, a
+/// sample's fraction) or, with `ring`, the material ring's windowFramesAt(t) / sampleRate (its
+/// window at the hop, in seconds). A default playhead is at rest: the point is `position`.
+struct ScanPosition
+{
+    double position{0.0};
+    Playhead playhead{};
+    double sampleHi{1.0};
+    bool ring{false};
 };
 
 /// The Spectral Smear source (extremes spec §6.2, I21): a paulstretch-style stream that a
@@ -124,12 +138,21 @@ class SpectralSource
     /// Writes numFrames samples at output clock blockStart into the ring: the smear while active,
     /// computing every frame whose hop boundary falls in the block; while inactive, what is still
     /// pending of the frames already computed, then silence.
-    /// position is in the material's units: a fraction of the sample, or seconds behind the
-    /// ring's head. Blocks must be contiguous from reset(), and numFrames at most maxBlockSize,
-    /// as LiveSource::write requires (a longer block is written in pieces, so headAt() then
-    /// covers its last piece alone). Real-time safe.
-    void process(const SpectralMaterial &m, double position, uint64_t seed, uint32_t layer,
+    /// The point is in the material's units: a fraction of the sample, or seconds behind the
+    /// ring's head, each hop's from `scan` at the hop's own sample (ScanPosition). Blocks must be
+    /// contiguous from reset(), and numFrames at most maxBlockSize, as LiveSource::write requires
+    /// (a longer block is written in pieces, so headAt() then covers its last piece alone).
+    /// Real-time safe.
+    void process(const SpectralMaterial &m, const ScanPosition &scan, uint64_t seed, uint32_t layer,
                  int64_t blockStart, uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// process() at a static point, `position` at every hop: a ScanPosition whose playhead is at
+    /// rest (the tests' and gg-bench's chain stage's form).
+    void process(const SpectralMaterial &m, double position, uint64_t seed, uint32_t layer,
+                 int64_t blockStart, uint32_t numFrames) noexcept SST_CPPUTILS_NONBLOCKING
+    {
+        process(m, ScanPosition{.position = position}, seed, layer, blockStart, numFrames);
+    }
 
     const LiveSource &ring() const noexcept { return ring_; }
 
@@ -149,6 +172,9 @@ class SpectralSource
     };
     using AlignedFloats = std::unique_ptr<float[], AlignedDeleter>;
 
+    // The point the hop at t analyses (ScanPosition).
+    double pointAt(const SpectralMaterial &m, const ScanPosition &scan,
+                   int64_t t) const noexcept SST_CPPUTILS_NONBLOCKING;
     // Computes frame k (hop boundary kH) and adds it into the accumulation.
     void computeFrame(const SpectralMaterial &m, double position, uint64_t seed, uint32_t layer,
                       int64_t k) noexcept SST_CPPUTILS_NONBLOCKING;

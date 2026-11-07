@@ -12,6 +12,7 @@
 
 #include <pffft/pffft.h>
 
+#include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 
@@ -135,7 +136,28 @@ void SpectralSource::setActive(bool active) noexcept
     active_ = active;
 }
 
-void SpectralSource::process(const SpectralMaterial &m, double position, uint64_t seed,
+double SpectralSource::pointAt(const SpectralMaterial &m, const ScanPosition &scan,
+                               int64_t t) const noexcept
+{
+    GG_FP_CONTRACT_OFF
+    // M3 playhead spec HB5: at x(t) = 0, Position itself, today's frame bit for bit.
+    const double x = scan.playhead.offsetAt(static_cast<double>(t));
+    if (x == 0.0)
+    {
+        return scan.position;
+    }
+    double hi = scan.sampleHi;
+    if (scan.ring)
+    {
+        // The ring's window at the hop, in seconds; no ring reads silence anyway (computeFrame).
+        hi = m.ring != nullptr && m.ring->enabled()
+                 ? static_cast<double>(m.ring->windowFramesAt(t)) / sampleRate_
+                 : 0.0;
+    }
+    return scanFold(scan.position + x, 0.0, hi, scan.playhead.edge());
+}
+
+void SpectralSource::process(const SpectralMaterial &m, const ScanPosition &scan, uint64_t seed,
                              uint32_t layer, int64_t blockStart, uint32_t numFrames) noexcept
 {
     const auto n = static_cast<int64_t>(fftSize_);
@@ -166,7 +188,7 @@ void SpectralSource::process(const SpectralMaterial &m, double position, uint64_
                 const int64_t t = blockStart + j;
                 if (active_ && (t & (hopSize - 1)) == 0)
                 {
-                    computeFrame(m, position, seed, layer, t / hopSize);
+                    computeFrame(m, pointAt(m, scan, t), seed, layer, t / hopSize);
                     pendingUntil_ = t + 2 * n; // frame t / H comes out over [t + N, t + 2N)
                 }
                 // The output at t is the accumulation at spectral time t − N, complete since
