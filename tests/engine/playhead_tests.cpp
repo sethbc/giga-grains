@@ -214,3 +214,18 @@ TEST_CASE("a restart returns to zero", "[engine][playhead]")
     CHECK_FALSE(p.moving());
     CHECK(p.offsetAt(30000.0) == 0.0);
 }
+
+TEST_CASE("a source change at speed 0 never rebases", "[engine][playhead]")
+{
+    // Speed 0 over a Sample (unitsPerSecond +1) gives r = +0.0 and over a ring (-1) r = -0.0. The
+    // two must compare equal, or the switch would rebase and Stop's canon, with Position outside
+    // the window, would move x0 off 0 at rest.
+    gg::Playhead p;
+    p.sync(0, 0.0, gg::ScanEdge::Stop, geometry(1.0, 0.0, 1.0), kSampleRate, 2.0);
+    p.sync(256, 0.0, gg::ScanEdge::Stop, geometry(-1.0, 0.0, 1.0), kSampleRate, 2.0);
+    CHECK_FALSE(p.moving());
+    CHECK(bits(p.offsetAt(256.0)) == bits(0.0));
+    p.sync(512, 0.0, gg::ScanEdge::Stop, geometry(1.0, 0.0, 1.0), kSampleRate, 2.0);
+    CHECK_FALSE(p.moving());
+    CHECK(bits(p.offsetAt(10000.0)) == bits(0.0));
+}

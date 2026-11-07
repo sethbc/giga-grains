@@ -112,12 +112,19 @@ class Playhead
     /// Bounce mod 2L (only to keep the offset small: the fold is periodic), and Stop gives
     /// clamp(position + x, lo, hi) - position, so a reversed speed leaves the edge at once (H3).
     /// An empty or non-finite window, or a non-finite position under Stop, leaves x as it is.
-    /// A non-finite r' (a sample rate of 0, say) is taken as 0, which holds.
+    /// A non-finite r' (a sample rate of 0, say) is taken as 0, which holds, and r' = -0.0 as
+    /// +0.0: speed 0 never rebases on a change of source alone, where Stop's canon would move x0
+    /// off 0 at rest with Position outside the window.
+    ///
+    /// A Wrap or Bounce canon can land exactly on x0 = 0 (x a multiple of L or 2L); there the
+    /// at-rest guard reads plain Position, the spec's H5 as written.
     void sync(int64_t t, double speed, ScanEdge edge, const ScanGeometry &g, double sampleRate,
               double position) noexcept
     {
         GG_FP_CONTRACT_OFF
-        double rate = speed * g.unitsPerSecond / sampleRate;
+        // + 0.0 maps -0.0 (speed 0 over a ring's -1) to +0.0, so the bit comparison below sees
+        // speed 0 over a Sample and over a ring as the same rate.
+        double rate = speed * g.unitsPerSecond / sampleRate + 0.0;
         if (!std::isfinite(rate))
         {
             rate = 0.0;
