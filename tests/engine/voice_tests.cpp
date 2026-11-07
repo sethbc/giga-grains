@@ -161,12 +161,14 @@ std::vector<gg::GrainDraw> cloudReference(const gg::CloudParams &params, uint32_
     return draws;
 }
 
-// The voice grain's gain (Engine.h): the draw's × the voice's gain × the amplitude at the peak.
-float voiceGain(const gg::GrainDraw &d, const gg::VoiceParams &v)
+// The voice grain's gain (Engine.h): the draw's x the voice's gain x the amplitude at the peak
+// x the headroom 1 / sqrt(n), n the layer's spawning voices (V7; n = 1 multiplies by exactly 1).
+float voiceGain(const gg::GrainDraw &d, const gg::VoiceParams &v, uint32_t n = 1)
 {
     const int64_t peakSample = d.onsetSample + static_cast<int64_t>(d.durationSamples * 0.5);
     return static_cast<float>(static_cast<double>(d.gain) * static_cast<double>(v.gain) *
-                              v.amp.valueAt(peakSample));
+                              v.amp.valueAt(peakSample) *
+                              (1.0 / std::sqrt(static_cast<double>(n))));
 }
 } // namespace
 
@@ -597,4 +599,116 @@ TEST_CASE("setEnabled false and reset clear the voices", "[engine][voice]")
     // A slot out of range is ignored.
     engine.startVoice(gg::kMaxVoices, 0, voiceAt(kParams));
     CHECK_FALSE(engine.voiceSpawning(gg::kMaxVoices));
+}
+
+TEST_CASE("voice headroom is one over root n", "[engine][voice]")
+{
+    for (const uint32_t n : {1u, 2u, 4u, 16u})
+    {
+        INFO("n " << n);
+        gg::Engine engine(config());
+        engine.setSource(sineSource());
+        GrainLog log;
+        engine.setEventSink(&GrainLog::record, &log);
+        engine.setVoiceMode(true);
+        gg::CloudParams p = kParams;
+        p.densityHz = 12.0;
+        for (uint32_t k = 0; k < n; ++k)
+        {
+            engine.startVoice(k, k, voiceAt(p));
+        }
+        constexpr int64_t kFrames = 48000;
+        Audio audio = silentAudio(kFrames);
+        renderSpan(engine, audio, 0, kFrames, 256);
+        REQUIRE_FALSE(log.overflowed);
+        REQUIRE(log.grains.size() >= 8u * n);
+        for (uint32_t k = 0; k < n; ++k)
+        {
+            const auto reference = cloudReference(p, 1 + k, 0, kFrames);
+            std::size_t seen = 0;
+            for (const gg::GrainSpec &g : log.grains)
+            {
+                if (g.voice != k)
+                {
+                    continue;
+                }
+                REQUIRE(g.index < reference.size());
+                CHECK(g.gain == voiceGain(reference[g.index], voiceAt(p), n));
+                ++seen;
+            }
+            CHECK(seen >= 8);
+        }
+    }
+}
+
+TEST_CASE("a finishing voice raises the others' later grains", "[engine][voice]")
+{
+    gg::Engine engine(config());
+    engine.setSource(sineSource());
+    GrainLog log;
+    engine.setEventSink(&GrainLog::record, &log);
+    engine.setVoiceMode(true);
+    gg::CloudParams p = kParams;
+    p.densityHz = 30.0;
+    for (uint32_t k = 0; k < 3; ++k)
+    {
+        engine.startVoice(k, k, voiceAt(p));
+    }
+    constexpr int64_t kFinish = 24000;
+    constexpr int64_t kFrames = 48000;
+    Audio audio = silentAudio(kFrames);
+    renderSpan(engine, audio, 0, kFinish, 500);
+    engine.finishVoice(1);
+    renderSpan(engine, audio, kFinish, kFrames, 500);
+    const auto reference = cloudReference(p, 1, 0, kFrames);
+    bool before = false;
+    bool after = false;
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        if (g.voice == 1)
+        {
+            CHECK(g.onsetSample < kFinish);
+        }
+        if (g.voice != 0)
+        {
+            continue;
+        }
+        const bool late = g.onsetSample >= kFinish;
+        CHECK(g.gain == voiceGain(reference[g.index], voiceAt(p), late ? 2u : 3u));
+        before = before || !late;
+        after = after || late;
+    }
+    CHECK(before);
+    CHECK(after);
+}
+
+TEST_CASE("voice headroom is block-size invariant as n changes", "[engine][voice][determinism]")
+{
+    // n goes 1, 2, 3, 2 at samples that every block size below divides.
+    const auto render = [](uint32_t block) {
+        gg::Engine engine(config(4096));
+        engine.setSource(sineSource());
+        engine.setVoiceMode(true);
+        gg::CloudParams p = kParams;
+        p.densityHz = 60.0;
+        constexpr int64_t kFrames = 32768;
+        Audio audio = silentAudio(kFrames);
+        engine.startVoice(0, 0, voiceAt(p));
+        renderSpan(engine, audio, 0, 8192, block);
+        engine.startVoice(1, 1, voiceAt(p));
+        renderSpan(engine, audio, 8192, 16384, block);
+        engine.startVoice(2, 2, voiceAt(p));
+        renderSpan(engine, audio, 16384, 24576, block);
+        engine.finishVoice(1);
+        renderSpan(engine, audio, 24576, kFrames, block);
+        return audio;
+    };
+    const Audio reference = render(4096);
+    for (const uint32_t block : {64u, 256u, 1024u})
+    {
+        INFO("block " << block);
+        const Audio other = render(block);
+        CHECK(sameBits(other.left, reference.left));
+        CHECK(sameBits(other.right, reference.right));
+    }
 }
