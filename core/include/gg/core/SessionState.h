@@ -76,8 +76,11 @@
 ///   An embedded <sample> or <ring> names its payload by `audio`.
 /// - `INST`: the per-instance settings, `<instance version="1" memoryCapMiB="1024" />`.
 ///
-/// An older build skips AUDI and INST as unknown chunks, and reads a version-2 MEDI as a newer
-/// manifest (no sample, its bytes kept).
+/// - `TUNE` (optional, after INST): the loaded `.scl` and `.kbm` byte for byte with their names,
+///   `TuningFiles`; written only when a tuning is set (else a newer build's payload as it came).
+///
+/// An older build skips AUDI, INST and TUNE as unknown chunks, and reads a version-2 MEDI as a
+/// newer manifest (no sample, its bytes kept).
 namespace gg::core
 {
 /// The container's version: the u32 after the magic.
@@ -140,6 +143,19 @@ struct AudioPayload
     friend bool operator==(const AudioPayload &, const AudioPayload &) = default;
 };
 
+/// The longest file name TUNE keeps for display (bytes).
+inline constexpr size_t kMaxTuningNameBytes = 255;
+
+/// TUNE's payload (INTENT §18; the tuning spec §5.4): the .scl and .kbm exactly as loaded, bytes
+/// (never transcoded; a std::string is only a byte container), with their file names for display.
+/// An empty `scl` is 12-EDO and an empty `kbm` the standard mapping. decodeState checks the layout
+/// and the limits (kMaxTuningTextBytes, kMaxTuningNameBytes) and never parses the texts.
+struct TuningFiles
+{
+    std::string scl, kbm, sclName, kbmName;
+    friend bool operator==(const TuningFiles &, const TuningFiles &) = default;
+};
+
 /// What a session state holds: the parameter values, the engine seed and the mod matrix's routes
 /// (PTCH), the samples and rings the manifest lists, by layer (MEDI), the payloads they embed
 /// (AUDI) and the per-instance settings (INST).
@@ -184,6 +200,12 @@ struct SessionState
     /// session was saved. PTCH's root `edited="1"`, written only when true (gg/core/PatchState.h),
     /// so an unedited state's bytes are as before. A preset never carries it (encodePreset).
     bool edited{false};
+    /// The loaded Scala tuning's files (TUNE), empty for none (12-TET). encodeState writes TUNE
+    /// when it holds one, else `newerTuning`; never both.
+    std::optional<TuningFiles> tuning;
+    /// A TUNE of a newer version than this build reads (above 1): the payload byte for byte, kept
+    /// so that saving writes it back unchanged; `tuning` is then empty.
+    std::optional<std::string> newerTuning;
 };
 
 /// Whether `entry` is a sample encodeState can write: `sha256Hex` is 64 lowercase hex digits, no
@@ -228,8 +250,8 @@ std::string encodeState(const SessionState &state);
 ///   at most one AUDI and one INST among its chunks, in any order. Chunks with other IDs are
 ///   skipped, so a newer build's chunks don't break this one.
 /// - Returns false for a bad magic, any other container version, a chunk header or payload
-///   running past the end, a missing PTCH or MEDI, a repeated PTCH, MEDI, AUDI or INST, or one of
-///   them that fails to parse:
+///   running past the end, a missing PTCH or MEDI, a repeated PTCH, MEDI, AUDI, INST or TUNE, or
+///   one of them that fails to parse:
 ///   - PTCH loads as fromStateXml loads it (gg/core/PatchState.h): its version migrates (a
 ///     version-1 state takes the factory routes), a param it doesn't mention takes `mode`'s
 ///     default, values are clamped, the routes are its `<mod>`'s, and the name and the preset

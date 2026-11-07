@@ -28,6 +28,7 @@
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
 #include "gg/core/SessionState.h"
+#include "gg/core/Tuning.h"
 #include "gg/media/Sha256.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 #include "support/StateContainer.h"
@@ -761,4 +762,34 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
         kept += length ? 1 : 0;
     }
     CHECK(kept == gg::core::kLayers);
+}
+
+TEST_CASE("a preset keeps its TUNE", "[core][preset]")
+{
+    const PresetInfo info{"Tuned", Mode::Fx, "a", "d", {"dark"}};
+    SessionState plain = someState();
+    PresetInfo plainInfo;
+    REQUIRE(gg::core::presetInfoOf(encodePreset(info, plain), plainInfo));
+
+    SessionState s = someState();
+    s.tuning = gg::core::TuningFiles{"! a\r\n 1\r\n 2/1\r\n", "\xe9", "a.scl", "b.kbm"};
+    const auto bytes = encodePreset(info, s);
+    PresetInfo read;
+    SessionState back;
+    REQUIRE(gg::core::readPreset(bytes, Mode::Fx, read, back));
+    REQUIRE(back.tuning.has_value());
+    CHECK(*back.tuning == *s.tuning);
+    CHECK_FALSE(back.newerTuning.has_value());
+
+    // A newer TUNE is kept too.
+    SessionState n = someState();
+    n.newerTuning = std::string("\x02\x00\x00\x00zz", 6);
+    REQUIRE(gg::core::readPreset(encodePreset(info, n), Mode::Fx, read, back));
+    CHECK(back.newerTuning == n.newerTuning);
+    CHECK_FALSE(back.tuning.has_value());
+
+    // presetInfoOf ignores it.
+    PresetInfo tunedInfo;
+    REQUIRE(gg::core::presetInfoOf(bytes, tunedInfo));
+    CHECK(tunedInfo == plainInfo);
 }

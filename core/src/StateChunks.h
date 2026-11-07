@@ -14,13 +14,15 @@
 namespace gg::core
 {
 /// Finds a container's PTCH and MEDI payloads (views into `bytes`) and, where `audio` and
-/// `instance` aren't null, its AUDI and INST payloads, empty when absent: false, and all of them
+/// `instance` aren't null, its AUDI and INST payloads, empty when absent (`tune`, when given, is
+/// TUNE's likewise): false, and all of them
 /// untouched, for a bad magic, any container version but kStateContainerVersion, a chunk header
 /// or payload running past the end, a missing PTCH or MEDI, or a repeated PTCH, MEDI, AUDI or
-/// INST. Chunks with other IDs are skipped. No payload is parsed.
+/// INST or TUNE. Chunks with other IDs are skipped. No payload is parsed.
 bool findStateChunks(std::string_view bytes, std::string_view &patch, std::string_view &media,
                      std::optional<std::string_view> *audio = nullptr,
-                     std::optional<std::string_view> *instance = nullptr);
+                     std::optional<std::string_view> *instance = nullptr,
+                     std::optional<std::string_view> *tune = nullptr);
 } // namespace gg::core
 
 #endif // GG_CORE_STATECHUNKS_H
