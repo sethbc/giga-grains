@@ -1093,12 +1093,12 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     CHECK_THAT(rejection(fx), StartsWith("unknown key params.Macro Level: the parameters are "));
     CHECK_THAT(rejection(fx), ContainsSubstring("Macro Feedback, Macro Mix, A Source"));
     CHECK_THAT(rejection(fx),
-               ContainsSubstring("A Step 16, A Ring Length, A Loop, A Loop Length, A Overdub, "
-                                 "A Splice, A Quality, A Smear, A Bus Split"));
+               ContainsSubstring("A Step 16, A Mode, A Ring Length, A Loop, A Loop Length, "
+                                 "A Overdub, A Splice, A Quality, A Smear, A Bus Split"));
     CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget, Delay Amount, "
                                        "Delay Time, Delay Feedback, Delay Damping, "
                                        "Delay Ping-pong, Limiter Mode, Limiter Ceiling, "
-                                       "Limiter Release"));
+                                       "Limiter Release, MPE, MPE Bend Range, Bend Range"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));

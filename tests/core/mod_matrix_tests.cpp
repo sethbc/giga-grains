@@ -511,8 +511,9 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         const auto ref = gg::core::layerOf(slot);
         const bool control =
             ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16) ||
-                    ref->param == LayerParam::RingLength);
+                    ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode);
         const bool expected = !gg::core::isMacro(slot) && !control &&
+                              !gg::core::isMidiSetting(slot) &&
                               (ref ? ref->layer == 0
                                    : !gg::core::perLayerGlobalLayer(slot) ||
                                          slot == ParamSlot::Level || slot == ParamSlot::LayerAOn);
@@ -520,6 +521,7 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         CHECK(isValidTarget(slot) == expected);
         valid += isValidTarget(slot) ? 1 : 0;
     }
+    // Mode and the three MIDI settings (M3 sub-project 1) are no target: none is counted here.
     // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length),
     // sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven but
     // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
@@ -569,7 +571,8 @@ TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[
         const bool control = index >= 0x0Fu && index <= 0x30u;
         INFO("index " << index);
         CHECK(isModulatorControl(param) == control);
-        CHECK(isValidTarget(layerSlot(param, 0)) == (!control && param != LayerParam::RingLength));
+        CHECK(isValidTarget(layerSlot(param, 0)) ==
+              (!control && param != LayerParam::RingLength && param != LayerParam::Mode));
         for (uint8_t layer = 1; layer < kLayers; ++layer)
         {
             CHECK_FALSE(isValidTarget(layerSlot(param, layer)));

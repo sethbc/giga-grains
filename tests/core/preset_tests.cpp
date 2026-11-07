@@ -243,13 +243,14 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // 12,066, 37dd926d...). Retaken again at the merge of sub-projects 2 and 4, whose forty
     // parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
     // elements, 2,047 bytes, to sub-project 2's merge's (13,048, 6e2115f1...; 13,157,
-    // 5573ae15...).
+    // 5573ae15...). Retaken once more for M3 sub-project 1's seven parameters (A to D Mode, MPE,
+    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 15095);
-    CHECK(sha256Of(ptch) == "765ee8fb6eb035ef40765a49c28263681096cf51ad335b50759d8e61df06ca97");
-    CHECK(session.size() == 15204);
-    CHECK(sha256Of(session) == "b66606a7bca77fff9ce015ee18bab469eeac26107eee10005f810f5d9b50175e");
+    CHECK(ptch.size() == 15447);
+    CHECK(sha256Of(ptch) == "252fd91eccd37cf3fed3ff550e00a6b11feac948914c80b7dee970a986eb11bc");
+    CHECK(session.size() == 15556);
+    CHECK(sha256Of(session) == "79706b53e86d6f2390d709fab76b219dc93e5fab3cdedca751151027d3182f59");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -512,7 +513,8 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // forty parameters add 2,047 bytes to sub-project 2's merge's, 14,472 5c5c3e20... and 14,473
     // 58a43b60...); retaken at M3 Voice's Task 4: the five voice-only factory routes (44 to 48)
     // add 784 bytes, so INIT's are 17,303 7211d643... and 17,304 36b032f0..., and without them the
-    // pins above stand).
+    // pins above stand), and again for sub-project 1's seven
+    // parameters, 352 bytes more, 17,655 5337a57b... and 17,656 81fb0c52...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -520,12 +522,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 17303);
-    CHECK(sha256Of(fxBytes) == "7211d643cec366289c7013c5f996a6d062125c0511ac30ee6c3f3ddf464f4221");
+    CHECK(fxBytes.size() == 17655);
+    CHECK(sha256Of(fxBytes) == "5337a57bc546f56960c233796bf1c6cef26547c632db1563054ad02fc36e1355");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 17304);
+    CHECK(instBytes.size() == 17656);
     CHECK(sha256Of(instBytes) ==
-          "36b032f040e532f6a802df2440c9da2cc6bfeb4927d22931cecfb602b466545e");
+          "81fb0c5209bb7ff0fd75b80cfba4aa1164decd13c13cca6f6f01758f9e92df2e");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());
@@ -731,10 +733,21 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         INFO("slot " << s);
-        CHECK(loaded[s] == (gg::core::isRingParam(static_cast<ParamSlot>(s)) ? 0.25f : 0.75f));
+        const auto slot = static_cast<ParamSlot>(s);
+        CHECK(loaded[s] ==
+              (gg::core::isRingParam(slot) || gg::core::isMidiSetting(slot) ? 0.25f : 0.75f));
     }
 
-    // keepRingLengths (INIT's) copies each layer's Ring Length alone.
+    // The three MIDI settings are kept the same way (M3 sub-project 1's spec §4.1).
+    for (const ParamSlot s : {ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange})
+    {
+        CHECK(gg::core::isMidiSetting(s));
+        CHECK(loaded[static_cast<std::size_t>(s)] == 0.25f);
+    }
+    CHECK_FALSE(gg::core::isMidiSetting(ParamSlot::Budget));
+    CHECK_FALSE(gg::core::isMidiSetting(ParamSlot::Count));
+
+    // keepRingLengths (INIT's) copies each layer's Ring Length and the three MIDI settings.
     loaded.fill(0.75f);
     gg::core::keepRingLengths(current, loaded);
     std::size_t kept = 0;
@@ -743,7 +756,8 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
         INFO("slot " << s);
         const auto ref = gg::core::layerOf(static_cast<ParamSlot>(s));
         const bool length = ref && ref->param == gg::core::LayerParam::RingLength;
-        CHECK(loaded[s] == (length ? 0.25f : 0.75f));
+        const bool midi = gg::core::isMidiSetting(static_cast<ParamSlot>(s));
+        CHECK(loaded[s] == (length || midi ? 0.25f : 0.75f));
         kept += length ? 1 : 0;
     }
     CHECK(kept == gg::core::kLayers);

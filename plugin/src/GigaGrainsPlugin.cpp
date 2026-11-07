@@ -1795,7 +1795,8 @@ bool GigaGrainsPlugin::presetEdited() const noexcept
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         // A preset load ignores the ring parameters, so reloading wouldn't undo a change.
-        if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+        if (gg::core::isRingParam(static_cast<ParamSlot>(s)) ||
+            gg::core::isMidiSetting(static_cast<ParamSlot>(s)))
         {
             continue;
         }

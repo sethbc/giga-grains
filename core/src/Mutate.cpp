@@ -51,7 +51,13 @@ LockSet buildStructuralLocks() noexcept
         lock(layerSlot(LayerParam::Freeze, layer));
         lock(layerSlot(LayerParam::StepLength, layer));
         lock(layerSlot(LayerParam::Quality, layer));
+        // M3 sub-project 1: Mode is structure, as Source is.
+        lock(layerSlot(LayerParam::Mode, layer));
     }
+    // The MIDI settings are the instance's, not the sound's (M3 sub-project 1's spec §4.1).
+    lock(ParamSlot::Mpe);
+    lock(ParamSlot::MpeBendRange);
+    lock(ParamSlot::BendRange);
     // Every layer's five ring parameters: capture and memory (sub-project 2), which a preset load
     // keeps too (isRingParam). Ring Length would never move anyway (SP-M8, below).
     for (size_t s = 0; s < kParamCount; ++s)
