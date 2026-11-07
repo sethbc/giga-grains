@@ -73,6 +73,7 @@ inline double estimateF0(std::span<const float> x, double sampleRate, double min
     std::size_t mTarget = std::max<std::size_t>(1, reach / tau0);
     while (mTarget > 1 && mTarget * tau0 + 4 > tauMax)
         --mTarget;
+    double lastCmnd = 0.0; // the CMND at the last fit's minimum
     auto fit = [&](std::size_t centre) {
         std::size_t best = std::max<std::size_t>(2, centre >= 2 ? centre - 2 : 2);
         const std::size_t hi = std::min(centre + 2, tauMax - 1);
@@ -85,7 +86,8 @@ inline double estimateF0(std::span<const float> x, double sampleRate, double min
         const double c = cmnd[best + 1];
         const double den = a - 2.0 * b + c;
         if (den > 0.0)
-            r += 0.5 * (a - c) / den;
+            r += std::clamp(0.5 * (a - c) / den, -1.0, 1.0);
+        lastCmnd = b;
         return r;
     };
     double period = static_cast<double>(tau0);
@@ -102,7 +104,10 @@ inline double estimateF0(std::span<const float> x, double sampleRate, double min
             static_cast<std::size_t>(std::llround(period * static_cast<double>(next)));
         if (centre + 2 > tauMax)
             break;
-        period = fit(centre) / static_cast<double>(next);
+        const double fitted = fit(centre);
+        if (lastCmnd > 0.3) // a wrong minimum: keep the previous period
+            break;
+        period = fitted / static_cast<double>(next);
         m = next;
     }
     return sampleRate / period;
