@@ -510,7 +510,9 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // INST add 1,091 bytes, without which they are sub-project 3's merge's, 13,381 d3fce75c...
     // and 13,382 ffdb8cc2...; and retaken at the merge of sub-projects 2 and 4: sub-project 4's
     // forty parameters add 2,047 bytes to sub-project 2's merge's, 14,472 5c5c3e20... and 14,473
-    // 58a43b60...).
+    // 58a43b60...); retaken at M3 Voice's Task 4: the five voice-only factory routes (44 to 48)
+    // add 784 bytes, so INIT's are 17,303 7211d643... and 17,304 36b032f0..., and without them the
+    // pins above stand).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -518,12 +520,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 16519);
-    CHECK(sha256Of(fxBytes) == "129442fb0c4896b41ad6c5b42f947de01027e5d6c6569145ba29e4ba51ae4f19");
+    CHECK(fxBytes.size() == 17303);
+    CHECK(sha256Of(fxBytes) == "7211d643cec366289c7013c5f996a6d062125c0511ac30ee6c3f3ddf464f4221");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 16520);
+    CHECK(instBytes.size() == 17304);
     CHECK(sha256Of(instBytes) ==
-          "4e77e2b625f0d0cf825f6401314e866c9c69393f650153209f28017af49e2cbe");
+          "36b032f040e532f6a802df2440c9da2cc6bfeb4927d22931cecfb602b466545e");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());

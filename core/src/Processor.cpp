@@ -165,7 +165,8 @@ bool anyTimeVarying(const ModRoutes &routes) noexcept
     {
         const bool reaches =
             !isLayerTarget(r.target) || r.targetLayer == kAllLayers || r.targetLayer < kLayers;
-        if (isTimeVarying(r.source) && r.depth != 0.0f && isValidTarget(r.target) && reaches)
+        if (!r.voiceOnly && isTimeVarying(r.source) && r.depth != 0.0f && isValidTarget(r.target) &&
+            reaches)
         {
             return true;
         }

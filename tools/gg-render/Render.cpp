@@ -326,6 +326,7 @@ gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<Rou
                 .targetLayer = layerOrElse(r.targetLayer, gg::core::kAllLayers),
                 .depth = static_cast<float>(r.depth),
                 .curve = *curve,
+                .voiceOnly = r.voiceOnly,
             };
         }
         routes.at(r.slot - 1u) = route;

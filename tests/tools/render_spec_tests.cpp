@@ -3148,3 +3148,28 @@ TEST_CASE(
     }
     CHECK(embedded <= gg::core::kEmbedCapBytes);
 }
+
+TEST_CASE("render spec route takes voiceOnly", "[render]")
+{
+    using gg::render::RouteSpec;
+    auto j = fxLayersJson();
+    j["mod"] = nlohmann::json::parse(R"([
+        {"slot": 44, "source": "Pressure", "target": "Density", "depth": 2, "curve": "Unipolar",
+         "voiceOnly": true},
+        {"slot": 45, "source": "Timbre", "target": "Position", "depth": 0.5, "voiceOnly": false},
+        {"slot": 46, "source": "Note Pitch", "target": "Pitch", "depth": 1},
+        {"slot": 47, "source": "Release Velocity", "target": "Size", "depth": 1}
+    ])");
+    const RenderSpec spec = parseJson(j);
+    REQUIRE(spec.fx.mod.size() == 4);
+    CHECK(spec.fx.mod[0].voiceOnly);
+    CHECK_FALSE(spec.fx.mod[1].voiceOnly);
+    CHECK_FALSE(spec.fx.mod[2].voiceOnly);
+    CHECK(spec.fx.mod[3].source == "Release Velocity");
+    CHECK(gg::render::routesWith(gg::core::factoryRoutes(gg::core::Mode::Fx), spec.fx.mod)[43]
+              .voiceOnly);
+
+    auto bad = j;
+    bad["mod"][0]["voiceOnly"] = 1;
+    CHECK(rejection(bad) == "mod[0].voiceOnly must be true or false");
+}

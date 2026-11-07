@@ -161,6 +161,10 @@ TiXmlElement routeElement(size_t slot, const ModRoute &r)
     e.SetDoubleAttribute("depth", static_cast<double>(r.depth));
     e.SetAttribute(kBitsAttribute, bitsToHex(r.depth).data());
     e.SetAttribute("curve", modCurveName(r.curve));
+    if (r.voiceOnly)
+    {
+        e.SetAttribute("voiceOnly", "1"); // written only when true; absent reads as false
+    }
     return e;
 }
 
@@ -209,7 +213,15 @@ ModRoute parseRoute(const TiXmlElement &e)
     {
         return ModRoute{}; // finite as a double, beyond a float's range
     }
-    return ModRoute{source, sourceLayer, target, targetLayer, depth, curve};
+    // Only "1" reads as Voice only; absent or any other value reads as false.
+    const char *vo = e.Attribute("voiceOnly");
+    return ModRoute{source,
+                    sourceLayer,
+                    target,
+                    targetLayer,
+                    depth,
+                    curve,
+                    vo != nullptr && std::string_view{vo} == "1"};
 }
 
 // The routes of a <mod> element: each <route> with a `slot` of 1 to kModSlots sets that slot,
