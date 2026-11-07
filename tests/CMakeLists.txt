@@ -70,6 +70,7 @@ add_executable(gg-tests
         metrics/click_injection_tests.cpp
         metrics/comb_tests.cpp
         metrics/metrics_tests.cpp
+        metrics/pitch_estimate_tests.cpp
         metrics/preset_goldens_tests.cpp
         metrics/spectrogram_tests.cpp
         sweep/SweepDriver.cpp
