@@ -43,12 +43,14 @@ struct Fnv1a
     template <class T> void value(const T &v) { bytes(&v, sizeof v); }
 };
 
-// The output's bytes, then every logged grain's fields, one at a time (no padding).
-uint64_t hashRender(const Audio &audio, const GrainLog &log)
+// Every logged grain's fields, one at a time (no padding). Not the audio: its bytes depend on
+// libm (the Hann table's cos, the sine sample's sin), which may differ in the last ulp between
+// CI's legs, and the cross-platform gate is the grain-event log. No field hashed here comes from
+// libm (rates from exp2Det, gains through IEEE sqrt). The audio at rest is the at-rest WAV
+// check's.
+uint64_t hashGrains(const GrainLog &log)
 {
     Fnv1a f;
-    f.bytes(audio.left.data(), audio.left.size() * sizeof(float));
-    f.bytes(audio.right.data(), audio.right.size() * sizeof(float));
     for (const gg::GrainSpec &g : log.grains)
     {
         f.value(g.index);
@@ -66,8 +68,8 @@ uint64_t hashRender(const Audio &audio, const GrainLog &log)
 }
 
 // Pinned on the code before the Pitch clock (sub-project 3's Task 2, Step 1).
-constexpr uint64_t kFreeVoicesHash = 0x1f4896d56eb8dab6;
-constexpr uint64_t kLiveCloudHash = 0xfb04e5e01f0e8610;
+constexpr uint64_t kFreeVoicesHash = 0xa95e322c275c80d5;
+constexpr uint64_t kLiveCloudHash = 0x29d40b6a21e262e2;
 } // namespace
 
 TEST_CASE("free voices and the Cloud stream are unchanged by the clock", "[engine][pitchsync]")
@@ -119,6 +121,6 @@ TEST_CASE("free voices and the Cloud stream are unchanged by the clock", "[engin
     REQUIRE_FALSE(liveLog.overflowed);
     REQUIRE(liveLog.grains.size() > 50);
 
-    CHECK(hashRender(voices, voiceLog) == kFreeVoicesHash);
-    CHECK(hashRender(live, liveLog) == kLiveCloudHash);
+    CHECK(hashGrains(voiceLog) == kFreeVoicesHash);
+    CHECK(hashGrains(liveLog) == kLiveCloudHash);
 }
