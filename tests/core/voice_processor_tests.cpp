@@ -1152,3 +1152,36 @@ TEST_CASE("mpe and note expressions render the same voices", "[core][voice]")
     CHECK(mpeLines == exprLines);
     CHECK(mpe.channels == expr.channels);
 }
+
+TEST_CASE("a pedal down numbered before a note off at one sample sustains the note",
+          "[core][voice][notes]")
+{
+    // M3 expression spec E8: at one offset the host's order decides: CC 64 down (seq 1), then
+    // the note-off (seq 2): the note is pedal-held, and the Cloud held set keeps its key.
+    auto p = voiceProcessor();
+    Script s;
+    s.on(0, 60);
+    s.control(5, ControlKind::Sustain, 0, 1.0f);
+    s.off(5, 60);
+    s.controls.back().second.seq = 1;
+    s.notes.back().second.seq = 2;
+    Stereo out;
+    render(*p, s, 0, 256, {256}, out);
+    const auto keys = p->heldKeys();
+    REQUIRE(keys.size() == 1);
+    CHECK(keys[0] == 60);
+}
+
+TEST_CASE("with sequence numbers 0 a tie keeps the kinds order", "[core][voice][notes]")
+{
+    // The same two events with seq 0: the note-off comes before the control, as before, so the
+    // pedal-down finds the note released and it is not held.
+    auto p = voiceProcessor();
+    Script s;
+    s.on(0, 60);
+    s.control(5, ControlKind::Sustain, 0, 1.0f);
+    s.off(5, 60);
+    Stereo out;
+    render(*p, s, 0, 256, {256}, out);
+    CHECK(p->heldKeys().empty());
+}

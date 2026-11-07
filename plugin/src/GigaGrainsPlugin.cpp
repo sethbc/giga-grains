@@ -496,6 +496,7 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
             {
                 break;
             }
+            event.seq = next + 1; // the host's order (spec E8)
             events_[count++] = event;
         }
         else if (isNoteEvent(header))
@@ -508,6 +509,7 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
             }
             if (toNoteEvent(header, notes_[noteCount]))
             {
+                notes_[noteCount].seq = next + 1;
                 ++noteCount;
             }
         }
@@ -519,6 +521,7 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
             }
             if (toControlEvent(header, controls_[controlCount]))
             {
+                controls_[controlCount].seq = next + 1;
                 ++controlCount;
             }
         }
@@ -867,6 +870,7 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
                 queue();
             }
             note.offset = 0;
+            note.seq = i + 1;
             notes_[notes++] = note;
             continue;
         }
@@ -877,6 +881,7 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
                 queue();
             }
             control.offset = 0;
+            control.seq = i + 1;
             controls_[controls++] = control;
             continue;
         }
@@ -896,6 +901,7 @@ void GigaGrainsPlugin::applyBetweenBlocks(const clap_input_events *in, uint32_t 
             queue();
         }
         event.offset = 0;
+        event.seq = i + 1;
         events_[mods++] = event;
     }
     if (mods > 0 || notes > 0 || controls > 0)

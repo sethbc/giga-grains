@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
 
 #include "gg/core/DenormalGuard.h"
 #include "gg/core/MathDet.h"
@@ -233,6 +234,12 @@ bool heldState(NoteTable::State s) noexcept
 
 /// The delay damper's cross weight for the ping-pong switch: 1 on, 0 off (Delay's law).
 float pingPongWeight(const DelayParams &d) noexcept { return d.pingPong ? 1.0f : 0.0f; }
+
+// The merge's tie order among the kinds (M3 expression spec E8), after the sequence numbers: a
+// parameter event 0, a note 1, a per-note parameter modulation 2 (a later task), a control 3.
+constexpr uint32_t kRankNote = 1;
+constexpr uint32_t kRankControl = 3;
+uint32_t eventRank(const ParamEvent &) noexcept { return 0; }
 } // namespace
 
 float Processor::Ramp::at(int64_t t, int64_t length) const noexcept
@@ -2217,15 +2224,21 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         join(0);
     }
 
-    // The four spans merged by offset into one sequence, at a tie a parameter event first, then a
-    // note, then a control, then a command. The order between the kinds doesn't matter: a group's
-    // parameter changes, notes and controls are independent, its commands apply after them, and
-    // each kind keeps its own order.
+    // The four spans merged into one sequence by (offset, seq, rank) (M3 expression spec E8): at
+    // one offset the host's order decides, by the events' sequence numbers; with those equal (0,
+    // as gg-render and the tests leave them) the kinds do, a parameter event first, then a note,
+    // then a control. A command goes first only at a strictly smaller offset, so at a tie it
+    // comes last. The order between the kinds doesn't matter otherwise: a group's parameter
+    // changes, notes and controls are independent, its commands apply after them, and each kind
+    // keeps its own order.
     size_t nextEvent = 0;
     size_t nextNote = 0;
     size_t nextControl = 0;
     size_t nextCommand = 0;
     constexpr uint64_t kNone = std::numeric_limits<uint64_t>::max();
+    // (offset, seq, rank) as one ordered tuple; an empty span's is the largest.
+    using MergeKey = std::tuple<uint64_t, uint64_t, uint32_t>;
+    constexpr MergeKey kNoneKey{kNone, 0, 0};
     for (;;)
     {
         const uint64_t eventAt = nextEvent < events.size() ? events[nextEvent].offset : kNone;
@@ -2238,6 +2251,14 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
         {
             break;
         }
+        const MergeKey eventKey = eventAt == kNone ? kNoneKey
+                                                   : MergeKey{eventAt, events[nextEvent].seq,
+                                                              eventRank(events[nextEvent])};
+        const MergeKey noteKey =
+            noteAt == kNone ? kNoneKey : MergeKey{noteAt, notes[nextNote].seq, kRankNote};
+        const MergeKey controlKey =
+            controlAt == kNone ? kNoneKey
+                               : MergeKey{controlAt, controls[nextControl].seq, kRankControl};
         if (commandAt < eventAt && commandAt < noteAt && commandAt < controlAt)
         {
             // M2 sub-project 2's spec §6.4: a command joins its boundary's group, applied there
@@ -2254,7 +2275,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
             }
             continue;
         }
-        if (eventAt <= noteAt && eventAt <= controlAt)
+        if (eventKey <= noteKey && eventKey <= controlKey)
         {
             const ParamEvent &e = events[nextEvent++];
             const auto s = static_cast<size_t>(e.slot);
@@ -2275,7 +2296,7 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
                 hasPendingBase_[s] = true;
             }
         }
-        else if (noteAt <= controlAt)
+        else if (noteKey <= controlKey)
         {
             const NoteEvent &n = notes[nextNote++];
             if (!validNote(n))

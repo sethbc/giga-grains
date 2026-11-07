@@ -411,6 +411,26 @@ TEST_CASE("plugin_cc64_pedal", "[plugin][voice]")
     CHECK(ends == (mpe ? std::vector<End>{{-1, 4, 60}} : std::vector<End>{}));
 }
 
+TEST_CASE("plugin host order decides a same sample pedal and note off", "[plugin][voice][notes]")
+{
+    // M3 expression spec E8: CC 64 down, then the note-off, both at frame 10 of one block: the
+    // plugin numbers them in the host's order, so the note is pedal-held and its voice keeps
+    // spawning after the block.
+    PluginUnderTest plugin(kInstrumentId);
+    GrainLog log;
+    setUpInstrument(plugin, log, "e8-pedal.wav");
+    const auto on = note(CLAP_EVENT_NOTE_ON, 0, 60, -1, 0.8, 0);
+    auto down = gg::test::midiEvent(0xB0, 64, 127);
+    down.header.time = 10;
+    auto off = gg::test::midiEvent(0x80, 60, 0);
+    off.header.time = 10;
+    run(plugin, {&on.header, &down.header, &off.header});
+    CHECK(heldKeys(plugin) == std::vector<int>{60});
+    log.clear();
+    run(plugin, {});
+    CHECK(log.any(0));
+}
+
 TEST_CASE("plugin_as_vst3_answers", "[plugin][voice]")
 {
     // Spec §4.5: clap-wrapper's clap_plugin_as_vst3, so its VST3 offers 16 MIDI channels and the

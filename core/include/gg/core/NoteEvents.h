@@ -38,6 +38,9 @@ struct NoteEvent
     int32_t noteId{-1};
     /// Off only: 0..1. Clamped to it; NaN counts as 0.
     float releaseVelocity{0.0f};
+    /// The host's order among events at one sample (M3 expression spec E8): the Processor's merge
+    /// breaks an offset tie by it before the kind. 0, the default, ties by the kinds.
+    uint32_t seq{0};
 };
 
 /// Which MIDI control a ControlEvent carries (M2 sub-project 1's spec §6.8): CC 1, channel
@@ -73,6 +76,8 @@ struct ControlEvent
     /// The Note kinds: the CLAP note ID, matched first; −1 matches by (channel, key). An ID that
     /// names no note ignores the event.
     int32_t noteId{-1};
+    /// As NoteEvent::seq.
+    uint32_t seq{0};
 };
 
 } // namespace gg::core
