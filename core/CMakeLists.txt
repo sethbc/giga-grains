@@ -23,6 +23,7 @@ add_library(gg-core STATIC
         src/ModMatrix.cpp
         src/ModSources.cpp
         src/Mutate.cpp
+        src/NoteTable.cpp
         src/ParamIds.cpp
         src/ParamMap.cpp
         src/Patch.cpp

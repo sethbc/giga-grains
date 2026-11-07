@@ -27,6 +27,8 @@
 #include "gg/core/Limiter.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
+#include "gg/core/NoteEvents.h"
+#include "gg/core/NoteTable.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/SourceExchange.h"
@@ -63,46 +65,6 @@ struct ParamEvent
     ParamSlot slot;    ///< Events for ParamSlot::Count are ignored.
     bool isModulation; ///< An offset added to the base value, rather than the base value itself.
     double value;      ///< In the parameter's units (paramMeta). Converted to float on receipt.
-};
-
-enum class NoteEventType : uint8_t
-{
-    On,     ///< Holds (channel, key).
-    Off,    ///< Releases the held pairs that channel and key match; −1 matches any.
-    AllOff, ///< Releases every key held on its channel, as MIDI CC 123 does (ruling R14); −1
-            ///< releases everything. The key is ignored.
-};
-
-/// A note event inside one process() call (spec §6.1). The grains ignore velocity (D6); an On's
-/// velocity is the mod matrix's Velocity source (M2 sub-project 1's spec §6.8).
-struct NoteEvent
-{
-    uint32_t offset; ///< Frames from the start of the call. A call's notes are sorted by it.
-    NoteEventType type;
-    int16_t channel; ///< 0..15; −1 = any (Off and AllOff only). Other values make it ignored.
-    int16_t key;     ///< 0..127; −1 = any (Off only; AllOff ignores it). Other values make the
-                     ///< event ignored.
-    /// On only: 0..1. Clamped to it; NaN counts as 0.
-    float velocity{1.0f};
-};
-
-/// Which MIDI control a ControlEvent carries (M2 sub-project 1's spec §6.8): CC 1, channel
-/// pressure or pitch bend.
-enum class ControlKind : uint8_t
-{
-    ModWheel,
-    Aftertouch,
-    PitchBend,
-};
-
-/// A MIDI control inside one process() call: the mod matrix's Mod Wheel, Aftertouch and Pitch
-/// Bend sources (spec §6.8). It joins the control grid as a note event does.
-struct ControlEvent
-{
-    uint32_t offset;  ///< Frames from the start of the call. A call's controls are sorted by it.
-    ControlKind kind; ///< Out of range: the event is ignored.
-    int16_t channel;  ///< 0..15 or −1 (any); other values make it ignored. Not otherwise read yet.
-    float value;      ///< 0..1, clamped to it (pitch bend's center is 0.5); NaN or ±∞ ignored.
 };
 
 /// What a CommandEvent does to its layer's ring (M2 sub-project 2's spec §6.4).
@@ -1108,10 +1070,11 @@ class Processor
     /// Gives each engine its freeze setting: its layer's effective Freeze, once armed, or in the
     /// FX any held key. An effective Freeze that is off arms it.
     void syncFreeze() noexcept;
-    /// Applies one note event, whose fields are in range, to held_, and an On's velocity and key to
-    /// the pending MIDI sources.
+    /// Applies one note event, whose fields are in range, to the note table, and an On's velocity
+    /// and key to the pending MIDI sources.
     void applyNote(const NoteEvent &n) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Makes held_ the held set in effect: rebuilds keys_ and gives every engine its keys.
+    /// Makes the note table's held keys the held set in effect: rebuilds keys_ and gives every
+    /// engine its keys.
     void updateKeys() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Applies the pending commands at the boundary b (CommandEvent), in order, and empties them.
     void applyCommands(int64_t b) noexcept SST_CPPUTILS_NONBLOCKING;
@@ -1173,10 +1136,12 @@ class Processor
     std::array<CommandEvent, kMaxGroupCommands> pendingCommands_{};
     uint32_t pendingCommandCount_{0};
 
-    // The held set: one channel bit per key. Pending notes apply to it as they arrive, in
-    // order; hasPendingNotes_ says some have since the last applied boundary. keys_ is the set
-    // in effect, as of that boundary: the distinct keys, ascending.
-    std::array<uint16_t, 128> held_{};
+    // The note table (NoteTable.h): pending notes and controls apply to it as they arrive, in
+    // order; hasPendingNotes_ says some have since the last applied boundary. keys_ is the held
+    // set in effect, as of that boundary: the distinct keys of its held and pedal-held notes,
+    // ascending. noteOrdinal_ is the next On's ordinal.
+    NoteTable noteTable_;
+    uint64_t noteOrdinal_{0};
     bool hasPendingNotes_{false};
     std::array<uint8_t, 128> keys_{};
     size_t keyCount_{0};
