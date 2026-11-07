@@ -178,6 +178,7 @@ if (GG_BUILD_PLUGINS)
             plugin/routes_tests.cpp
             plugin/rt_tests.cpp
             plugin/sample_tests.cpp
+            plugin/voice_plugin_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()
