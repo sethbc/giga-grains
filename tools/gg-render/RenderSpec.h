@@ -311,7 +311,8 @@ struct RouteSpec
     /// layer-A name ("A Pitch" or the bare M1 "Pitch"; "Level" and "Layer A On" for the per-layer
     /// globals), with targetLayer picking the layers. Layers B to D's names ("B Pitch", "Level B")
     /// are refused: targetLayer reaches them. It must be a modulation target
-    /// (gg::core::isValidTarget: not a macro, nor a modulator's own control). "" for "None".
+    /// (gg::core::isValidTarget: not a macro, nor a modulator's own control but the envelopes',
+    /// which act per voice only). "" for "None".
     std::string target{};
     /// A layer target's layers: "A" to "D", or "all" (the default). Not allowed with a global
     /// target.

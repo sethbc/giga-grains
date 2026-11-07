@@ -50,6 +50,10 @@ class VoiceAllocator
         bool told{false};         ///< The engine has the voice (startVoice); false after start().
         int64_t startedAt{0};     ///< The boundary the voice started at.
         float envValue[2]{};      ///< Env 1's and Env 2's values for the last stepped cell.
+        /// Env 1's and Env 2's parameters, the voice's own (M3 expression spec E6, EB8, P2): the
+        /// Processor computes them from the voice's envelope slots when it starts, when it
+        /// releases and at every applied boundary, and steps and samples its envelopes with them.
+        AdsrParams envParams[2]{};
     };
 
     /// Starts a voice for note `noteIndex` (whose NoteTable ordinal is `noteOrdinal`) at the

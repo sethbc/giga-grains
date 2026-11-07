@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -42,6 +43,7 @@ using gg::core::LayerParam;
 using gg::core::layerSlot;
 using gg::core::Mode;
 using gg::core::ModRoute;
+using gg::core::ModRoutes;
 using gg::core::ModSource;
 using gg::core::NoteEvent;
 using gg::core::NoteEventType;
@@ -248,6 +250,40 @@ size_t countIn(const std::vector<gg::GrainSpec> &g, int64_t from, int64_t to)
     return static_cast<size_t>(std::count_if(g.begin(), g.end(), [&](const gg::GrainSpec &x) {
         return x.onsetSample >= from && x.onsetSample < to;
     }));
+}
+
+/// Layer `layer`'s event lines (gg-render's formatEventLine), those with onsets at or after
+/// `from`.
+std::vector<std::string> linesOf(const Log &log, uint32_t layer, int64_t from = 0)
+{
+    std::vector<std::string> out;
+    for (const gg::GrainSpec &g : log.layer(layer))
+    {
+        if (g.onsetSample >= from)
+        {
+            out.push_back(gg::render::formatEventLine(layer, g));
+        }
+    }
+    return out;
+}
+
+/// The instrument's factory routes with the five voice-only ones (44 to 48) cleared and `extra`
+/// at index 13 (slot 14; an empty route leaves it empty).
+ModRoutes routesWith(const ModRoute &extra)
+{
+    ModRoutes routes = gg::core::factoryRoutes(Mode::Instrument);
+    for (size_t i = 43; i < 48; ++i)
+    {
+        routes[i] = ModRoute{};
+    }
+    routes[13] = extra;
+    return routes;
+}
+
+ModRoute voiceRoute(ModSource source, ParamSlot target, float depth,
+                    gg::core::ModCurve curve = gg::core::ModCurve::Unipolar)
+{
+    return ModRoute{source, gg::core::kSameLayer, target, gg::core::kAllLayers, depth, curve};
 }
 } // namespace
 
@@ -1115,6 +1151,17 @@ TEST_CASE("processor_voice_params_recompute_only_on_change", "[core][voice][mod]
     p->setBase(slotA(LayerParam::Size), -3.0f);
     render(*p, {}, 27520, 27520 + 3200, {256}, out);
     CHECK(p->voiceParamRecomputes() == settled + 1);
+    // The key holds the envelope controls, Pan and Bus Split too (M3 expression spec 4.4): each
+    // change recomputes the voice once.
+    p->setBase(slotA(LayerParam::Env1Decay), -2.0f);
+    render(*p, {}, 30720, 30720 + 3200, {256}, out);
+    CHECK(p->voiceParamRecomputes() == settled + 2);
+    p->setBase(slotA(LayerParam::Pan), 0.25f);
+    render(*p, {}, 33920, 33920 + 3200, {256}, out);
+    CHECK(p->voiceParamRecomputes() == settled + 3);
+    p->setBase(slotA(LayerParam::BusSplit), 0.5f);
+    render(*p, {}, 37120, 37120 + 3200, {256}, out);
+    CHECK(p->voiceParamRecomputes() == settled + 4);
 }
 
 TEST_CASE("mpe and note expressions render the same voices", "[core][voice]")
@@ -1184,4 +1231,171 @@ TEST_CASE("with sequence numbers 0 a tie keeps the kinds order", "[core][voice][
     Stereo out;
     render(*p, s, 0, 256, {256}, out);
     CHECK(p->heldKeys().empty());
+}
+
+TEST_CASE("velocity to Env 1 Attack equals the layer's attack moved", "[core][voice][mod]")
+{
+    // M3 expression spec E6, EB8: Velocity to Env 1 Attack sets the voice's own attack from its
+    // first cell, so its grains are those of a layer whose attack's base is raised by the depth.
+    const auto run = [](bool route, float attack) {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Attack), attack);
+        p->setRoutes(route
+                         ? routesWith(voiceRoute(ModSource::Velocity, ParamSlot::Env1Attack, 1.0f))
+                         : routesWith(ModRoute{}));
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f);
+        s.off(36000, 60);
+        Stereo out;
+        render(*p, s, 0, 72000, {256}, out, nullptr, log.get());
+        // The layer's own attack doesn't move.
+        CHECK(p->effective(slotA(LayerParam::Env1Attack)) == attack);
+        return linesOf(*log, 0);
+    };
+    const auto with = run(true, -1.0f);  // 0.5 s, raised by 1 to 1 s
+    const auto moved = run(false, 0.0f); // 1 s
+    const auto without = run(false, -1.0f);
+    REQUIRE(with.size() > 60);
+    CHECK(with == moved);
+    CHECK(with != without);
+}
+
+TEST_CASE("release velocity to Env 1 Release equals the layer's release moved",
+          "[core][voice][mod]")
+{
+    // E6, P2: Release Velocity to Env 1 Release sets the voice's release from the release's
+    // first cell.
+    const auto run = [](bool route, float release) {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Release), release);
+        p->setRoutes(
+            route ? routesWith(voiceRoute(ModSource::ReleaseVelocity, ParamSlot::Env1Release, 1.0f))
+                  : routesWith(ModRoute{}));
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f);
+        s.notes.push_back({24000, {0, NoteEventType::Off, 0, 60, 0.0f, -1, 1.0f}});
+        Stereo out;
+        render(*p, s, 0, 96000, {256}, out, nullptr, log.get());
+        CHECK(p->effective(slotA(LayerParam::Env1Release)) == release);
+        return linesOf(*log, 0, 24000);
+    };
+    const auto with = run(true, -1.0f);  // 0.5 s, raised by 1 to 1 s
+    const auto moved = run(false, 0.0f); // 1 s
+    const auto without = run(false, -1.0f);
+    REQUIRE(with.size() > 30);
+    CHECK(with == moved);
+    CHECK(with != without);
+}
+
+TEST_CASE("Env 1 to Env 1 Release does nothing", "[core][voice][mod]")
+{
+    // E6: no envelope modulates its own segments; nor does Env 2 an Env 1 control.
+    const auto run = [](const ModRoute &extra) {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Attack), -2.0f);
+        p->setBase(slotA(LayerParam::Env1Release), -1.0f);
+        p->setRoutes(routesWith(extra));
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f);
+        s.off(24000, 60);
+        Stereo out;
+        render(*p, s, 0, 72000, {256}, out, nullptr, log.get());
+        return linesOf(*log, 0);
+    };
+    const auto without = run(ModRoute{});
+    REQUIRE(without.size() > 30);
+    CHECK(run(voiceRoute(ModSource::Env1, ParamSlot::Env1Release, 3.0f)) == without);
+    CHECK(run(voiceRoute(ModSource::Env2, ParamSlot::Env1Attack, 3.0f)) == without);
+}
+
+TEST_CASE("an envelope target never moves a Cloud layer", "[core][voice][mod]")
+{
+    // E6: the envelope controls are targets per voice only. On a Cloud layer, whose Env 1 here
+    // drives Size, Velocity to Env 1 Attack moves neither the attack nor a grain.
+    const auto run = [](bool route) {
+        auto p = voiceProcessor(Mode::Instrument, false);
+        p->setBase(slotA(LayerParam::Env1Attack), -1.0f);
+        ModRoutes routes = routesWith(voiceRoute(ModSource::Env1, ParamSlot::Size, 2.0f));
+        if (route)
+        {
+            routes[14] = voiceRoute(ModSource::Velocity, ParamSlot::Env1Attack, 2.0f);
+        }
+        p->setRoutes(routes);
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f);
+        s.off(36000, 60);
+        Stereo out;
+        render(*p, s, 0, 60000, {256}, out, nullptr, log.get());
+        CHECK(p->effective(slotA(LayerParam::Env1Attack)) == -1.0f);
+        return linesOf(*log, 0);
+    };
+    const auto without = run(false);
+    REQUIRE(without.size() > 30);
+    CHECK(run(true) == without);
+}
+
+TEST_CASE("Key to Pan pans each voice", "[core][voice][mod]")
+{
+    // E6: Pan is a voice target. At Stereo 0, Key to Pan (Bipolar, depth 1) sets each voice's
+    // Pan to clamp(bipolar(key / 127)). The grains' pan reads it once CloudParams carries it
+    // (EB9's CloudParams::pan); until then the voice's computed Pan is checked.
+    auto p = voiceProcessor();
+    p->setBase(slotA(LayerParam::Stereo), 0.0f);
+    p->setRoutes(
+        routesWith(voiceRoute(ModSource::Key, ParamSlot::Pan, 1.0f, gg::core::ModCurve::Bipolar)));
+    auto log = attachLog(*p);
+    Script s;
+    s.on(0, 36);
+    s.on(640, 96);
+    Stereo out;
+    render(*p, s, 0, 9600, {256}, out, nullptr, log.get());
+    const auto expected = [](int key) {
+        return std::clamp(
+            gg::core::applyCurve(gg::core::ModCurve::Bipolar, static_cast<float>(key) / 127.0f),
+            -1.0f, 1.0f);
+    };
+    CHECK(std::bit_cast<uint32_t>(p->voiceValue(0, 0, LayerParam::Pan)) ==
+          std::bit_cast<uint32_t>(expected(36)));
+    CHECK(std::bit_cast<uint32_t>(p->voiceValue(0, 1, LayerParam::Pan)) ==
+          std::bit_cast<uint32_t>(expected(96)));
+    CHECK(expected(36) < 0.0f);
+    CHECK(expected(96) > 0.0f);
+    // The layer's Pan doesn't move.
+    CHECK(p->effective(slotA(LayerParam::Pan)) == 0.0f);
+    REQUIRE_FALSE(grainsOf(*log, 0, 0).empty());
+    REQUIRE_FALSE(grainsOf(*log, 0, 1).empty());
+}
+
+TEST_CASE("Bus Split per voice", "[core][voice][mod]")
+{
+    // E6: Bus Split is a voice target. Velocity to Bus Split (Unipolar, depth 1): the voice
+    // struck at velocity 0 keeps every grain on bus 0, the one at velocity 1 puts every grain on
+    // bus 1, while both sound.
+    auto p = voiceProcessor();
+    p->setRoutes(routesWith(voiceRoute(ModSource::Velocity, ParamSlot::BusSplit, 1.0f)));
+    auto log = attachLog(*p);
+    Script s;
+    s.on(0, 60, 0, 0.0f);
+    s.on(640, 67, 0, 1.0f);
+    Stereo out;
+    render(*p, s, 0, 24000, {256}, out, nullptr, log.get());
+    const auto soft = grainsOf(*log, 0, 0);
+    const auto hard = grainsOf(*log, 0, 1);
+    REQUIRE(soft.size() > 20);
+    REQUIRE(hard.size() > 20);
+    for (const gg::GrainSpec &g : soft)
+    {
+        INFO("onset " << g.onsetSample);
+        CHECK(g.bus == 0);
+    }
+    for (const gg::GrainSpec &g : hard)
+    {
+        INFO("onset " << g.onsetSample);
+        CHECK(g.bus == 1);
+    }
+    CHECK(p->effective(slotA(LayerParam::BusSplit)) == 0.0f);
 }

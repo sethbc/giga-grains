@@ -509,8 +509,10 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     {
         const auto slot = static_cast<ParamSlot>(i);
         const auto ref = gg::core::layerOf(slot);
+        // The eight envelope controls are targets, per voice only (M3 expression spec E6).
         const bool control =
-            ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16) ||
+            ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16 &&
+                     !gg::core::isEnvelopeControl(ref->param)) ||
                     ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode ||
                     gg::core::isRoutingOrCurve(ref->param));
         const bool expected = !gg::core::isMacro(slot) && !control &&
@@ -526,8 +528,9 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length),
     // sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven but
     // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals. M3 sub-project 2 adds Pan (the
-    // first of the six; Note Channel, the keys and the curves are no target, nor the zones).
-    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8 + 1);
+    // first of the six; Note Channel, the keys and the curves are no target, nor the zones) and
+    // the eight envelope controls, voice-only targets (E6).
+    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8 + 1 + 8);
     CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
     CHECK(isLayerTarget(ParamSlot::Position));
@@ -574,7 +577,8 @@ TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[
         INFO("index " << index);
         CHECK(isModulatorControl(param) == control);
         CHECK(isValidTarget(layerSlot(param, 0)) ==
-              (!control && param != LayerParam::RingLength && param != LayerParam::Mode &&
+              ((!control || gg::core::isEnvelopeControl(param)) &&
+               param != LayerParam::RingLength && param != LayerParam::Mode &&
                !gg::core::isRoutingOrCurve(param)));
         for (uint8_t layer = 1; layer < kLayers; ++layer)
         {
@@ -788,5 +792,103 @@ TEST_CASE("no route targets the routing and curve parameters", "[core][mod]")
                                LayerParam::Env1Curve, LayerParam::Env2Curve})
     {
         CHECK_FALSE(isValidTarget(layerSlot(p, 0)));
+    }
+}
+
+TEST_CASE("envelope controls are voice only targets", "[core][mod]")
+{
+    // M3 expression spec E6, section 4.4: the eight envelope controls are route targets that act
+    // per voice only; every other modulator control is still refused.
+    using gg::core::actsPerVoice;
+    using gg::core::isVoiceOnlyTarget;
+    using gg::core::isVoiceTarget;
+    constexpr std::array<LayerParam, 8> kEnv{
+        LayerParam::Env1Attack,  LayerParam::Env1Decay,   LayerParam::Env1Sustain,
+        LayerParam::Env1Release, LayerParam::Env2Attack,  LayerParam::Env2Decay,
+        LayerParam::Env2Sustain, LayerParam::Env2Release,
+    };
+    for (const LayerParam p : kEnv)
+    {
+        INFO("param " << gg::core::layerParamIndex(p));
+        CHECK(isValidTarget(layerSlot(p, 0)));
+        CHECK(isVoiceOnlyTarget(layerSlot(p, 0)));
+        CHECK(isVoiceTarget(layerSlot(p, 0)));
+        for (uint8_t layer = 1; layer < kLayers; ++layer)
+        {
+            CHECK_FALSE(isValidTarget(layerSlot(p, layer)));
+            CHECK_FALSE(isVoiceOnlyTarget(layerSlot(p, layer)));
+        }
+    }
+    STATIC_REQUIRE_FALSE(isValidTarget(layerSlot(LayerParam::Lfo1Rate, 0)));
+    STATIC_REQUIRE_FALSE(isValidTarget(layerSlot(LayerParam::Random1Rate, 0)));
+    STATIC_REQUIRE_FALSE(isValidTarget(layerSlot(LayerParam::Step1, 0)));
+    STATIC_REQUIRE(isValidTarget(layerSlot(LayerParam::Env2Release, 0)));
+    STATIC_REQUIRE(isVoiceOnlyTarget(ParamSlot::Env1Attack));
+    STATIC_REQUIRE_FALSE(isVoiceOnlyTarget(ParamSlot::Size));
+    STATIC_REQUIRE_FALSE(isVoiceOnlyTarget(ParamSlot::Pan));
+    STATIC_REQUIRE_FALSE(isVoiceOnlyTarget(ParamSlot::Level));
+    STATIC_REQUIRE_FALSE(isVoiceOnlyTarget(ParamSlot::Lfo1Rate));
+
+    // The voice targets: the 22 rows (Pan and Bus Split among them) and Level; kPerNoteSlots
+    // counts the rows and Level, last.
+    STATIC_REQUIRE(gg::core::kVoiceLayerTargets.size() == 22);
+    STATIC_REQUIRE(gg::core::kPerNoteSlots == 23);
+    for (const LayerParam p : gg::core::kVoiceLayerTargets)
+    {
+        CHECK(isVoiceTarget(layerSlot(p, 0)));
+        CHECK_FALSE(isVoiceTarget(layerSlot(p, 1)));
+    }
+    CHECK(isVoiceTarget(ParamSlot::Pan));
+    CHECK(isVoiceTarget(ParamSlot::BusSplit));
+    CHECK(isVoiceTarget(ParamSlot::Level));
+    CHECK_FALSE(isVoiceTarget(ParamSlot::Bus1Cutoff));
+    CHECK_FALSE(isVoiceTarget(ParamSlot::Lfo1Rate));
+
+    // Per voice, a per-voice source other than Env 1 and Env 2 moves an envelope control.
+    const auto route = [](ModSource s, ParamSlot t) {
+        return ModRoute{s, kSameLayer, t, kAllLayers, 1.0f, ModCurve::Unipolar};
+    };
+    CHECK(actsPerVoice(route(ModSource::Velocity, ParamSlot::Env1Attack), 0));
+    CHECK(actsPerVoice(route(ModSource::ReleaseVelocity, ParamSlot::Env1Release), 2));
+    CHECK(actsPerVoice(route(ModSource::Key, ParamSlot::Env2Sustain), 3));
+    CHECK_FALSE(actsPerVoice(route(ModSource::Env1, ParamSlot::Env1Release), 0));
+    CHECK_FALSE(actsPerVoice(route(ModSource::Env2, ParamSlot::Env1Attack), 0));
+    CHECK_FALSE(actsPerVoice(route(ModSource::Lfo1, ParamSlot::Env1Attack), 0));
+    CHECK(actsPerVoice(route(ModSource::Env1, ParamSlot::Size), 0)); // unchanged
+    CHECK(actsPerVoice(route(ModSource::Key, ParamSlot::Pan), 1));
+    CHECK(actsPerVoice(route(ModSource::Velocity, ParamSlot::BusSplit), 1));
+
+    // No layer-wide pass moves one, Voice layer or not: Velocity to Env 1 Attack, and the
+    // sources every route reaches the envelopes from, leave every offset +0.
+    Sources sources{};
+    for (auto &layer : sources)
+    {
+        for (float &v : layer.v)
+        {
+            v = 1.0f;
+        }
+    }
+    ModRoutes routes{};
+    routes[0] = route(ModSource::Velocity, ParamSlot::Env1Attack);
+    routes[1] = route(ModSource::Lfo1, ParamSlot::Env1Decay);
+    routes[2] = route(ModSource::Macro1, ParamSlot::Env2Sustain);
+    routes[3] = route(ModSource::Env1, ParamSlot::Env2Release);
+    routes[4] = ModRoute{ModSource::Key, 1, ParamSlot::Env1Release, 2, 1.0f, ModCurve::Unipolar};
+    for (const uint8_t voiceLayers : {uint8_t{0}, uint8_t{0x0F}, uint8_t{0x05}})
+    {
+        INFO("voice layers " << int{voiceLayers});
+        ParamValues offsets{};
+        applyRoutes(routes, sources, offsets, voiceLayers);
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            INFO("slot " << s);
+            CHECK(bits(offsets[s]) == 0u);
+        }
+    }
+    ParamValues offsets{};
+    applyRoutes(routes, sources, offsets);
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        CHECK(bits(offsets[s]) == 0u);
     }
 }

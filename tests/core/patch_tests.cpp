@@ -1849,6 +1849,36 @@ TEST_CASE("a route's target is saved by its CLAP ID", "[core]")
     CHECK(gg::core::paramId(l.routes[6].target) == 0x010002u);
 }
 
+TEST_CASE("an envelope target route round-trips through the patch", "[core][mod]")
+{
+    // M3 expression spec E6: the eight envelope controls are route targets (per voice only), so
+    // a route to one saves by its CLAP ID and loads back as written.
+    ModRoutes routes{};
+    routes[0] = {ModSource::Velocity, kSameLayer, ParamSlot::Env1Attack,
+                 kAllLayers,          1.5f,       ModCurve::Unipolar};
+    routes[1] = {ModSource::ReleaseVelocity, kSameLayer, ParamSlot::Env1Release, 1, -2.0f,
+                 ModCurve::Bipolar};
+    routes[2] = {ModSource::Key,           kSameLayer, ParamSlot::Env2Sustain, 3, 0.25f,
+                 ModCurve::UnipolarSquared};
+    for (const ModRoute &route : routes)
+    {
+        if (route.source != ModSource::None)
+        {
+            REQUIRE(gg::core::isSavableRoute(route));
+        }
+    }
+    const auto state = toStateXml(defaults(), 0, routes);
+    CHECK(state.find(R"(<route slot="1" source="Velocity" sourceLayer="same" target="65555" )") !=
+          std::string::npos);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        Loaded l = distinct();
+        REQUIRE(l.load(state, mode));
+        CHECK(sameRoutes(l.routes, routes));
+        CHECK(toStateXml(l.values, l.seed, l.routes) == state);
+    }
+}
+
 TEST_CASE("a version 1 FX state migrates to the factory routes", "[core]")
 {
     // The literal state's bits are the floats' (std::bit_cast).

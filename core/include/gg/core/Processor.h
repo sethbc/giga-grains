@@ -349,21 +349,26 @@ struct RingMeta
 ///
 /// Per voice, at every applied boundary: its sources (the layer's, with Env 1, Env 2, Velocity,
 /// Key, Pressure, Timbre, Note Pitch and Release Velocity its own note's), the routes that act
-/// per voice on its layer (actsPerVoice; Voice only or not) added to the layer's offsets on the
-/// engine's slots and Level (applyVoiceRoutes), and only those slots re-clamped. The layer-wide
-/// pass leaves those routes out on a Voice layer (B2). Its CloudParams are recomputed only when
-/// what they are made of changed: its routes' offsets on its slots, its pitch and volume inputs,
-/// or its layer's (those slots' base, modulation and offsets, the Source, Bus Split, Level and
-/// the material). Its pitch is the layer's Pitch + its routes' Pitch offsets + (key − 60) +
-/// its bend + its note's tuning, clamped to ±48: with MPE Off the bend is its channel's × Bend
-/// Range; with MPE On a member channel's × MPE Bend Range plus the master channel's (0) × Bend
-/// Range, each bend (v14 − 8192) / 8192 of the 14-bit value (B7: exactly 0 at the center). Its
-/// gain is exp10(Level offset / 20), the layer's Level and the offset clamped to Level's range
-/// together, times its note's volume expression. Targets that aren't per voice, and Cloud layers,
-/// read the instance-wide values (B4): Velocity and Key the last note-on's, Env 1 and Env 2 the
-/// layer's, gated by the held set; Pressure, Timbre and Note Pitch the newest held note's;
-/// Release Velocity the last note-off's. A note released with no voice left for it (or whose
-/// last voice finishes) ends (takeEndedNotes) and leaves the note table.
+/// per voice on its layer (actsPerVoice; Voice only or not) added to the layer's offsets on its
+/// slots (the rows of kVoiceLayerTargets: the engine's, Pan, Bus Split and the eight envelope
+/// controls) and Level (applyVoiceRoutes), and only those slots re-clamped (VoiceInputs,
+/// computeVoice). The layer-wide pass leaves those routes out on a Voice layer (B2), and every
+/// route to an envelope control on every layer (M3 expression spec E6). Its parameters are
+/// recomputed only when what they are made of changed: its routes' offsets on its slots, its
+/// pitch, volume and pan inputs and per-note amounts, or its layer's (those slots' base,
+/// modulation and offsets, the Source, Level and the material); a voice that starts or
+/// releases is computed at its boundary's commit too, before the step (plan P2). Its envelopes
+/// run its own parameters (its envelope rows) when one of its terms moves them, from its first
+/// cell (EB8), and the layer's as in effect otherwise. Its pitch is the layer's Pitch + its routes'
+/// Pitch offsets + (key − 60) + its bend + its note's tuning, clamped to ±48: with MPE Off the bend
+/// is its channel's × Bend Range; with MPE On a member channel's × MPE Bend Range plus the master
+/// channel's (0) × Bend Range, each bend (v14 − 8192) / 8192 of the 14-bit value (B7: exactly 0 at
+/// the center). Its gain is exp10(Level offset / 20), the layer's Level and the offset clamped to
+/// Level's range together, times its note's volume expression. Targets that aren't per voice, and
+/// Cloud layers, read the instance-wide values (B4): Velocity and Key the last note-on's, Env 1 and
+/// Env 2 the layer's, gated by the held set; Pressure, Timbre and Note Pitch the newest held
+/// note's; Release Velocity the last note-off's. A note released with no voice left for it (or
+/// whose last voice finishes) ends (takeEndedNotes) and leaves the note table.
 ///
 /// **Freeze is live until toggled** (INTENT §14; ruling M1-ac), per layer: each layer's Freeze
 /// engages its own engine's, and is armed on its own. The ring isn't saved (an M2
@@ -704,6 +709,13 @@ class Processor
     /// How many times a voice's CloudParams were computed since construction (for tests): once
     /// at its start and again only when its inputs change (the class comment's Voices).
     uint64_t voiceParamRecomputes() const noexcept { return voiceRecomputes_; }
+    /// The value of row `p` (one of kVoiceLayerTargets) that the voice in `voiceSlot` of layer
+    /// `layer` was last computed with, clamped (for tests; M3 expression spec E6): Pan and Bus
+    /// Split as its grains draw with them, the envelope controls as its envelopes run. Pitch is
+    /// the layer's (a voice's pitch is its own, the class comment's Voices). NaN for another
+    /// parameter, a slot out of range, or a slot whose voice was never computed (or cleared by a
+    /// Mode switch or a reset).
+    float voiceValue(uint8_t layer, uint32_t voiceSlot, LayerParam p) const noexcept;
 
     /// Not real-time safe: while process() isn't running, for an inactive plugin, gg-render and
     /// tests. Layer `layer`'s sources(layer) holds `s` (SourceExchange::hold), and its engine
@@ -967,6 +979,10 @@ class Processor
         int64_t onset;
     };
 
+    // What a layer's voice key holds (refreshVoiceKey): the rows of kVoiceLayerTargets, the
+    // Source and Level.
+    static constexpr size_t kVoiceKeySlots = kVoiceLayerTargets.size() + 2;
+
     /// One layer (M2 sub-project 1's spec §6.2): its engine and its whole wet chain.
     struct Layer
     {
@@ -1051,20 +1067,29 @@ class Processor
         // per slot what its parameters were last computed from (updateVoices).
         LayerMode mode{LayerMode::Cloud};
         VoiceAllocator voices;
-        // The layer's inputs to its voices' parameters (updateVoices' key: base, modulation and
-        // offset of 15 slots, and the material) and their generation.
-        std::array<float, 45> voiceKey{};
+        // The layer's inputs to its voices' parameters (refreshVoiceKey: base, modulation and
+        // offset of kVoiceKeySlots slots, and the material) and their generation.
+        std::array<float, 3 * kVoiceKeySlots> voiceKey{};
         SourceMode voiceKeyMaterial{SourceMode::Sample};
         bool voiceKeyValid{false};
         uint64_t voiceGeneration{0};
         struct VoiceCache
         {
             bool valid{false};
-            uint64_t generation{0};          // the layer's voiceGeneration
-            std::array<float, 13> offsets{}; // its routes' offsets on its slots and Level
-            NoteTable::Note note{};          // as last seen in the table
-            double pitchIn{0.0};             // (key − 60) + bend + tuning
+            uint64_t generation{0}; // the layer's voiceGeneration
+            // Its routes' offsets on its slots and Level (kPerNoteSlots' order), and the rest
+            // of its VoiceInputs but the sources.
+            std::array<float, kPerNoteSlots> offsets{};
+            NoteTable::Note note{}; // as last seen in the table
+            double pitchIn{0.0};
             float volume{1.0f};
+            float pan{0.0f};
+            std::array<float, kPerNoteSlots> perNote{};
+            // What they gave: its rows' values (voiceValue), its stream's parameters and gain.
+            std::array<float, kVoiceLayerTargets.size()> values{};
+            // Whether an extra term moved one of its envelope rows: then its envelopes run its
+            // own parameters (Voice::envParams), else the layer's as in effect (stepVoices).
+            bool ownEnv{false};
             CloudParams cloud{};
             float gain{1.0f};
         };
@@ -1172,6 +1197,30 @@ class Processor
     void commitVoices(int64_t b) noexcept SST_CPPUTILS_NONBLOCKING;
     void stepVoices(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
     void updateVoices() noexcept SST_CPPUTILS_NONBLOCKING;
+    /// What a voice's parameters depend on beside its layer's values (M3 expression plan P3):
+    /// its sources (the layer's, with Env 1, Env 2 and its note's own), its pitch input
+    /// ((key − 60) + bend + tuning, in semitones), its note's volume expression (0 to 4), its
+    /// pan input (added to its Pan row before the clamp, EB9) and its note's per-note amounts
+    /// (kPerNoteSlots' order, each added to its slot before the clamp, E7). Later tasks fill
+    /// pan and perNote here; 0 until then.
+    struct VoiceInputs
+    {
+        ModSourceValues sources;
+        double pitchIn;
+        float volume;
+        float pan;
+        std::array<float, kPerNoteSlots> perNote;
+    };
+    VoiceInputs voiceInputs(uint8_t L, const VoiceAllocator::Voice &v,
+                            const NoteTable::Note &note) const noexcept;
+    /// Layer L's voice key from base_, mod_ and offsets_ of its key slots and its material: a
+    /// change moves its generation, and each of its voices recomputes once.
+    void refreshVoiceKey(uint8_t L) noexcept;
+    /// One voice's parameters (the class comment's Voices), from voiceScratch_, which must hold
+    /// effective_ on entry and holds it again on return: its inputs (voiceInputs) and route
+    /// offsets, compared with its cache, and only when they or its layer's generation changed,
+    /// its rows' values, its envelope parameters (Voice::envParams), its CloudParams and gain.
+    void computeVoice(uint8_t L, size_t slot) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Recomputes voicesSounding_.
     void updateVoicesSounding() noexcept;
     /// The note voice v plays, if the table still holds it there; else nullptr.

@@ -90,8 +90,10 @@ void applyRoutes(const ModRoutes &routes, const std::array<ModSourceValues, kLay
 {
     for (const ModRoute &r : routes)
     {
+        // A voice-only target (the envelope controls) is never moved layer-wide (M3 expression
+        // spec E6): its routes act per voice alone (applyVoiceRoutes).
         if (r.voiceOnly || r.source == ModSource::None || r.source >= ModSource::Count ||
-            !isValidTarget(r.target))
+            !isValidTarget(r.target) || isVoiceOnlyTarget(r.target))
         {
             continue;
         }

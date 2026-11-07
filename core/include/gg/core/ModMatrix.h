@@ -141,6 +141,14 @@ constexpr bool isModulatorControl(LayerParam p) noexcept
     return p >= LayerParam::Lfo1Rate && p <= LayerParam::Step16;
 }
 
+/// Whether `p` is one of the two envelopes' eight controls (Env 1 and Env 2 Attack, Decay,
+/// Sustain and Release, rows 0x13 to 0x1A): the only modulator controls a route may target, per
+/// voice only (M3 expression spec E6; isVoiceOnlyTarget).
+constexpr bool isEnvelopeControl(LayerParam p) noexcept
+{
+    return p >= LayerParam::Env1Attack && p <= LayerParam::Env2Release;
+}
+
 /// M3 sub-project 2's addendum (E18): a layer's Note Channel, Key Low, Key High and the two
 /// envelopes' curves choose which notes a layer plays and how its envelopes bend, so no route
 /// targets them.
@@ -151,7 +159,9 @@ constexpr bool isRoutingOrCurve(LayerParam p) noexcept
 }
 
 /// Whether `target` may be a route's target (spec §6.8): any parameter but the macros, the
-/// modulators' own controls (isModulatorControl, in every layer) and Ring Length, which is
+/// modulators' own controls (isModulatorControl, in every layer) but the eight envelope controls
+/// (isEnvelopeControl, voice-only targets: M3 expression spec E6), Note Channel, Key Low, Key
+/// High and the two envelopes' curves (isRoutingOrCurve), and Ring Length, which is
 /// neither automatable nor modulatable (M2 sub-project 2's spec §6.3: the main thread resizes the
 /// ring from its base value, so a route to it would do nothing), nor Mode or the three MIDI
 /// settings (M3 sub-project 1's spec §4.1: structure and the instance's, not sound). Every other
@@ -167,7 +177,8 @@ constexpr bool isValidTarget(ParamSlot target) noexcept
     }
     if (const auto ref = layerOf(target))
     {
-        return ref->layer == 0 && !isModulatorControl(ref->param) &&
+        return ref->layer == 0 &&
+               (!isModulatorControl(ref->param) || isEnvelopeControl(ref->param)) &&
                ref->param != LayerParam::RingLength && ref->param != LayerParam::Mode &&
                !isRoutingOrCurve(ref->param);
     }
@@ -198,10 +209,30 @@ constexpr ParamSlot routeTargetSlot(ParamSlot target, uint8_t layer) noexcept
     return target;
 }
 
+/// The layer parameters a voice carries (M3 Voice spec §4.4; M3 expression spec E6, §4.5), in
+/// the per-note slots' order (kPerNoteSlots): the engine's own parameters, latched at each
+/// grain's onset (Density, Size, Position, Pitch, Spray, Stereo, Distribution, Texture, Smear,
+/// Quality and the two spreads), Pan and Bus Split (per-grain draws), and the eight envelope
+/// controls, the voice's own Env 1 and Env 2.
+inline constexpr std::array<LayerParam, 22> kVoiceLayerTargets{
+    LayerParam::Density,      LayerParam::Size,        LayerParam::Position,
+    LayerParam::Pitch,        LayerParam::Spray,       LayerParam::Stereo,
+    LayerParam::Distribution, LayerParam::Texture,     LayerParam::Smear,
+    LayerParam::Quality,      LayerParam::PitchSpread, LayerParam::SizeSpread,
+    LayerParam::Pan,          LayerParam::BusSplit,    LayerParam::Env1Attack,
+    LayerParam::Env1Decay,    LayerParam::Env1Sustain, LayerParam::Env1Release,
+    LayerParam::Env2Attack,   LayerParam::Env2Decay,   LayerParam::Env2Sustain,
+    LayerParam::Env2Release,
+};
+
+/// A layer's per-voice slots (M3 expression spec §4.5, EB5): the rows of kVoiceLayerTargets, in
+/// its order, then index 22, the layer's Level.
+inline constexpr size_t kPerNoteSlots = kVoiceLayerTargets.size() + 1;
+
 /// Whether a route to `target` (as isValidTarget names it) can be carried per voice on a Voice
-/// layer (M3 Voice spec §4.4): the engine's own parameters, latched at each grain's onset
-/// (Density, Size, Position, Pitch, Spray, Stereo, Distribution, Texture, Smear, Quality and the
-/// two spreads), and Level, the voice's gain. Every other target reads the instance-wide values.
+/// layer (M3 Voice spec §4.4; M3 expression spec E6): layer A's slot of a row of
+/// kVoiceLayerTargets, or Level, the voice's gain. Every other target reads the instance-wide
+/// values.
 constexpr bool isVoiceTarget(ParamSlot target) noexcept
 {
     if (target == ParamSlot::Level)
@@ -213,36 +244,40 @@ constexpr bool isVoiceTarget(ParamSlot target) noexcept
     {
         return false;
     }
-    switch (ref->param)
+    for (const LayerParam p : kVoiceLayerTargets)
     {
-    case LayerParam::Density:
-    case LayerParam::Size:
-    case LayerParam::Position:
-    case LayerParam::Pitch:
-    case LayerParam::Spray:
-    case LayerParam::Stereo:
-    case LayerParam::Distribution:
-    case LayerParam::Texture:
-    case LayerParam::Smear:
-    case LayerParam::Quality:
-    case LayerParam::PitchSpread:
-    case LayerParam::SizeSpread:
-        return true;
-    default:
-        return false;
+        if (p == ref->param)
+        {
+            return true;
+        }
     }
+    return false;
+}
+
+/// Whether `target` is a voice target per voice only (M3 expression spec E6): layer A's slot of
+/// one of the eight envelope controls. No layer-wide pass moves one (applyRoutes skips a route to
+/// it on every layer), and per voice only a per-voice source other than Env 1 and Env 2 does
+/// (actsPerVoice).
+constexpr bool isVoiceOnlyTarget(ParamSlot target) noexcept
+{
+    const auto ref = layerOf(target);
+    return ref && ref->layer == 0 && isEnvelopeControl(ref->param);
 }
 
 /// Whether route `r` acts per voice on layer `layer` when that layer is at Mode Voice (spec
 /// §4.4, B2): a per-voice source (isPerVoiceSource; Env 1 and Env 2 only from the target's own
 /// layer, kSameLayer or `layer`), a voice target (isVoiceTarget) and a targetLayer that reaches
-/// `layer`. Its depth and validity aside: applyRoutes leaves such a route out of a Voice
-/// layer's layer-wide pass, and applyVoiceRoutes adds it per voice.
+/// `layer`; for a voice-only target (isVoiceOnlyTarget), a source other than Env 1 and Env 2 (no
+/// envelope modulates its own segments; M3 expression spec E6). Its depth and validity aside:
+/// applyRoutes leaves such a route out of a Voice layer's layer-wide pass, and applyVoiceRoutes
+/// adds it per voice.
 constexpr bool actsPerVoice(const ModRoute &r, uint8_t layer) noexcept
 {
     const bool ownLayer =
         !isPerLayerSource(r.source) || r.sourceLayer == kSameLayer || r.sourceLayer == layer;
-    return isPerVoiceSource(r.source) && ownLayer && isVoiceTarget(r.target) &&
+    const bool notOwnEnvelope = !isVoiceOnlyTarget(r.target) ||
+                                (r.source != ModSource::Env1 && r.source != ModSource::Env2);
+    return isPerVoiceSource(r.source) && ownLayer && isVoiceTarget(r.target) && notOwnEnvelope &&
            (r.targetLayer == kAllLayers || r.targetLayer == layer);
 }
 
@@ -259,7 +294,8 @@ struct ModSourceValues
 
 /// Adds every route's contribution, depth × applyCurve(curve, value), to `offsets` with +=, in slot
 /// order. A route is skipped when its source is None (or out of range), its target isn't valid
-/// (isValidTarget) or, for a layer target, its targetLayer is out of range. A layer target goes to
+/// (isValidTarget) or is a voice-only target (isVoiceOnlyTarget: on every layer, Voice or not),
+/// or, for a layer target, its targetLayer is out of range. A layer target goes to
 /// its targetLayer, or to layers 0 to 3 in order for kAllLayers, each at routeTargetSlot; any other
 /// target once, at itself. The value is sources[0]'s for a global source; for a per-layer source,
 /// the sourceLayer's, or for kSameLayer the target's layer (layer 0 for a global target), and layer
