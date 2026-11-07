@@ -1091,7 +1091,7 @@ struct OverloadRender
     {
         ++static_cast<OverloadRender *>(ctx)->spawned;
     }
-    static void steal(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    static void steal(void *ctx, uint32_t, uint64_t index, uint32_t, int64_t onset)
     {
         auto *r = static_cast<OverloadRender *>(ctx);
         if (r->steals.size() < r->steals.capacity())
@@ -1478,4 +1478,179 @@ TEST_CASE("voices are block-size invariant", "[determinism][voice]")
     REQUIRE(r.log.grains == ref.log.grains);
     REQUIRE(sameBits(ref.audio.left, r.audio.left));
     REQUIRE(sameBits(ref.audio.right, r.audio.right));
+}
+
+namespace
+{
+// Voice mode's steal order (M3 expression spec E9, EB6, EB7) under a spent quota: the Cloud
+// stream for 3,000 samples (its grains then orphans), then five voices started, made weak,
+// finished (their grains orphans) and one slot reused, each between process() calls at its
+// frame, 120 ms grains at 70 to 160 Hz a voice under a quota of 12 Normal stereo grains.
+struct StealEvent
+{
+    int64_t frame;
+    enum class Kind : uint8_t
+    {
+        VoiceMode,
+        Start,
+        Weak,
+        Finish,
+    } kind;
+    uint32_t slot;
+    uint32_t ordinal;
+    double densityHz;
+};
+constexpr int64_t kStealFrames = 60000;
+constexpr StealEvent kStealEvents[] = {
+    {3000, StealEvent::Kind::VoiceMode, 0, 0, 0.0}, {3000, StealEvent::Kind::Start, 0, 0, 90.0},
+    {5000, StealEvent::Kind::Start, 3, 1, 160.0},   {9001, StealEvent::Kind::Start, 7, 2, 70.0},
+    {14000, StealEvent::Kind::Weak, 3, 1, 160.0},   {20000, StealEvent::Kind::Start, 11, 3, 120.0},
+    {26000, StealEvent::Kind::Finish, 0, 0, 0.0},   {30000, StealEvent::Kind::Weak, 7, 2, 70.0},
+    {33333, StealEvent::Kind::Start, 0, 4, 140.0},  {41000, StealEvent::Kind::Finish, 3, 0, 0.0},
+    {47000, StealEvent::Kind::Weak, 11, 3, 120.0},
+};
+
+gg::VoiceParams stealVoice(const StealEvent &e)
+{
+    gg::VoiceParams v;
+    v.cloud = kParams;
+    v.cloud.densityHz = e.densityHz;
+    v.cloud.grainDurationSec = 0.12;
+    v.amp = {.at = 0,
+             .level = 1.0,
+             .stage = gg::AmpEnvelope::Stage::Sustain,
+             .attackPerSample = 0.0,
+             .decayPerSample = 0.0,
+             .releasePerSample = 0.0,
+             .sustain = 1.0};
+    v.weak = e.kind == StealEvent::Kind::Weak;
+    return v;
+}
+
+struct VoiceSteal
+{
+    uint64_t index;
+    uint32_t voice;
+    int64_t onset;
+    friend bool operator==(const VoiceSteal &, const VoiceSteal &) = default;
+};
+
+struct VoiceStealRender
+{
+    Render audio;
+    GrainLog log;
+    std::vector<VoiceSteal> steals;
+    bool overflowed{false};
+    uint64_t dropped{0};
+    uint64_t stolen{0};
+
+    VoiceStealRender() { steals.reserve(16384); }
+
+    static void steal(void *ctx, uint32_t, uint64_t index, uint32_t voice, int64_t onset)
+    {
+        auto *r = static_cast<VoiceStealRender *>(ctx);
+        if (r->steals.size() < r->steals.capacity())
+        {
+            r->steals.push_back({index, voice, onset});
+        }
+        else
+        {
+            r->overflowed = true;
+        }
+    }
+};
+
+void renderVoiceSteals(const std::shared_ptr<const gg::SampleBuffer> &source,
+                       const std::vector<uint32_t> &blockSizes, VoiceStealRender &r)
+{
+    gg::Engine engine(config(42));
+    engine.setSource(source);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    engine.setStealSink(&VoiceStealRender::steal, &r);
+    gg::CloudParams cloud = kParams;
+    cloud.densityHz = 400.0;
+    cloud.grainDurationSec = 0.12;
+    engine.setCloudParams(cloud);
+    engine.setQuota(12 * gg::kNormalStereoWeight);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kStealFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kStealFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    std::size_t event = 0;
+    while (done < kStealFrames)
+    {
+        for (; event < std::size(kStealEvents) && kStealEvents[event].frame == done; ++event)
+        {
+            const StealEvent &e = kStealEvents[event];
+            switch (e.kind)
+            {
+            case StealEvent::Kind::VoiceMode:
+                engine.setVoiceMode(true);
+                break;
+            case StealEvent::Kind::Start:
+                engine.startVoice(e.slot, e.ordinal, stealVoice(e));
+                break;
+            case StealEvent::Kind::Weak:
+                engine.setVoiceParams(e.slot, stealVoice(e));
+                break;
+            case StealEvent::Kind::Finish:
+                engine.finishVoice(e.slot);
+                break;
+            }
+        }
+        const int64_t until =
+            event < std::size(kStealEvents) ? kStealEvents[event].frame : kStealFrames;
+        const uint32_t want = blockSizes[next++ % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, until - done));
+        float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+        engine.process(out, 2, n);
+        done += n;
+    }
+    r.dropped = engine.droppedGrains();
+    r.stolen = engine.stolenGrains();
+}
+} // namespace
+
+TEST_CASE("steals are block size invariant in voice mode", "[determinism][voice][budget]")
+{
+    const auto source = sineSource();
+    VoiceStealRender ref;
+    renderVoiceSteals(source, {kMaxBlock}, ref);
+    REQUIRE_FALSE(ref.log.overflowed);
+    REQUIRE_FALSE(ref.overflowed);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    // Not vacuous: the ladder steals, from the Cloud stream's orphans and from every voice, and
+    // drops too.
+    REQUIRE(ref.stolen == ref.steals.size());
+    REQUIRE(ref.dropped > 0);
+    uint32_t seen = 0;
+    bool cloud = false;
+    for (const VoiceSteal &s : ref.steals)
+    {
+        if (s.voice == gg::kNoVoice)
+        {
+            cloud = true;
+            continue;
+        }
+        REQUIRE(s.voice < 5);
+        seen |= 1u << s.voice;
+    }
+    REQUIRE(cloud);
+    REQUIRE(seen == 0x1Fu);
+    for (const uint32_t block : {1u, 32u, 64u, 4096u})
+    {
+        INFO("block size " << block);
+        VoiceStealRender r;
+        renderVoiceSteals(source, {block}, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE_FALSE(r.overflowed);
+        REQUIRE(r.steals == ref.steals);
+        REQUIRE(r.dropped == ref.dropped);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
 }

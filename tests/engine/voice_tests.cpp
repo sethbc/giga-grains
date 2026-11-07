@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -18,8 +19,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
 #include "gg/grain/AmpEnvelope.h"
+#include "gg/grain/Budget.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
 
@@ -711,4 +714,483 @@ TEST_CASE("voice headroom is block-size invariant as n changes", "[engine][voice
         CHECK(sameBits(other.left, reference.left));
         CHECK(sameBits(other.right, reference.right));
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Voice mode's steal order (M3 expression spec E9, EB6, EB7; the director's D4, INTENT §23 #81,
+// applied per voice). The cases below draw Eco grains from a mono source, so every grain weighs
+// grainWeight(Eco, mono) = 2 and the ladder has no tier to lower to: a draw that doesn't fit goes
+// straight to rung 3. Their streams are periodic, so a voice started at a call's first frame s
+// spawns at s, s + 48000 / density, and so on, and every grain lasts 1 s (48,000 samples), so it
+// passes D4's half-window test 24,000 samples after its onset.
+
+namespace
+{
+constexpr uint64_t kEco = gg::grainWeight(gg::Tier::Eco, false);
+static_assert(kEco == 2);
+
+// Spawns and steals, in the order the engine reports them, into preallocated storage.
+struct OrderLog
+{
+    struct Event
+    {
+        bool steal;
+        uint64_t index;
+        uint32_t voice; // a spawn's GrainSpec::voice, a steal's stolen grain's voice
+        int64_t onset;  // a spawn's onset sample, a steal's onset (the draw's)
+        uint8_t slot;   // a spawn's GrainSpec::voiceSlot
+        int64_t end;    // a spawn's grainEndSample
+    };
+    static constexpr std::size_t kCapacity = 65536;
+    std::vector<Event> events;
+    bool overflowed{false};
+
+    OrderLog() { events.reserve(kCapacity); }
+
+    void push(const Event &e)
+    {
+        if (events.size() < kCapacity)
+        {
+            events.push_back(e);
+        }
+        else
+        {
+            overflowed = true;
+        }
+    }
+    static void spawn(void *ctx, uint32_t, const gg::GrainSpec &g)
+    {
+        static_cast<OrderLog *>(ctx)->push(
+            {false, g.index, g.voice, g.onsetSample, g.voiceSlot, gg::grainEndSample(g)});
+    }
+    static void steal(void *ctx, uint32_t, uint64_t index, uint32_t voice, int64_t onset)
+    {
+        static_cast<OrderLog *>(ctx)->push({true, index, voice, onset, 0, 0});
+    }
+    std::vector<Event> steals() const
+    {
+        std::vector<Event> out;
+        std::copy_if(events.begin(), events.end(), std::back_inserter(out),
+                     [](const Event &e) { return e.steal; });
+        return out;
+    }
+};
+
+// Eco, periodic, 1 s grains of a 440 Hz sine read from 0.25 s in (the read ends 1.25 s in, inside
+// the 4 s source), centered.
+gg::CloudParams periodic(double densityHz, double durationSec = 1.0)
+{
+    gg::CloudParams p;
+    p.densityHz = densityHz;
+    p.distribution = 0.0;
+    p.grainDurationSec = durationSec;
+    p.position = 0.0625;
+    p.spray = 0.0;
+    p.pitchSemitones = 0.0;
+    p.stereo = 0.0;
+    p.gain = 0.25f;
+    p.quality = gg::Tier::Eco;
+    return p;
+}
+
+gg::VoiceParams voiceOf(double densityHz, bool weak = false)
+{
+    gg::VoiceParams v = voiceAt(periodic(densityHz));
+    v.weak = weak;
+    return v;
+}
+
+// An engine in voice mode over the mono sine, logging into `log`.
+struct StealRig
+{
+    gg::Engine engine{config(4096)};
+    OrderLog log;
+    Audio audio = silentAudio(4 * 48000);
+
+    StealRig()
+    {
+        engine.setSource(sineSource());
+        engine.setEventSink(&OrderLog::spawn, &log);
+        engine.setStealSink(&OrderLog::steal, &log);
+        engine.setVoiceMode(true);
+    }
+    void to(int64_t from, int64_t until) { renderSpan(engine, audio, from, until, 512); }
+};
+
+bool isSteal(const OrderLog::Event &e, uint64_t index, uint32_t voice, int64_t onset)
+{
+    return e.steal && e.index == index && e.voice == voice && e.onset == onset;
+}
+} // namespace
+
+TEST_CASE("per slot weights sum to the ledger", "[engine][voice][pool][budget]")
+{
+    // 3,000 grains of weights 1 to 12 and lengths 16 to 6,000 samples, in random stream slots
+    // (0 to 16), onsets advancing by 0 to 9 samples; from the 300th on, a random sounding grain
+    // is stolen at some onsets, and the pool is retired at some (as the engine retires at block
+    // ends). At every onset, after soundingWeight, the slots' weights sum to it, each slot's is
+    // its own grains' (ends moved by steals, fading ones included), and oldestSoundingOf is the
+    // first unstolen sounding row of its slot, as a scan of the rows says.
+    constexpr uint32_t kGrains = 3000;
+    gg::GrainPool pool(kGrains);
+    struct Model
+    {
+        uint64_t index;
+        uint8_t slot;
+        uint8_t weight;
+        int64_t end;
+        bool stolen;
+    };
+    std::vector<Model> model;
+    const auto draw = [](uint32_t field, uint64_t k) {
+        return gg::rng::hash({23, 0, field, gg::rng::Field::SignalNoise, k});
+    };
+    int64_t onset = 0;
+    uint32_t steals = 0;
+    uint64_t largest = 0;
+    for (uint64_t k = 0; k < kGrains; ++k)
+    {
+        onset += static_cast<int64_t>(draw(0, k) % 10);
+        INFO("grain " << k << " at onset " << onset);
+        const uint64_t load = pool.soundingWeight(onset);
+        // The scan: each slot's weight of grains still sounding and its first unstolen one.
+        uint64_t own[gg::kStreamSlots]{};
+        std::size_t first[gg::kStreamSlots];
+        std::fill(std::begin(first), std::end(first), model.size());
+        for (std::size_t m = 0; m < model.size(); ++m)
+        {
+            if (model[m].end > onset)
+            {
+                own[model[m].slot] += model[m].weight;
+                if (!model[m].stolen && first[model[m].slot] == model.size())
+                {
+                    first[model[m].slot] = m;
+                }
+            }
+        }
+        uint64_t sum = 0;
+        for (uint8_t s = 0; s < gg::kStreamSlots; ++s)
+        {
+            INFO("slot " << int{s});
+            REQUIRE(pool.slotWeight(s) == own[s]);
+            sum += pool.slotWeight(s);
+            uint32_t row = 0;
+            const bool found = pool.oldestSoundingOf(s, onset, row);
+            REQUIRE(found == (first[s] != model.size()));
+            if (found)
+            {
+                REQUIRE(pool.rows().index[row] == model[first[s]].index);
+                REQUIRE(pool.rows().voiceSlot[row] == s);
+            }
+        }
+        REQUIRE(sum == load);
+        REQUIRE(pool.slotWeight(gg::kStreamSlots) == 0);
+        uint32_t ignored = 0;
+        REQUIRE_FALSE(pool.oldestSoundingOf(gg::kStreamSlots, onset, ignored));
+        largest = std::max(largest, load);
+
+        if (k >= 300 && pool.size() > 0 && draw(1, k) % 3 == 0)
+        {
+            // Steal a random sounding, unstolen grain, by its row.
+            const uint64_t pick = draw(2, k) % pool.size();
+            for (uint32_t r = 0; r < pool.size(); ++r)
+            {
+                const uint32_t row = static_cast<uint32_t>((pick + r) % pool.size());
+                Model *const it = &model[pool.rows().index[row]]; // model[k] is grain k
+                if (it->end > onset && !it->stolen)
+                {
+                    pool.steal(row, onset);
+                    it->stolen = true;
+                    it->end = std::min(it->end, onset + gg::kStealFade);
+                    ++steals;
+                    break;
+                }
+            }
+        }
+        if (draw(3, k) % 7 == 0)
+        {
+            pool.retireFinished(onset);
+        }
+        gg::GrainSpec g{.index = k,
+                        .onsetSample = onset,
+                        .onsetFrac = 0.0,
+                        .startPos = 0.0,
+                        .rate = 1.0,
+                        .durationSamples = 16.0 + static_cast<double>(draw(4, k) % 5985),
+                        .gain = 0.5f,
+                        .pan = 0.0f};
+        g.weight = static_cast<uint8_t>(1 + draw(5, k) % 12);
+        g.voiceSlot = static_cast<uint8_t>(draw(6, k) % gg::kStreamSlots);
+        g.voice = g.voiceSlot == gg::kCloudStreamSlot ? gg::kNoVoice : 100u + g.voiceSlot;
+        REQUIRE(pool.spawn(g));
+        REQUIRE(pool.rows().voice[pool.size() - 1] == g.voice);
+        REQUIRE(pool.spec(pool.size() - 1) == g);
+        model.push_back({k, g.voiceSlot, g.weight, gg::grainEndSample(g), false});
+    }
+    REQUIRE(steals > 500);
+    REQUIRE(largest > 1000); // many grains overlapped
+    // A slot out of range is stored as the Cloud stream's; clear() forgets every slot's weight.
+    gg::GrainSpec stray{.index = 0,
+                        .onsetSample = onset,
+                        .onsetFrac = 0.0,
+                        .startPos = 0.0,
+                        .rate = 1.0,
+                        .durationSamples = 100.0,
+                        .gain = 0.5f,
+                        .pan = 0.0f};
+    stray.voiceSlot = 200;
+    pool.clear();
+    REQUIRE(pool.spawn(stray));
+    REQUIRE(pool.rows().voiceSlot[0] == gg::kCloudStreamSlot);
+    REQUIRE(pool.slotWeight(gg::kCloudStreamSlot) == stray.weight);
+    for (uint8_t s = 0; s < gg::kCloudStreamSlot; ++s)
+    {
+        REQUIRE(pool.slotWeight(s) == 0);
+    }
+}
+
+TEST_CASE("an orphan slot's grain is stolen first", "[engine][voice][budget]")
+{
+    // H (slot 0) spawns at 0, O (slot 1) at 6,000 and finishes at 12,000, D (slot 2) at 12,000.
+    // At 30,000, with the quota at the three grains' 6 units, E (slot 3) draws: O's grain, the
+    // orphan's, has sounded exactly half its window and is stolen, though H's is older (the
+    // shared rule's victim).
+    StealRig rig;
+    rig.engine.startVoice(0, 0, voiceOf(0.5));
+    rig.to(0, 6000);
+    rig.engine.startVoice(1, 1, voiceOf(0.5));
+    rig.to(6000, 12000);
+    rig.engine.finishVoice(1);
+    rig.engine.startVoice(2, 2, voiceOf(0.5));
+    rig.to(12000, 30000);
+    rig.engine.setQuota(3 * kEco);
+    rig.engine.startVoice(3, 3, voiceOf(0.5));
+    rig.to(30000, 31000);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    const auto steals = rig.log.steals();
+    REQUIRE(steals.size() == 1);
+    CHECK(isSteal(steals[0], 0, 1, 30000));
+    CHECK(rig.engine.droppedGrains() == 0);
+    // The spawn it made room for follows it: E's first grain, in slot 3.
+    const auto &events = rig.log.events;
+    const auto at = std::find_if(events.begin(), events.end(),
+                                 [](const OrderLog::Event &e) { return e.steal; });
+    REQUIRE(at + 1 != events.end());
+    CHECK((!at[1].steal && at[1].voice == 3 && at[1].slot == 3 && at[1].onset == 30000));
+}
+
+TEST_CASE("a reused slot's old grains count with its new voice", "[engine][voice][budget]")
+{
+    // EB6: A (slot 0, ordinal 0) spawns at 0 and finishes; B reuses slot 0 (ordinal 1) at 6,000.
+    // A's grain is then B's slot's, not an orphan's. C (slot 1) spawns at 0, 12,000 and 24,000,
+    // the heaviest held slot (6 units against slot 0's 4), so when D (slot 2) draws at 30,000
+    // under a quota of the five grains' 10 units, C's oldest grain is stolen, not A's.
+    StealRig rig;
+    rig.engine.startVoice(0, 0, voiceOf(0.5));
+    rig.engine.startVoice(1, 2, voiceOf(4.0));
+    rig.to(0, 1000);
+    rig.engine.finishVoice(0);
+    rig.to(1000, 6000);
+    rig.engine.startVoice(0, 1, voiceOf(0.5));
+    rig.to(6000, 30000);
+    rig.engine.setQuota(5 * kEco);
+    rig.engine.startVoice(2, 3, voiceOf(0.5));
+    rig.to(30000, 30001);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    const auto steals = rig.log.steals();
+    REQUIRE(steals.size() == 1);
+    CHECK(isSteal(steals[0], 0, 2, 30000));
+}
+
+TEST_CASE("the heaviest weak voice yields before a held one", "[engine][voice][budget]")
+{
+    // H (slot 0, held) spawns every 12,000 samples, W1 (slot 1) once at 0, W2 (slot 2) every
+    // 24,000. At 30,000 W1 and W2 turn weak and the quota becomes the 12 units sounding at
+    // 36,000, where H draws: no orphan, so the weak voices come first, the heavier W2 (4 units,
+    // against W1's 2 and H's 6) before W1. W2's oldest grain is stolen.
+    StealRig rig;
+    rig.engine.startVoice(0, 0, voiceOf(4.0));
+    rig.engine.startVoice(1, 1, voiceOf(0.5));
+    rig.engine.startVoice(2, 2, voiceOf(2.0));
+    rig.to(0, 30000);
+    rig.engine.setVoiceParams(1, voiceOf(0.5, true));
+    rig.engine.setVoiceParams(2, voiceOf(2.0, true));
+    rig.engine.setQuota(6 * kEco);
+    rig.to(30000, 36001);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    const auto steals = rig.log.steals();
+    REQUIRE(steals.size() == 1);
+    CHECK(isSteal(steals[0], 0, 2, 36000));
+
+    SECTION("a tie goes to the lower ordinal")
+    {
+        // W1 (ordinal 4, slot 2) and W2 (ordinal 5, slot 1) weigh 4 units each; the lower
+        // ordinal yields first, though its slot is the higher.
+        StealRig tie;
+        tie.engine.startVoice(0, 0, voiceOf(4.0));
+        tie.engine.startVoice(2, 4, voiceOf(2.0));
+        tie.engine.startVoice(1, 5, voiceOf(2.0));
+        tie.to(0, 30000);
+        tie.engine.setVoiceParams(1, voiceOf(2.0, true));
+        tie.engine.setVoiceParams(2, voiceOf(2.0, true));
+        tie.engine.setQuota(7 * kEco);
+        tie.to(30000, 36001);
+        REQUIRE_FALSE(tie.log.overflowed);
+        const auto tied = tie.log.steals();
+        REQUIRE(tied.size() == 1);
+        CHECK(isSteal(tied[0], 0, 4, 36000));
+    }
+}
+
+TEST_CASE("the heaviest held voice yields when none is weak", "[engine][voice][budget]")
+{
+    // H1 (slot 0) spawns at 0 and 24,000 (4 units), H2 (slot 1) at 0, 12,000 and 24,000 (6
+    // units). At 30,000 the quota becomes their 10 units and H3 (slot 2) draws: no orphan, no weak
+    // voice, so the heavier held voice, H2, yields its oldest grain.
+    StealRig rig;
+    rig.engine.startVoice(0, 0, voiceOf(2.0));
+    rig.engine.startVoice(1, 1, voiceOf(4.0));
+    rig.to(0, 30000);
+    rig.engine.setQuota(5 * kEco);
+    rig.engine.startVoice(2, 2, voiceOf(0.5));
+    rig.to(30000, 30001);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    const auto steals = rig.log.steals();
+    REQUIRE(steals.size() == 1);
+    CHECK(isSteal(steals[0], 0, 1, 30000));
+}
+
+TEST_CASE("the drawing voice may yield its own grain", "[engine][voice][budget]")
+{
+    // H1 (slot 0) spawns once at 0 (2 units), H2 (slot 1) at 0, 12,000 and 24,000 (6 units).
+    // At 36,000 H2 draws under a quota of the 8 units sounding: the heaviest held voice is the
+    // drawer itself, and its own oldest grain makes room for its new one.
+    StealRig rig;
+    rig.engine.startVoice(0, 0, voiceOf(0.5));
+    rig.engine.startVoice(1, 1, voiceOf(4.0));
+    rig.to(0, 30000);
+    rig.engine.setQuota(4 * kEco);
+    rig.to(30000, 36001);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    const auto &events = rig.log.events;
+    const auto at = std::find_if(events.begin(), events.end(),
+                                 [](const OrderLog::Event &e) { return e.steal; });
+    REQUIRE(at != events.end());
+    CHECK(isSteal(*at, 0, 1, 36000));
+    REQUIRE(at + 1 != events.end());
+    CHECK((!at[1].steal && at[1].voice == 1 && at[1].index == 3 && at[1].onset == 36000));
+    CHECK(rig.log.steals().size() == 1);
+}
+
+TEST_CASE("a candidate under half its window is passed over", "[engine][voice][budget]")
+{
+    // The Cloud stream spawns one 2 s grain at 0 (D4's half is 48,000 samples), then voice mode
+    // turns on at 6,000 and H (slot 0) spawns a 1 s grain there. At 30,000, under a quota of the
+    // two grains' 4 units, H2 (slot 1) draws. The first candidate, the Cloud stream's orphan
+    // (kCloudStreamSlot), has sounded 30,000 samples, under half its window, and is passed over;
+    // H's grain, at exactly half, is stolen. (The shared rule would test only the oldest grain,
+    // the orphan, and drop the draw.)
+    StealRig rig;
+    rig.engine.setVoiceMode(false);
+    rig.engine.setCloudParams(periodic(0.5, 2.0));
+    rig.to(0, 6000);
+    rig.engine.setVoiceMode(true);
+    rig.engine.startVoice(0, 0, voiceOf(0.5));
+    rig.to(6000, 30000);
+    rig.engine.setQuota(2 * kEco);
+    rig.engine.startVoice(1, 1, voiceOf(0.5));
+    rig.to(30000, 30001);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    const auto &events = rig.log.events;
+    REQUIRE(events.size() >= 2);
+    REQUIRE((!events[0].steal && events[0].voice == gg::kNoVoice &&
+             events[0].slot == gg::kCloudStreamSlot && events[0].onset == 0));
+    const auto steals = rig.log.steals();
+    REQUIRE(steals.size() == 1);
+    CHECK(isSteal(steals[0], 0, 0, 30000));
+    CHECK(rig.engine.droppedGrains() == 0);
+}
+
+TEST_CASE("no candidate past half drops the draw", "[engine][voice][budget]")
+{
+    // H (slot 0, held) spawns at 0, W (slot 1) at 6,000 and turns weak, O (slot 2) at 8,000 and
+    // finishes. At 12,000, under a quota of their 6 units, X (slot 3) draws: the orphan, the
+    // weak and the held voices' grains have sounded 4,000, 6,000 and 12,000 samples, each under
+    // half its window, so nothing is stolen and the draw drops.
+    StealRig rig;
+    rig.engine.startVoice(0, 0, voiceOf(0.5));
+    rig.to(0, 6000);
+    rig.engine.startVoice(1, 1, voiceOf(0.5));
+    rig.to(6000, 7000);
+    rig.engine.setVoiceParams(1, voiceOf(0.5, true));
+    rig.to(7000, 8000);
+    rig.engine.startVoice(2, 2, voiceOf(0.5));
+    rig.to(8000, 9000);
+    rig.engine.finishVoice(2);
+    rig.to(9000, 12000);
+    rig.engine.setQuota(3 * kEco);
+    rig.engine.startVoice(3, 3, voiceOf(0.5));
+    rig.to(12000, 13000);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    CHECK(rig.log.steals().empty());
+    CHECK(rig.engine.stolenGrains() == 0);
+    CHECK(rig.engine.droppedGrains() == 1);
+    CHECK(rig.log.events.size() == 3);
+}
+
+TEST_CASE("one voice steals as the shared rule did", "[engine][voice][budget]")
+{
+    // One voice (ordinal 5, slot 9) and no orphan: its slot's oldest grain is the layer's, so
+    // each steal takes the smallest index still sounding and not yet stolen at its onset, as M2's
+    // rule does (D4 exactly). Reconstructed from the spawn and steal events: a stolen grain ends at
+    // its onset + kStealFade, or earlier at its own end. Normal grains of varied lengths
+    // (sizeSpreadOctaves) at 300 Hz under a quota of 10 mono Normal grains.
+    StealRig rig;
+    gg::CloudParams p = kParams;
+    p.densityHz = 300.0;
+    p.grainDurationSec = 0.08;
+    p.quality = gg::Tier::Normal;
+    rig.engine.setQuota(10 * gg::grainWeight(gg::Tier::Normal, false));
+    rig.engine.startVoice(9, 5, voiceAt(p));
+    rig.to(0, 48000);
+
+    REQUIRE_FALSE(rig.log.overflowed);
+    struct Grain
+    {
+        uint64_t index;
+        int64_t end;
+        bool stolen;
+    };
+    std::vector<Grain> grains;
+    uint32_t steals = 0;
+    for (const OrderLog::Event &e : rig.log.events)
+    {
+        if (!e.steal)
+        {
+            REQUIRE(e.voice == 5);
+            REQUIRE(e.slot == 9);
+            grains.push_back({e.index, e.end, false});
+            continue;
+        }
+        INFO("steal of " << e.index << " at " << e.onset);
+        REQUIRE(e.voice == 5);
+        const auto oldest = std::find_if(grains.begin(), grains.end(), [&](const Grain &g) {
+            return !g.stolen && g.end > e.onset;
+        });
+        REQUIRE(oldest != grains.end());
+        REQUIRE(oldest->index == e.index);
+        oldest->stolen = true;
+        oldest->end = std::min(oldest->end, e.onset + gg::kStealFade);
+        ++steals;
+    }
+    CHECK(steals > 50);
+    CHECK(rig.engine.droppedGrains() > 0);
+    CHECK(rig.engine.stolenGrains() == steals);
 }

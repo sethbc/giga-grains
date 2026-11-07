@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
 
 #include "gg/grain/Budget.h"
 #include "gg/grain/Envelope.h"
@@ -19,8 +20,8 @@ GrainPool::GrainPool(uint32_t capacity)
       pan_(slots_), tier_(slots_), sourceSlot_(slots_), bus_(slots_), endSample_(slots_),
       invDuration_(slots_), gainL_(slots_), gainR_(slots_), texture_(slots_), envAttackEnd_(slots_),
       envReleaseStart_(slots_), envAttackScale_(slots_), envReleaseScale_(slots_), weight_(slots_),
-      level_(slots_), fadeStart_(slots_), invFade_(slots_), edgeEnd_(slots_), edgeScale_(slots_),
-      stolen_(slots_), heapPos_(slots_, kNotInHeap),
+      level_(slots_), voice_(slots_), voiceSlot_(slots_), fadeStart_(slots_), invFade_(slots_),
+      edgeEnd_(slots_), edgeScale_(slots_), stolen_(slots_), heapPos_(slots_, kNotInHeap),
       rows_{
           .index = index_.data(),
           .onsetSample = onsetSample_.data(),
@@ -44,6 +45,8 @@ GrainPool::GrainPool(uint32_t capacity)
           .envReleaseScale = envReleaseScale_.data(),
           .weight = weight_.data(),
           .level = level_.data(),
+          .voice = voice_.data(),
+          .voiceSlot = voiceSlot_.data(),
           .fadeStart = fadeStart_.data(),
           .invFade = invFade_.data(),
           .edgeEnd = edgeEnd_.data(),
@@ -106,6 +109,7 @@ void GrainPool::forgetEnds(int64_t t) noexcept
     while (heapSize_ > 0 && heap_[0].end <= t)
     {
         heapWeight_ -= heap_[0].weight;
+        slotWeight_[voiceSlot_[heap_[0].row]] -= heap_[0].weight;
         // Only a steal that faded the grain put its weight in fadingWeight_ (steal()); a grain
         // cut at its source's edge fades too, but isn't in it.
         if (stolen_[heap_[0].row] == kStolenFading)
@@ -152,6 +156,27 @@ bool GrainPool::oldestSounding(int64_t onset, uint32_t &row) noexcept
         return false;
     }
     row = cursor_;
+    return true;
+}
+
+bool GrainPool::oldestSoundingOf(uint8_t slot, int64_t onset, uint32_t &row) noexcept
+{
+    if (slot >= kStreamSlots)
+    {
+        return false;
+    }
+    // As oldestSounding's cursor, and a row of another slot is never this slot's answer either.
+    uint32_t &cursor = slotCursor_[slot];
+    while (cursor < size_ && (voiceSlot_[cursor] != slot || endSample_[cursor] <= onset ||
+                              stolen_[cursor] != kUnstolen))
+    {
+        ++cursor;
+    }
+    if (cursor == size_)
+    {
+        return false;
+    }
+    row = cursor;
     return true;
 }
 
@@ -229,6 +254,10 @@ bool GrainPool::spawn(const GrainSpec &g, int64_t edge) noexcept
     texture_[i] = g.texture;
     weight_[i] = g.weight;
     level_[i] = g.level;
+    voice_[i] = g.voice;
+    // The slot indexes slotWeight_: an out-of-range one counts as the Cloud stream's.
+    const uint8_t slot = g.voiceSlot < kStreamSlots ? g.voiceSlot : kCloudStreamSlot;
+    voiceSlot_[i] = slot;
     stolen_[i] = kUnstolen;
     // The renderers' latched values (spec §3): one division and one channel gain per grain, and
     // the Texture envelope's shape (spec §4).
@@ -246,6 +275,7 @@ bool GrainPool::spawn(const GrainSpec &g, int64_t edge) noexcept
     const uint32_t pos = heapSize_++;
     place(pos, {end, g.weight, i});
     heapWeight_ += g.weight;
+    slotWeight_[slot] += g.weight;
     siftUp(pos);
     return true;
 }
@@ -288,6 +318,7 @@ void GrainPool::retireFinished(int64_t nowSample) noexcept
     size_ = kept;
     earliestEnd_ = earliest;
     cursor_ = 0; // the rows moved
+    std::fill(std::begin(slotCursor_), std::end(slotCursor_), 0u);
 }
 
 void GrainPool::moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept
@@ -318,6 +349,8 @@ void GrainPool::moveRows(uint32_t from, uint32_t to, uint32_t n) noexcept
     move(envReleaseScale_);
     move(weight_);
     move(level_);
+    move(voice_);
+    move(voiceSlot_);
     move(fadeStart_);
     move(invFade_);
     move(edgeEnd_);
@@ -343,6 +376,8 @@ void GrainPool::clear() noexcept
     heapWeight_ = 0;
     fadingWeight_ = 0;
     cursor_ = 0;
+    std::fill(std::begin(slotWeight_), std::end(slotWeight_), uint64_t{0});
+    std::fill(std::begin(slotCursor_), std::end(slotCursor_), 0u);
 }
 
 void GrainPool::assignSourceSlot(uint8_t slot, uint8_t below) noexcept
@@ -369,6 +404,8 @@ GrainSpec GrainPool::spec(uint32_t i) const noexcept
         .bus = bus_[i],
         .weight = weight_[i],
         .level = level_[i],
+        .voice = voice_[i],
+        .voiceSlot = voiceSlot_[i],
     };
 }
 } // namespace gg

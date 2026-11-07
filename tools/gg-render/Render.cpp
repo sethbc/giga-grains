@@ -123,7 +123,8 @@ namespace
 struct GrainCollector
 {
     /// A spawn (the grain, with the layer that spawned it) or a steal (the layer, the stolen
-    /// grain's index and the onset of the grain it made room for).
+    /// grain's index, its voice's ordinal in grain.voice and the onset of the grain it made room
+    /// for).
     struct Event
     {
         enum class Kind : uint8_t
@@ -133,7 +134,7 @@ struct GrainCollector
         };
         Kind kind;
         uint32_t layer;
-        GrainSpec grain;    ///< A spawn's.
+        GrainSpec grain;    ///< A spawn's; a steal's carries only the stolen grain's voice.
         uint64_t stolen;    ///< A steal's: the stolen grain's index.
         int64_t stealOnset; ///< A steal's: the onset it made room at.
     };
@@ -147,9 +148,11 @@ struct GrainCollector
         self.add({Event::Kind::Spawn, layer, g, 0, 0});
     }
 
-    static void stealSink(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+    static void stealSink(void *ctx, uint32_t layer, uint64_t index, uint32_t voice, int64_t onset)
     {
-        static_cast<GrainCollector *>(ctx)->add({Event::Kind::Steal, layer, {}, index, onset});
+        GrainSpec stolen{};
+        stolen.voice = voice;
+        static_cast<GrainCollector *>(ctx)->add({Event::Kind::Steal, layer, stolen, index, onset});
     }
 
     void add(const Event &e)
@@ -231,9 +234,10 @@ void takeEventLines(GrainCollector &grains, std::vector<std::string> *eventLines
     {
         for (const GrainCollector::Event &e : grains.pending)
         {
-            eventLines->push_back(e.kind == GrainCollector::Event::Kind::Spawn
-                                      ? formatEventLine(e.layer, e.grain)
-                                      : formatStealLine(e.layer, e.stolen, e.stealOnset));
+            eventLines->push_back(
+                e.kind == GrainCollector::Event::Kind::Spawn
+                    ? formatEventLine(e.layer, e.grain)
+                    : formatStealLine(e.layer, e.stolen, e.grain.voice, e.stealOnset));
         }
     }
     grains.pending.clear();
@@ -1216,8 +1220,13 @@ std::string formatEventLine(uint32_t layer, const GrainSpec &g)
         g.texture, static_cast<int>(g.tier), static_cast<int>(g.level), g.gain, g.pan);
 }
 
-std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset)
+std::string formatStealLine(uint32_t layer, uint64_t index, uint32_t voice, int64_t onset)
 {
+    if (voice != kNoVoice)
+    {
+        return fmt::format(R"({{"i":{},"layer":{},"v":{},"steal":{}}})", index, layer, voice,
+                           onset);
+    }
     return fmt::format(R"({{"i":{},"layer":{},"steal":{}}})", index, layer, onset);
 }
 

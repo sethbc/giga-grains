@@ -39,8 +39,10 @@ std::string formatEventLine(uint32_t layer, const GrainSpec &g);
 /// One line of the grain-event log for a grain the overload ladder stole, without the newline:
 /// `{"i":<index>,"layer":<layer>,"steal":<onset>}`, "i" the stolen grain's index, "layer" its
 /// layer and "steal" the onset sample of the grain it made room for, whose line follows it at
-/// once (M2 engine spec §6.7).
-std::string formatStealLine(uint32_t layer, uint64_t index, int64_t onset);
+/// once (M2 engine spec §6.7). A voice's grain (voice not kNoVoice) adds `"v":<ordinal>` after
+/// "layer", as its spawn line does (M3 expression spec E14): `{"i":k,"layer":L,"v":o,"steal":s}`;
+/// a Cloud grain's line is unchanged.
+std::string formatStealLine(uint32_t layer, uint64_t index, uint32_t voice, int64_t onset);
 
 /// gg-render's command-line options that reach the render (M2 sub-project 2's spec §6.10). All
 /// paths are UTF-8; empty means the option wasn't given.

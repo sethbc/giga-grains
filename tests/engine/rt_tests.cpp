@@ -49,7 +49,7 @@ struct SpawnCounter
         counter->bus1 += g.bus == 1 ? 1 : 0;
         counter->spectral += g.sourceSlot == gg::Engine::kSpectralSlot ? 1 : 0;
     }
-    static void steal(void *ctx, uint32_t, uint64_t, int64_t)
+    static void steal(void *ctx, uint32_t, uint64_t, uint32_t, int64_t)
     {
         ++static_cast<SpawnCounter *>(ctx)->steals;
     }
@@ -545,6 +545,72 @@ TEST_CASE("engine process does not allocate on every rung", "[rt]")
     REQUIRE(engine.loweredGrains() > 0); // rung 2
     REQUIRE(engine.droppedGrains() > 0); // rung 3's drop
     REQUIRE(engine.stolenGrains() > 0);  // and its steal
+    REQUIRE(counter.steals == engine.stolenGrains());
+    if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
+    {
+        REQUIRE(allocations == 0);
+    }
+}
+
+TEST_CASE("engine process does not allocate while voices steal", "[rt][voice]")
+{
+    // Voice mode's steal order (M3 expression spec E9, EB6) with the tripwire armed: four voices
+    // of 0.1 s Normal grains at 150 Hz each into a quota of 10 stereo grains, one weak and one
+    // finished (an orphan slot), the Cloud stream's grains orphans from the switch, across calls
+    // of 0, 1, 1,000 and 300 samples, so rung 3 examines every group of candidates.
+    gg::CloudParams params{.densityHz = 150.0,
+                           .grainDurationSec = 0.1,
+                           .position = 0.5,
+                           .spray = 0.5,
+                           .pitchSemitones = 3.0,
+                           .stereo = 1.0,
+                           .gain = 0.5f};
+    std::vector<float> left(1000), right(1000);
+    float *out[2] = {left.data(), right.data()};
+    gg::Engine engine(gg::EngineConfig{48000.0, 1000, 4096, 19});
+    engine.setSource(stereoSine(330.0));
+    engine.setCloudParams(params);
+    engine.setQuota(40);
+    SpawnCounter counter;
+    engine.setEventSink(&SpawnCounter::record, &counter);
+    engine.setStealSink(&SpawnCounter::steal, &counter);
+    engine.process(out, 2, 1000); // Cloud grains, orphans once voice mode is on
+    gg::VoiceParams voice;
+    voice.cloud = params;
+    voice.amp = {.at = 0,
+                 .level = 1.0,
+                 .stage = gg::AmpEnvelope::Stage::Sustain,
+                 .attackPerSample = 0.0,
+                 .decayPerSample = 0.0,
+                 .releasePerSample = 0.0,
+                 .sustain = 1.0};
+
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        engine.setVoiceMode(true);
+        for (uint32_t slot = 0; slot < 4; ++slot)
+        {
+            engine.startVoice(slot * 3, slot, voice);
+        }
+        for (int i = 0; i < 20; ++i)
+        {
+            if (i == 5)
+            {
+                voice.weak = true;
+                engine.setVoiceParams(3, voice);
+                engine.finishVoice(6);
+            }
+            engine.process(out, 2, 0);
+            engine.process(out, 2, 1);
+            engine.process(out, 2, 1000);
+            engine.process(out, 1, 300);
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    REQUIRE(engine.droppedGrains() > 0);
+    REQUIRE(engine.stolenGrains() > 0);
     REQUIRE(counter.steals == engine.stolenGrains());
     if (gg::test::AllocTripwire::available()) // off under ASan; RTSan covers this
     {

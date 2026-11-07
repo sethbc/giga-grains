@@ -146,7 +146,7 @@ struct Log
         steals.reserve(kStealCapacity);
     }
 
-    static void recordSteal(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+    static void recordSteal(void *ctx, uint32_t layer, uint64_t index, uint32_t, int64_t onset)
     {
         auto *log = static_cast<Log *>(ctx);
         if (log->steals.size() < kStealCapacity)

@@ -952,7 +952,8 @@ class Processor
     };
 
     /// One entry of a layer's event buffer (the class comment's Grain events): a spawn's grain, or
-    /// a steal's stolen grain index and the onset of the grain it made room for.
+    /// a steal's stolen grain index and the onset of the grain it made room for, with the stolen
+    /// grain's voice ordinal in grain.voice (kNoVoice for a Cloud grain; the rest of grain unused).
     struct LayerEvent
     {
         enum class Kind : uint8_t
@@ -1094,7 +1095,7 @@ class Processor
                         const GrainSpec &g) noexcept SST_CPPUTILS_NONBLOCKING;
     /// The engines' steal sink, ctx the Processor: appends the steal to its layer's buffer, in
     /// order with the spawns, or counts it when the buffer is full.
-    static void onSteal(void *ctx, uint32_t layer, uint64_t index,
+    static void onSteal(void *ctx, uint32_t layer, uint64_t index, uint32_t voice,
                         int64_t onset) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Hands each buffered event, layer by layer A to D, in order: a spawn to the sink set by
     /// setEventSink and, while this call publishes, the grain queue; a steal to the sink set by
