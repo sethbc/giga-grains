@@ -1283,6 +1283,130 @@ TEST_CASE("plugin note ids stay bounded and do not allocate", "[plugin][rt]")
     REQUIRE_NO_ALLOCATIONS(allocations);
 }
 
+TEST_CASE("plugin process with voices, expressions, the pedal and note ends does not allocate",
+          "[plugin][rt][voice]")
+{
+    // M3 Voice spec §4.2, §4.5: layers A and B at Mode Voice with MPE On, fed CLAP notes with
+    // IDs and their expressions (PAN accepted and ignored), MIDI-MPE notes with their channel's
+    // bend, pressure, CC 74 and poly pressure, the master channel's pedal; the notes end and
+    // their NOTE_ENDs go out; then reset() ends the notes held and the next call sends theirs.
+    // Every call, reset() included, without allocating.
+    gg::test::PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-voices")));
+    const auto a = [](gg::core::LayerParam p) { return gg::core::layerSlot(p, 0); };
+    const auto b = [](gg::core::LayerParam p) { return gg::core::layerSlot(p, 1); };
+    const std::array<clap_event_param_value, 6> values{{
+        gg::test::paramValue(paramId(a(gg::core::LayerParam::Mode)), 1.0),
+        gg::test::paramValue(paramId(b(gg::core::LayerParam::Mode)), 1.0),
+        gg::test::paramValue(paramId(ParamSlot::LayerBOn), 1.0),
+        gg::test::paramValue(paramId(ParamSlot::Mpe), 1.0),
+        gg::test::paramValue(paramId(a(gg::core::LayerParam::Env1Release)), -6.0), // 15.6 ms
+        gg::test::paramValue(paramId(b(gg::core::LayerParam::Env1Release)), -6.0),
+    }};
+    gg::test::InputEvents settings;
+    for (const auto &v : values)
+    {
+        settings.add(&v.header);
+    }
+    plugin.flush(settings.list());
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    const auto withId = [](uint16_t type, int16_t channel, int16_t key, int32_t noteId) {
+        auto e = gg::test::noteEvent(type, channel, key);
+        e.note_id = noteId;
+        return e;
+    };
+    const auto expression = [](clap_note_expression which, int32_t noteId, int16_t channel,
+                               int16_t key, double value) {
+        clap_event_note_expression e{};
+        e.header = {sizeof(e), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_EXPRESSION, 0};
+        e.expression_id = which;
+        e.note_id = noteId;
+        e.port_index = 0;
+        e.channel = channel;
+        e.key = key;
+        e.value = value;
+        return e;
+    };
+    using gg::test::midiEvent;
+    const auto on1 = withId(CLAP_EVENT_NOTE_ON, 0, 60, 1);
+    const auto on2 = withId(CLAP_EVENT_NOTE_ON, 2, 64, 2);
+    const auto bend3 = midiEvent(0xE3, 0x00, 0x50);
+    const auto midiOn3 = midiEvent(0x93, 67, 100);
+    const auto timbre3 = midiEvent(0xB3, 74, 90);
+    const auto pressure3 = midiEvent(0xD3, 70, 0);
+    const auto poly3 = midiEvent(0xA3, 67, 50);
+    const auto tune1 = expression(CLAP_NOTE_EXPRESSION_TUNING, 1, -1, -1, 3.5);
+    const auto press2 = expression(CLAP_NOTE_EXPRESSION_PRESSURE, 2, -1, -1, 0.6);
+    const auto bright3 = expression(CLAP_NOTE_EXPRESSION_BRIGHTNESS, -1, 3, 67, 0.2);
+    const auto volume1 = expression(CLAP_NOTE_EXPRESSION_VOLUME, 1, -1, -1, 1.5);
+    const auto pan1 = expression(CLAP_NOTE_EXPRESSION_PAN, 1, -1, -1, 0.3);
+    const auto pedalDown = midiEvent(0xB0, 64, 127);
+    const auto off1 = withId(CLAP_EVENT_NOTE_OFF, -1, -1, 1);
+    const auto midiOff3 = midiEvent(0x83, 67, 40);
+    const auto pedalUp = midiEvent(0xB0, 64, 0);
+    const auto off2 = withId(CLAP_EVENT_NOTE_OFF, 2, 64, 2);
+    const auto on5 = withId(CLAP_EVENT_NOTE_ON, 1, 72, 5);
+    const auto midiOn6 = midiEvent(0x94, 74, 100);
+
+    constexpr std::size_t kCalls = 12;
+    std::array<gg::test::InputEvents, kCalls> events;
+    for (const auto *e : {&on1.header, &on2.header, &bend3.header, &midiOn3.header, &timbre3.header,
+                          &pressure3.header, &poly3.header})
+    {
+        events[0].add(e);
+    }
+    for (const auto *e : {&tune1.header, &press2.header, &bright3.header, &volume1.header,
+                          &pan1.header, &pedalDown.header})
+    {
+        events[1].add(e);
+    }
+    events[2].add(&off1.header);
+    events[2].add(&midiOff3.header);
+    events[4].add(&pedalUp.header);
+    events[5].add(&off2.header);
+    events[8].add(&on5.header);
+    events[8].add(&midiOn6.header);
+    constexpr std::size_t kResetAfter = 9; // reset() between calls 9 and 10
+
+    std::vector<float> outLeft(512), outRight(512);
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    gg::test::OutputEvents out(4096); // reserved: a push doesn't allocate
+    bool allContinue = true;
+    std::array<std::size_t, kCalls> endsAfter{};
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t i = 0; i < kCalls; ++i)
+        {
+            allContinue = allContinue && plugin.process(512, nullptr, outputs, events[i].list(), 2,
+                                                        out.list()) == CLAP_PROCESS_CONTINUE;
+            endsAfter[i] = out.events().size();
+            if (i == kResetAfter)
+            {
+                plugin.clap()->reset(plugin.clap());
+            }
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+
+    CHECK(allContinue);
+    std::vector<std::pair<int32_t, int>> ends;
+    for (const auto &e : out.events())
+    {
+        REQUIRE(e.header.type == CLAP_EVENT_NOTE_END);
+        ends.push_back({e.noteId, e.key});
+    }
+    // Notes 1 and 3 end after the pedal is up, note 2 after its off; 5 and 6 at the reset.
+    CHECK(ends ==
+          std::vector<std::pair<int32_t, int>>{{1, 60}, {-1, 67}, {2, 64}, {5, 72}, {-1, 74}});
+    CHECK(endsAfter[kResetAfter] == 3);
+    CHECK(endsAfter[kResetAfter + 1] == 5);
+    CHECK(plugin.impl().processor()->heldKeys().empty());
+    REQUIRE_NO_ALLOCATIONS(allocations);
+}
+
 TEST_CASE("plugin process with four layers, controls and the pool does not allocate",
           "[plugin][rt]")
 {

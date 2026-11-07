@@ -36,7 +36,8 @@ namespace gg::core
 ///   (a voice's tail may still read them) until free() or a replacement.
 /// - **A full table** (128 notes) gives a new note a Free slot, else replaces the oldest
 ///   Released note, else the oldest PedalHeld, else the oldest Held. "Oldest" is the smallest
-///   `ordinal`; the caller passes a strictly increasing one with each On.
+///   `ordinal`; the caller passes a strictly increasing one with each On. apply() reports the
+///   note it replaces, for the caller to end (the Processor's NOTE_END).
 /// - **Groups.** apply() folds events as they arrive, as the Processor's held set always did;
 ///   startedThisGroup() and releasedThisGroup() list, in event order, the slots of the Ons and of
 ///   the Held/PedalHeld -> Released moves since beginGroup(), so a note that starts and ends in
@@ -84,8 +85,10 @@ class NoteTable
     };
 
     /// Applies a note event whose fields are in range (the Processor validates). `ordinalClock`
-    /// becomes an On's ordinal.
-    void apply(const NoteEvent &n, uint64_t ordinalClock) noexcept;
+    /// becomes an On's ordinal. Returns true when an On took a slot that held a note (a full
+    /// table: the class comment's rule), and copies that note, as it was, into `*replaced` when
+    /// given, so the caller can end it (the Processor's NOTE_END); false otherwise.
+    bool apply(const NoteEvent &n, uint64_t ordinalClock, Note *replaced = nullptr) noexcept;
     /// Applies a control event whose channel is -1..15 and whose value is finite (or not: a
     /// non-finite value is ignored here). ModWheel is not the table's. Remembers `mpe`.
     void applyControl(const ControlEvent &c, bool mpe) noexcept;

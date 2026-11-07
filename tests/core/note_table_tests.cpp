@@ -251,6 +251,26 @@ TEST_CASE("note_table_full_drops_oldest_released", "[core][notes]")
     CHECK(live(t).size() == 128);
 }
 
+TEST_CASE("note_table_full_reports_replaced", "[core][notes]")
+{
+    // apply() reports the note an On replaces in a full table, as it was, and nothing else.
+    NoteTable t;
+    NoteTable::Note replaced{};
+    for (int i = 0; i < 128; ++i)
+    {
+        CHECK_FALSE(
+            t.apply(on(3, static_cast<int16_t>(i), i), static_cast<uint64_t>(i + 1), &replaced));
+    }
+    CHECK_FALSE(t.apply(off(3, 7, 7), 200, &replaced)); // an Off replaces nothing
+    REQUIRE(t.apply(on(1, 100, 1000), 300, &replaced));
+    CHECK(replaced.id == 7); // the oldest Released
+    CHECK(replaced.channel == 3);
+    CHECK(replaced.key == 7);
+    CHECK(replaced.state == State::Released);
+    REQUIRE(t.apply(on(1, 101, 1001), 301)); // no out pointer: still reported
+    CHECK(t.notes()[0].id == 1001);          // then the oldest Held
+}
+
 TEST_CASE("voice_grouping_short_tap", "[core][notes]")
 {
     NoteTable t;
