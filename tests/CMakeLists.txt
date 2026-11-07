@@ -52,6 +52,7 @@ add_executable(gg-tests
         engine/spectral_tests.cpp
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
+        engine/voice_filter_bank_tests.cpp
         engine/voice_tests.cpp
         engine/voice_schedule_tests.cpp
         engine/window_tests.cpp
@@ -135,6 +136,9 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
 # as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
+# The voice filter's bank tests (engine/voice_filter_bank_tests.cpp) reach gg-engine's private
+# VoiceFilterBank.h (engine/src; M3 sub-project 9's plan decision P3).
+target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/engine/src)
 # metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, implemented in
 # gg::stb_impl.
 target_link_libraries(gg-tests PRIVATE gg::stb gg::stb_impl)

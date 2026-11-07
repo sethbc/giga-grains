@@ -18,6 +18,7 @@ add_library(gg-engine STATIC
         src/SpectralSource.cpp
         src/SincTable.cpp
         src/Version.cpp
+        src/VoiceFilter.cpp
         src/Window.cpp
         )
 add_library(gg::engine ALIAS gg-engine)
@@ -42,6 +43,9 @@ target_compile_definitions(gg-engine PUBLIC
 target_link_libraries(gg-engine PUBLIC gg::compiler-options sst-cpputils sst-basic-blocks simde)
 # pffft is PRIVATE: only SpectralSource.cpp includes it (the header forward-declares its setup).
 target_link_libraries(gg-engine PRIVATE gg::pffft)
+# sst-filters is PRIVATE too (M3 sub-project 9's plan decision P3): only VoiceFilter.cpp and its
+# private engine/src/VoiceFilterBank.h include it, so no public engine header does.
+target_link_libraries(gg-engine PRIVATE sst-filters)
 # The ring pyramid's per-frame cascade at -O0 dominates the sanitizer job (60-minute timeout).
 if(NOT MSVC)
     set_source_files_properties(src/RingStorage.cpp PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>")
