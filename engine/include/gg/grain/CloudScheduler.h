@@ -15,6 +15,7 @@
 #include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
+#include "gg/grain/Playhead.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
 
@@ -72,6 +73,11 @@ struct CloudParams
     /// The share of grains on the layer's second bus (extremes spec §6.3): a grain takes bus 1
     /// when uniform01(u) < busSplit; [0, 1].
     double busSplit{0.0};
+    /// The playhead's speed (M3 playhead spec H1, §4.2), in seconds of source per second of real
+    /// time (× real time), after the law and any tracking: 0 is today's static read; [-64, 64].
+    double scanSpeed{0.0};
+    /// What the scan point does at the source window's edges (H3); out of range means Wrap.
+    ScanEdge scanEdge{ScanEdge::Wrap};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -114,6 +120,14 @@ struct GrainDraw
     /// The layer bus the grain renders into, 0 or 1 (extremes spec §6.3): 1 when
     /// uniform01(u) < CloudParams::busSplit, u keyed by Bus; 0, with no draw, at a split of 0.
     uint8_t bus{0};
+    /// Live mode with the playhead's offset x(t) != 0 at the onset (M3 playhead spec HB3): the
+    /// ring's point, folded by the engine with the window at the onset. positionDraw is then the
+    /// spread alone (the spray and Smear's jitter, Position replaced by 0), scanPoint is
+    /// Position + x(t), unfolded, and scanEdge the playhead's ScanEdge. Otherwise false, 0 and 0:
+    /// never set in Sample mode (the scheduler folds there) nor in Spectral mode.
+    bool scanning{false};
+    uint8_t scanEdge{0};
+    double scanPoint{0.0};
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -170,6 +184,15 @@ struct GrainDraw
 /// bus 1 when uniform01(u) < busSplit. Each u has its own field (SmearDetune, SmearJitter, Bus),
 /// and each amplitude of 0 skips its draw and its term, so every draw is what it was without
 /// them, bit for bit, on bus 0.
+///
+/// **The playhead** (M3 playhead spec H5, §3a HB1 to HB4). The stream's Playhead gives the scan
+/// offset x(t) at each grain's exact onset t. While x(t) is exactly 0 the draw is today's, bit for
+/// bit. Otherwise Sample mode draws around scanFold(position + x(t), 0, 1, edge) where it used
+/// position, Live mode leaves the fold to the engine (GrainDraw::scanning), and Spectral mode
+/// ignores it (its grains read no Position; the smear's point is the engine's, HB5). The owner
+/// syncs it at every block start (syncPlayhead); every forced onset, reset() among them, also
+/// restarts it, and restartPlayhead() alone restarts it. The playhead draws nothing and never
+/// moves an onset (HB7).
 ///
 /// Every random field of a grain has its own rng::Field, keyed by (seed, layer, stream, field,
 /// k), so the draws don't depend on block size, call order or each other.
@@ -230,12 +253,38 @@ class CloudScheduler
 
     /// Forces an onset at the next schedule() call that runs the stream, at its blockStart: the
     /// same path the first key held after none takes (setHeldKeys; the class comment's
-    /// **Notes**). Engine::setEnabled calls it when a layer is switched on (spec §6.2).
-    void forceNextOnset() noexcept { onsetForced_ = true; }
+    /// **Notes**). Engine::setEnabled calls it when a layer is switched on (spec §6.2). It also
+    /// restarts the playhead at the next syncPlayhead (M3 playhead spec H4, HB1).
+    void forceNextOnset() noexcept
+    {
+        onsetForced_ = true;
+        playhead_.requestRestart();
+    }
 
-    /// Restarts the schedule: the next onset is t = 0 with k = 0. Keeps the sample rate, the
-    /// controls, the held keys and the note gate.
+    /// Restarts the schedule: the next onset is t = 0 with k = 0, and the playhead restarts at the
+    /// next syncPlayhead (H4). Keeps the sample rate, the controls, the held keys and the note
+    /// gate.
     void reset() noexcept;
+
+    /// Brings the playhead to the block starting at t (M3 playhead spec HB1), with the controls in
+    /// effect (scanSpeed, scanEdge, position) and the source's geometry g at t (HB2): a pending
+    /// restart sets x(t) = 0 there; a rate or edge that differs bit for bit rebases; else
+    /// nothing. The owner calls it at every block start, before any grain is drawn and whether or
+    /// not the stream schedules, so a pending restart is taken at its block.
+    void syncPlayhead(int64_t t, const ScanGeometry &g) noexcept
+    {
+        playhead_.sync(t, params_.scanSpeed, params_.scanEdge, g, sampleRate_, params_.position);
+    }
+
+    /// Restarts the playhead at the next syncPlayhead, forcing no onset (HB5: the engine's
+    /// Spectral layer in Voice mode, at each voice's start).
+    void restartPlayhead() noexcept { playhead_.requestRestart(); }
+
+    /// The playhead's offset x(t) at t, in engine samples (Position's units).
+    double scanOffsetAt(double t) const noexcept { return playhead_.offsetAt(t); }
+
+    /// The playhead, as last synced (the smear's point reads it, HB5).
+    const Playhead &playhead() const noexcept { return playhead_; }
 
     /// Calls emit(const GrainDraw &) for every grain with onsetSample in
     /// [blockStart, blockStart + numFrames), in onset order. Blocks must be contiguous from the
@@ -366,13 +415,36 @@ class CloudScheduler
             durationSamples = std::clamp(exp2Det(log2Seconds) * sampleRate_, kMinDurationSamples,
                                          kMaxDurationSamples);
         }
+        // M3 playhead spec HB3: the point the draw spreads around. At x(t) = 0 it is Position
+        // itself, today's draw bit for bit. Otherwise Sample mode folds Position + x(t) here, and
+        // Live mode hands it to the engine unfolded (the window at the onset folds it), with
+        // Position replaced by 0 in the draw. Spectral grains read no Position.
+        const double scan = playhead_.offsetAt(t);
+        double position = params_.position;
+        bool scanning = false;
+        uint8_t scanEdge = 0;
+        double scanPoint = 0.0;
+        if (scan != 0.0) // the one branch at rest
+        {
+            if (mode_ == SourceMode::Live)
+            {
+                scanning = true;
+                scanEdge = static_cast<uint8_t>(playhead_.edge());
+                scanPoint = params_.position + scan;
+                position = 0.0;
+            }
+            else if (mode_ == SourceMode::Sample)
+            {
+                position = scanFold(params_.position + scan, 0.0, 1.0, playhead_.edge());
+            }
+        }
         // Live mode: seconds behind the head, further back only. Spectral mode: the same with
         // Position replaced by 0, since Position addresses the smear's material, not its ring
         // (the extremes spec §6.2). Sample mode: a fraction of the source, with the spray
         // folded in, or with sprayInSeconds the position alone and the spray carried in
         // seconds for the source to convert.
         const bool inSeconds = mode_ == SourceMode::Sample && params_.sprayInSeconds;
-        double positionDraw = params_.position;
+        double positionDraw = position;
         if (mode_ == SourceMode::Spectral)
         {
             positionDraw = params_.spray * rng::uniform01(jitter);
@@ -383,8 +455,7 @@ class CloudScheduler
         }
         else if (!inSeconds)
         {
-            positionDraw =
-                std::clamp(params_.position + params_.spray * rng::bipolar(jitter), 0.0, 1.0);
+            positionDraw = std::clamp(position + params_.spray * rng::bipolar(jitter), 0.0, 1.0);
         }
         double sprayOffsetSec = inSeconds ? params_.spray * rng::bipolar(jitter) : 0.0;
         if (params_.smearJitterSec != 0.0)
@@ -427,6 +498,9 @@ class CloudScheduler
             .tier = params_.quality,
             .key = note,
             .bus = bus,
+            .scanning = scanning,
+            .scanEdge = scanEdge,
+            .scanPoint = scanPoint,
         };
         const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
         lastOnset_ = t;
@@ -493,6 +567,9 @@ class CloudScheduler
     // The held set went from empty to non-empty, or forceNextOnset() was called, since the
     // last run.
     bool onsetForced_{false};
+    // The stream's playhead (M3 playhead spec HB1): restarted wherever an onset is forced, and
+    // by reset() and restartPlayhead(); synced by the owner at every block start.
+    Playhead playhead_{};
 };
 } // namespace gg
 

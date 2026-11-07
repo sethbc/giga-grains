@@ -254,6 +254,11 @@ void Engine::startVoice(uint32_t slot, uint32_t ordinal, const VoiceParams &para
     voice.params = params;
     voice.ordinal = ordinal;
     voice.spawning = true;
+    if (mode_ == SourceMode::Spectral)
+    {
+        // M3 playhead spec H9, HB5: one smear, one point, restarted at the newest voice's start.
+        cloud_.restartPlayhead();
+    }
 }
 
 void Engine::setVoiceParams(uint32_t slot, const VoiceParams &params) noexcept
@@ -293,6 +298,45 @@ void Engine::applySourceMode() noexcept
     for (Voice &voice : voices_)
     {
         voice.scheduler.setSourceMode(mode_, config_.liveSeconds);
+    }
+}
+
+void Engine::restartPlayheads() noexcept
+{
+    cloud_.restartPlayhead();
+    for (Voice &voice : voices_)
+    {
+        voice.scheduler.restartPlayhead();
+    }
+}
+
+ScanGeometry Engine::scanGeometry() const noexcept
+{
+    const SourceSlot &current = slots_[current_];
+    const auto ring = [&]() noexcept {
+        // Seconds of lag a second, forward toward the head, over the window at clock_ (the
+        // block's live write has recorded it).
+        const double w =
+            live_.enabled() ? static_cast<double>(live_.windowFramesAt(clock_)) / config_.sampleRate
+                            : 0.0;
+        return ScanGeometry{-1.0, 0.0, w};
+    };
+    const auto sample = [&]() noexcept {
+        // A fraction of the source per source second, against sampleGrain's span F − 1.
+        const int64_t frames = current.levels[0].frames;
+        return current.source != nullptr && frames >= 2
+                   ? ScanGeometry{current.rate / static_cast<double>(frames - 1), 0.0, 1.0}
+                   : ScanGeometry{0.0, 0.0, 1.0};
+    };
+    switch (mode_)
+    {
+    case SourceMode::Live:
+        return ring();
+    case SourceMode::Spectral:
+        return current.source != nullptr ? sample() : ring();
+    case SourceMode::Sample:
+    default:
+        return sample();
     }
 }
 
@@ -504,6 +548,10 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         // grains, each finishing on the source it started on (its row's sourceSlot).
         mode_ = requestedMode_;
         applySourceMode();
+        // M3 playhead spec HB9: an offset in a fraction of a file and one in seconds of lag don't
+        // correspond, so every stream starts reading at Position again. Here, not in
+        // applySourceMode, which a ring's new bound also calls.
+        restartPlayheads();
     }
     if (requestedEnabled_ != enabled_)
     {
@@ -663,10 +711,24 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     {
         live_.write(in, numInChannels, offset, blockStart, numFrames, overdubGain);
     }
+    // M3 playhead spec HB1, HB2: every stream's playhead comes to blockStart before the smear
+    // reads its point and before any grain is drawn, whether or not the stream schedules (a
+    // pending restart is taken only here), with the geometry of the source in effect, its live
+    // window as just written.
+    const ScanGeometry geometry = scanGeometry();
+    cloud_.syncPlayhead(blockStart, geometry);
+    for (Voice &voice : voices_)
+    {
+        if (voice.spawning)
+        {
+            voice.scheduler.syncPlayhead(blockStart, geometry);
+        }
+    }
     // Then the Spectral Smear writes the block into its ring, before any grain reads it (the
     // extremes spec §6.2): its drain, then silence, unless the kind is Spectral, else the smear of
     // the current sample, or without one of the live ring just written, whose head it reads at each
-    // hop. Position is the one in effect for the block, so each hop takes its own block's.
+    // hop. Position is the one in effect for the block, moved by the Cloud stream's playhead at
+    // each hop's own sample (M3 playhead spec HB5).
     if (spectral_ != nullptr)
     {
         spectral_->setActive(mode_ == SourceMode::Spectral);
@@ -686,8 +748,11 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         {
             material.ring = &live_;
         }
-        spectral_->process(material, cloud_.params().position, config_.seed, config_.layer,
-                           blockStart, numFrames);
+        const ScanPosition scan{.position = cloud_.params().position,
+                                .playhead = cloud_.playhead(),
+                                .sampleHi = 1.0,
+                                .ring = current.source == nullptr};
+        spectral_->process(material, scan, config_.seed, config_.layer, blockStart, numFrames);
     }
 
     // Spawn this block's grains, then render, then retire. renderedTo is the sample up to
@@ -797,6 +862,14 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
     const double hi = rho - 3.0 - kM - std::max(0.0, dur * rate - span);
     double lo = rho - static_cast<double>(ring.windowFramesAt(t0)) + 1.0 + kM +
                 std::max(0.0, span * (1.0 - rate));
+    // M3 playhead spec HB3: a scanning draw's point is folded with the window at its onset, then
+    // its spread added; otherwise the lag is the draw's, as before the playhead.
+    double lag = d.positionDraw;
+    if (d.scanning)
+    {
+        const double w = static_cast<double>(ring.windowFramesAt(t0)) / config_.sampleRate;
+        lag = scanFold(d.scanPoint, 0.0, w, static_cast<ScanEdge>(d.scanEdge)) + d.positionDraw;
+    }
     const double runOldest = ring.oldestRunAfter(t0);
     if (runOldest != run)
     {
@@ -815,7 +888,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
         .index = d.index,
         .onsetSample = d.onsetSample,
         .onsetFrac = d.onsetFrac,
-        .startPos = std::clamp(rho - d.positionDraw * config_.sampleRate, lo, hi),
+        .startPos = std::clamp(rho - lag * config_.sampleRate, lo, hi),
         .rate = rate, // the ring runs at the output rate
         .durationSamples = dur,
         .texture = d.texture,
