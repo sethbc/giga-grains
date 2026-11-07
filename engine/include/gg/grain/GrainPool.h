@@ -29,6 +29,10 @@ inline constexpr int64_t kNoEdge = std::numeric_limits<int64_t>::max();
 /// §4.3).
 inline constexpr uint32_t kNoVoice = 0xFFFFFFFFu;
 
+/// The lane of a grain that renders straight into its bus, a Cloud grain's, and what
+/// VoiceFilterBank::assign returns with no lane to give (M3 sub-project 9's spec FB4).
+inline constexpr uint8_t kNoLane = 0xFF;
+
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
 {
