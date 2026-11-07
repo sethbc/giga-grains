@@ -247,6 +247,63 @@ std::vector<AutomationPoint> readAutomation(const json &j, gg::core::Mode mode, 
     return points;
 }
 
+/// A note's "expressions": time-ordered, each inside the note's span by frame.
+std::vector<NoteExpressionSpec> readExpressions(const json &j, const std::string &listName,
+                                                const NoteSpec &note, double sampleRate)
+{
+    if (!j.is_array())
+    {
+        throw SpecError(listName + " must be a JSON array");
+    }
+    const int64_t first = framesFor(note.timeSeconds, sampleRate);
+    const int64_t last = framesFor(note.timeSeconds + note.durationSeconds, sampleRate);
+    std::vector<NoteExpressionSpec> out;
+    for (std::size_t i = 0; i < j.size(); ++i)
+    {
+        const std::string name = fmt::format("{}[{}]", listName, i);
+        const Object o(j[i], name, name + ".", {"time", "kind", "value"});
+        NoteExpressionSpec e;
+        e.timeSeconds = o.number("time");
+        const int64_t frame = framesFor(e.timeSeconds, sampleRate);
+        if (!(e.timeSeconds >= 0.0) || frame < first || frame >= last)
+        {
+            throw SpecError(fmt::format("{}.time is outside its note: it must fall from the "
+                                        "note's start up to its end",
+                                        name));
+        }
+        if (!out.empty() && e.timeSeconds < out.back().timeSeconds)
+        {
+            throw SpecError(
+                fmt::format("{}.time is before {}[{}].time: list the expressions in time order",
+                            name, listName, i - 1));
+        }
+        e.kind = o.string("kind");
+        double lo = 0.0;
+        double hi = 1.0;
+        if (e.kind == "tuning")
+        {
+            lo = -120.0;
+            hi = 120.0;
+        }
+        else if (e.kind == "volume")
+        {
+            hi = 4.0;
+        }
+        else if (e.kind != "pressure" && e.kind != "brightness")
+        {
+            throw SpecError(
+                fmt::format("{}.kind must be tuning, pressure, brightness or volume", name));
+        }
+        e.value = o.number("value");
+        if (!(e.value >= lo && e.value <= hi))
+        {
+            throw SpecError(fmt::format("{}.value must be from {} to {}", name, lo, hi));
+        }
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
 std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double durationSeconds)
 {
     if (!j.is_array())
@@ -258,7 +315,9 @@ std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double duratio
     for (std::size_t i = 0; i < j.size(); ++i)
     {
         const std::string name = fmt::format("notes[{}]", i);
-        const Object o(j[i], name, name + ".", {"time", "key", "duration", "channel", "velocity"});
+        const Object o(j[i], name, name + ".",
+                       {"time", "key", "duration", "channel", "velocity", "id", "releaseVelocity",
+                        "expressions"});
         NoteSpec n;
         n.timeSeconds = o.number("time");
         if (!beforeEnd(n.timeSeconds, durationSeconds, sampleRate, end))
@@ -288,7 +347,35 @@ std::vector<NoteSpec> readNotes(const json &j, double sampleRate, double duratio
         {
             n.velocity = static_cast<uint8_t>(o.integerUpTo("velocity", 127));
         }
+        if (o.has("releaseVelocity"))
+        {
+            n.releaseVelocity = static_cast<uint8_t>(o.integerUpTo("releaseVelocity", 127));
+        }
+        if (o.has("id"))
+        {
+            n.id = static_cast<int32_t>(o.integerUpTo("id", std::numeric_limits<int32_t>::max()));
+        }
+        if (o.has("expressions"))
+        {
+            n.expressions =
+                readExpressions(o.member("expressions"), name + ".expressions", n, sampleRate);
+        }
         notes.push_back(n);
+    }
+    // One ID, one note at a time: the explicit IDs and the assigned ones alike.
+    for (std::size_t i = 0; i < notes.size(); ++i)
+    {
+        const int32_t id = noteIdOf(notes, i);
+        for (std::size_t k = 0; id >= 0 && k < i; ++k)
+        {
+            if (noteIdOf(notes, k) == id &&
+                notes[k].timeSeconds + notes[k].durationSeconds > notes[i].timeSeconds)
+            {
+                throw SpecError(fmt::format("notes[{}].id {} is also notes[{}]'s, and the two "
+                                            "overlap",
+                                            i, id, k));
+            }
+        }
     }
     return notes;
 }
@@ -456,7 +543,7 @@ std::vector<ControlSpec> readControls(const json &j, double sampleRate, double d
     for (std::size_t i = 0; i < j.size(); ++i)
     {
         const std::string name = fmt::format("controls[{}]", i);
-        const Object o(j[i], name, name + ".", {"time", "kind", "value", "channel"});
+        const Object o(j[i], name, name + ".", {"time", "kind", "value", "channel", "key"});
         ControlSpec c;
         c.timeSeconds = o.number("time");
         if (!beforeEnd(c.timeSeconds, durationSeconds, sampleRate, end))
@@ -470,9 +557,24 @@ std::vector<ControlSpec> readControls(const json &j, double sampleRate, double d
                                         name, i - 1));
         }
         c.kind = o.string("kind");
-        if (c.kind != "modWheel" && c.kind != "aftertouch" && c.kind != "pitchBend")
+        if (c.kind != "modWheel" && c.kind != "aftertouch" && c.kind != "pitchBend" &&
+            c.kind != "sustain" && c.kind != "timbre" && c.kind != "polyPressure")
         {
-            throw SpecError(fmt::format("{}.kind must be modWheel, aftertouch or pitchBend", name));
+            throw SpecError(fmt::format("{}.kind must be modWheel, aftertouch, pitchBend, "
+                                        "sustain, timbre or polyPressure",
+                                        name));
+        }
+        if (c.kind == "polyPressure")
+        {
+            if (!o.has("key"))
+            {
+                throw SpecError(fmt::format("{}.key is required for polyPressure", name));
+            }
+            c.key = static_cast<int16_t>(o.integerUpTo("key", 127));
+        }
+        else if (o.has("key"))
+        {
+            throw SpecError(fmt::format("{}.key is only for polyPressure", name));
         }
         c.value = o.number("value");
         if (!(c.value >= 0.0 && c.value <= 1.0))

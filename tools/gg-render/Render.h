@@ -15,6 +15,7 @@
 
 #include "RenderSpec.h"
 #include "gg/core/ModMatrix.h"
+#include "gg/core/NoteEvents.h"
 #include "gg/core/EnableFault.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/metrics/AudioData.h"
@@ -167,6 +168,31 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
 /// the spec's routes (`mod`) set in its slot, a "None" route clearing it. Throws
 /// std::invalid_argument for a name parseRenderSpec never lets through.
 gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<RouteSpec> &mod);
+
+/// The notes as note events at absolute frames, in frame order: an On at each note's start and an
+/// Off at its end, unless that is at or past `frames`. On one frame the Offs go first, so a key
+/// that ends where it starts again stays held; otherwise the notes' order is kept. A note with an
+/// ID (noteIdOf: its "id", or one assigned for its expressions) carries it on both events; the
+/// Off carries releaseVelocity / 127 (M3 Voice spec §4.8). Offsets are left 0 (set per call).
+struct TimedNote
+{
+    std::size_t frame;
+    gg::core::NoteEvent event;
+};
+std::vector<TimedNote> timedNotes(const std::vector<NoteSpec> &notes, double sampleRate,
+                                  std::size_t frames);
+
+/// The controls as control events at absolute frames, in frame order: the spec's controls, then
+/// each note's expressions (a ControlEvent of the matching Note kind carrying the note's ID,
+/// channel and key; a note with expressions always has an ID), merged stably by frame. Offsets are
+/// left 0 (set per call).
+struct TimedControl
+{
+    std::size_t frame;
+    gg::core::ControlEvent event;
+};
+std::vector<TimedControl> timedControls(const std::vector<ControlSpec> &controls,
+                                        const std::vector<NoteSpec> &notes, double sampleRate);
 
 /// gg-render's exit statuses (CLAUDE.md, "Golden renders").
 inline constexpr int kExitPass = 0;
