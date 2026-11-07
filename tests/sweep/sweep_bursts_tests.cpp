@@ -28,9 +28,10 @@ constexpr int kEvents = 1024;
 
 /// `minScored`: the share of the render the click check scores, pinned a little under what the
 /// case measures (0.431, 0.410 and 0.402 for the FX, the instrument and block size 1, with the
-/// draws keyed by CLAP ID): Reverb Size is among the random slots, and each of its real moves is
-/// exempt (row 217), and so are kLimiterDrive's and kDelayGlideHold's stretches (SweepDriver.h;
-/// they cost the cases 0.09, 0.015 and 0.08 of it).
+/// draws keyed by CLAP ID; Reverb Size is left out of the bursts' draw since M3 sub-project 3, row
+/// 217's echo outlasting any useful exemption, and the floors stay as lower bounds):
+/// kLimiterDrive's and kDelayGlideHold's stretches are exempt (SweepDriver.h; they cost the cases
+/// 0.015 and 0.08 of it).
 void bursts(Mode mode, uint64_t seed, double minScored, uint32_t fixedBlock = 0)
 {
     SweepDriver d(mode, seed, fixedBlock);

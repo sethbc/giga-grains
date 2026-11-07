@@ -108,14 +108,31 @@ void SweepDriver::burst(int events, uint64_t seed)
                              .beatsPerBar = 1 + static_cast<int>(u() * 7.0)});
     // Each event's draws are keyed by the event index and, for the parameter, by CLAP ID
     // (sweepdraw), so appended parameters move no existing event's choice but their own.
-    const std::vector<uint32_t> ids = sweepdraw::slotIds();
+    // Reverb Size is left out of the draw (a filter on the list before the rendezvous pick, so
+    // only the events that picked it change): its mid-sound move clicks by design (row 217,
+    // accepted, S8), and stacked moves in a burst echo for over 1 s (measured: four moves within
+    // about 1,000 samples score above the limit until 1.03 to 1.05 s after the last), so an
+    // exemption that long would leave the bursts scoring about a tenth of their render. The
+    // parameter and extremes sweeps keep drawing and exempting it.
+    const std::vector<uint32_t> allIds = sweepdraw::slotIds();
+    std::vector<uint32_t> ids;
+    std::vector<std::size_t> slotOf;
+    for (std::size_t s = 0; s < allIds.size(); ++s)
+    {
+        if (static_cast<gg::core::ParamSlot>(s) != gg::core::ParamSlot::ReverbSize)
+        {
+            ids.push_back(allIds[s]);
+            slotOf.push_back(s);
+        }
+    }
     std::vector<gg::core::ParamEvent> params;
     params.reserve(static_cast<std::size_t>(events));
     for (int i = 0; i < events; ++i)
     {
         const auto e = static_cast<uint64_t>(i);
         const auto f = [&](uint64_t field) { return sweepdraw::eventField(seed, e, field); };
-        const auto slot = static_cast<gg::core::ParamSlot>(sweepdraw::pickById(seed, e, ids));
+        const auto slot =
+            static_cast<gg::core::ParamSlot>(slotOf[sweepdraw::pickById(seed, e, ids)]);
         const auto &m = meta(slot);
         const double span = static_cast<double>(m.maxVal) - m.minVal;
         const bool isMod = f(0) < 0.25;
