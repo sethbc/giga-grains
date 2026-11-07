@@ -326,6 +326,7 @@ gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<Rou
                 .targetLayer = layerOrElse(r.targetLayer, gg::core::kAllLayers),
                 .depth = static_cast<float>(r.depth),
                 .curve = *curve,
+                .voiceOnly = r.voiceOnly,
             };
         }
         routes.at(r.slot - 1u) = route;
@@ -1189,6 +1190,15 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
 
 std::string formatEventLine(uint32_t layer, const GrainSpec &g)
 {
+    if (g.voice != kNoVoice)
+    {
+        // M3 Voice spec §4.3: a voice grain's line adds "v", its voice's ordinal, after "layer".
+        return fmt::format(
+            R"({{"i":{},"layer":{},"v":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"tex":{},"tier":{},"lvl":{},"gain":{},"pan":{}}})",
+            g.index, layer, g.voice, g.onsetSample, g.onsetFrac, g.startPos, g.rate,
+            g.durationSamples, g.texture, static_cast<int>(g.tier), static_cast<int>(g.level),
+            g.gain, g.pan);
+    }
     return fmt::format(
         R"({{"i":{},"layer":{},"onset":{},"frac":{},"pos":{},"rate":{},"dur":{},"tex":{},"tier":{},"lvl":{},"gain":{},"pan":{}}})",
         g.index, layer, g.onsetSample, g.onsetFrac, g.startPos, g.rate, g.durationSamples,

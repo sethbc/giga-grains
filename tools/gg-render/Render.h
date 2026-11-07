@@ -26,11 +26,13 @@ namespace gg::render
 /// `"tex":<d>,"tier":<t>,"lvl":<l>,"gain":<f>,"pan":<f>}`, "layer" being the layer that spawned it
 /// (0 to 3, A to D; M2 sub-project 1's spec §6.7), "tex" the grain's Texture (spec §4), "tier" the
 /// tier it latched (0 Eco, 1 Normal, 2 HQ) and "lvl" its latched mip level (M2 engine spec §6.7).
-/// Each <d> is fmt's shortest round-trip form of the double and each <f> that of the float, so the
-/// line reads back exactly and is byte-identical on every platform. The golden event logs are
-/// compared exactly per line (a CR before a newline, and the final newline, are ignored), which
-/// makes them the cross-platform determinism gate (INTENT §14, §19): it sees every decision of the
-/// overload ladder, the tier, the level and, through formatStealLine, the steals.
+/// A voice's grain (GrainSpec::voice not kNoVoice) adds `"v":<ordinal>` after "layer", its voice's
+/// ordinal (M3 Voice spec §4.3); a Cloud grain's line has no "v". Each <d> is fmt's shortest
+/// round-trip form of the double and each <f> that of the float, so the line reads back exactly and
+/// is byte-identical on every platform. The golden event logs are compared exactly per line (a CR
+/// before a newline, and the final newline, are ignored), which makes them the cross-platform
+/// determinism gate (INTENT §14, §19): it sees every decision of the overload ladder, the tier, the
+/// level and, through formatStealLine, the steals.
 std::string formatEventLine(uint32_t layer, const GrainSpec &g);
 
 /// One line of the grain-event log for a grain the overload ladder stole, without the newline:

@@ -261,7 +261,7 @@ TEST_CASE("the factory routes are spec 6.8's twelve", "[core][mod]")
                                      : ModRoute{ModSource::Macro8, kSameLayer, ParamSlot::Level,
                                                 kAllLayers,        12.0f,      ModCurve::Bipolar};
         CHECK(r[11] == twelfth);
-        for (size_t i = 12; i < kModSlots; ++i)
+        for (size_t i = 12; i < 43; ++i)
         {
             INFO("slot " << i + 1);
             CHECK(r[i] == ModRoute{});
@@ -611,6 +611,11 @@ TEST_CASE("source kinds", "[core][mod]")
     {
         const auto s = static_cast<ModSource>(i);
         const bool perLayer = s >= ModSource::Lfo1 && s <= ModSource::Step;
+        const bool perVoice = s == ModSource::Env1 || s == ModSource::Env2 ||
+                              s == ModSource::Velocity || s == ModSource::Key ||
+                              s == ModSource::Pressure || s == ModSource::Timbre ||
+                              s == ModSource::NotePitch || s == ModSource::ReleaseVelocity;
+        CHECK(gg::core::isPerVoiceSource(s) == perVoice);
         INFO(gg::core::modSourceName(s));
         CHECK(isPerLayerSource(s) == perLayer);
         CHECK(isTimeVarying(s) == (perLayer || s == ModSource::EnvFollower ||
@@ -621,11 +626,12 @@ TEST_CASE("source kinds", "[core][mod]")
 TEST_CASE("source and curve names round-trip", "[core][mod]")
 {
     const std::array<std::string_view, idx(ModSource::Count)> sourceNames{
-        "None",    "Macro 1",      "Macro 2",        "Macro 3",       "Macro 4",
-        "Macro 5", "Macro 6",      "Macro 7",        "Macro 8",       "LFO 1",
-        "LFO 2",   "Env 1",        "Env 2",          "Random 1",      "Random 2",
-        "Step",    "Mod Wheel",    "Aftertouch",     "Pitch Bend",    "Velocity",
-        "Key",     "Env Follower", "Transport Beat", "Transport Bar", "Transport Playing",
+        "None",     "Macro 1",      "Macro 2",        "Macro 3",          "Macro 4",
+        "Macro 5",  "Macro 6",      "Macro 7",        "Macro 8",          "LFO 1",
+        "LFO 2",    "Env 1",        "Env 2",          "Random 1",         "Random 2",
+        "Step",     "Mod Wheel",    "Aftertouch",     "Pitch Bend",       "Velocity",
+        "Key",      "Env Follower", "Transport Beat", "Transport Bar",    "Transport Playing",
+        "Pressure", "Timbre",       "Note Pitch",     "Release Velocity",
     };
     for (size_t i = 0; i < sourceNames.size(); ++i)
     {
@@ -672,4 +678,90 @@ TEST_CASE("wave-2 layer targets are admitted", "[core][mod]")
     CHECK(isValidTarget(ParamSlot::Splice));
     CHECK_FALSE(isValidTarget(ParamSlot::RingLength));
     CHECK_FALSE(isValidTarget(ParamSlot::B_RingLength)); // and B to D's slots, as every kind's
+}
+
+TEST_CASE("the new sources save by name and read back", "[core][mod]")
+{
+    const std::array<std::pair<ModSource, std::string_view>, 4> names{{
+        {ModSource::Pressure, "Pressure"},
+        {ModSource::Timbre, "Timbre"},
+        {ModSource::NotePitch, "Note Pitch"},
+        {ModSource::ReleaseVelocity, "Release Velocity"},
+    }};
+    for (const auto &[source, name] : names)
+    {
+        CHECK(gg::core::modSourceName(source) == name);
+        CHECK(gg::core::modSourceNamed(name) == source);
+        CHECK_FALSE(isPerLayerSource(source));
+        CHECK_FALSE(isTimeVarying(source));
+        CHECK(gg::core::isPerVoiceSource(source));
+    }
+    CHECK_FALSE(gg::core::isPerVoiceSource(ModSource::Macro1));
+    CHECK_FALSE(gg::core::isPerVoiceSource(ModSource::Lfo1));
+    CHECK(static_cast<size_t>(ModSource::Pressure) == 25u); // appended after Transport Playing
+}
+
+TEST_CASE("applyRoutes skips voiceOnly routes", "[core][mod]")
+{
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        ModRoutes routes = factoryRoutes(mode);
+        Sources sources{};
+        for (auto &s : sources)
+        {
+            for (float &v : s.v)
+            {
+                v = 0.8f; // every source, the new ones included, away from rest
+            }
+        }
+        const ParamValues with = evaluate(routes, sources);
+        ModRoutes without = routes;
+        for (ModRoute &r : without)
+        {
+            if (r.voiceOnly)
+            {
+                r = ModRoute{};
+            }
+        }
+        const ParamValues base = evaluate(without, sources);
+        for (size_t s = 0; s < kParamCount; ++s)
+        {
+            CHECK(bits(with[s]) == bits(base[s]));
+        }
+        // A voiceOnly flag on a route that would otherwise apply stops it.
+        ModRoutes one{};
+        one[20] = {ModSource::Macro1, kSameLayer, ParamSlot::Size,
+                   kAllLayers,        3.0f,       ModCurve::Unipolar};
+        CHECK(evaluate(one, sources)[idx(ParamSlot::Size)] != 0.0f);
+        one[20].voiceOnly = true;
+        CHECK(evaluate(one, sources)[idx(ParamSlot::Size)] == 0.0f);
+    }
+}
+
+TEST_CASE("factory routes 44 to 48 are voice only and slots 1 to 12 are unchanged", "[core][mod]")
+{
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        const ModRoutes r = factoryRoutes(mode);
+        const auto voice = [](ModSource s, ParamSlot t, float d, ModCurve c) {
+            return ModRoute{s, kSameLayer, t, kAllLayers, d, c, true};
+        };
+        CHECK(r[43] == voice(ModSource::Pressure, ParamSlot::Density, 2.0f, ModCurve::Unipolar));
+        CHECK(r[44] == voice(ModSource::Pressure, ParamSlot::Level, 6.0f, ModCurve::Unipolar));
+        CHECK(r[45] == voice(ModSource::Timbre, ParamSlot::Position, 0.5f, ModCurve::Unipolar));
+        CHECK(r[46] == voice(ModSource::Velocity, ParamSlot::Level, 6.0f, ModCurve::Bipolar));
+        CHECK(r[47] == voice(ModSource::Velocity, ParamSlot::Size, 0.5f, ModCurve::Unipolar));
+        for (size_t i = 0; i < kModSlots; ++i)
+        {
+            CHECK((r[i].voiceOnly == (i >= 43)));
+        }
+        // M1's macroOffsets still match with the five routes present (every macro vector).
+        const std::array<float, 8> macros{0.25f, 0.75f, 0.1f, 0.9f, 0.75f, 0.5f, 0.5f, 0.3f};
+        const ParamValues expected = m1MacroOffsets(macroValues(macros), mode);
+        const ParamValues got = evaluate(r, macroSources(macros));
+        for (size_t s = 0; s < kM1Slots; ++s)
+        {
+            CHECK(bits(got[s]) == bits(expected[s]));
+        }
+    }
 }

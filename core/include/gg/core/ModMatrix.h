@@ -52,6 +52,10 @@ enum class ModSource : uint8_t
     TransportBeat,
     TransportBar,
     TransportPlaying,
+    Pressure,        ///< M3 Voice: a note's pressure; 0 until Task 6 gives it values
+    Timbre,          ///< a note's CC 74 / brightness
+    NotePitch,       ///< (key + bend) / 127, clamped to [0, 1]
+    ReleaseVelocity, ///< 0 until the note's off
     Count
 };
 
@@ -86,6 +90,9 @@ struct ModRoute
     uint8_t targetLayer{kAllLayers};
     float depth{0.0f};
     ModCurve curve{ModCurve::Bipolar};
+    /// M3 Voice: the route applies only per voice, on a Voice layer; applyRoutes skips it, so a
+    /// Cloud layer never sees it (spec 4.4).
+    bool voiceOnly{false};
 
     friend bool operator==(const ModRoute &, const ModRoute &) = default;
 };
@@ -99,6 +106,15 @@ using ModRoutes = std::array<ModRoute, kModSlots>;
 constexpr bool isPerLayerSource(ModSource s) noexcept
 {
     return s >= ModSource::Lfo1 && s <= ModSource::Step;
+}
+
+/// Whether `s` has a value per voice on a Voice layer: Env 1, Env 2, Velocity, Key and the four
+/// sources M3's Voice slice appends.
+constexpr bool isPerVoiceSource(ModSource s) noexcept
+{
+    return s == ModSource::Env1 || s == ModSource::Env2 || s == ModSource::Velocity ||
+           s == ModSource::Key || s == ModSource::Pressure || s == ModSource::Timbre ||
+           s == ModSource::NotePitch || s == ModSource::ReleaseVelocity;
 }
 
 /// Whether `s` moves with time alone, without an event: the per-layer sources, the Env Follower and

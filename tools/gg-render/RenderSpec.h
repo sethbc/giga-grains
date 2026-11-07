@@ -285,6 +285,8 @@ struct RouteSpec
     /// The curve's stable name (gg::core::modCurveName): "Bipolar" (the default), "Unipolar",
     /// "BipolarPositive", "UnipolarSquared", "RampThreeQuarters" or "TopQuarter".
     std::string curve{"Bipolar"};
+    /// M3 Voice: the route applies only per voice on a Voice layer (gg::core::ModRoute::voiceOnly).
+    bool voiceOnly{false};
 
     friend bool operator==(const RouteSpec &, const RouteSpec &) = default;
 };

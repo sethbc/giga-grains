@@ -318,6 +318,29 @@ TEST_CASE("preset-load refuses a missing file, a non-preset file and an unknown 
     CHECK(call.message == "unknown preset location");
 }
 
+TEST_CASE("INIT keeps MPE and the bend ranges", "[plugin][preset]")
+{
+    // M3 sub-project 1's program P2: the MIDI settings are the instance's controller setup, so
+    // INIT keeps them as it keeps Ring Length; every other value gets its default.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    SessionState session = fixtureState(mode);
+    session.values[at(ParamSlot::Mpe)] = 1.0f;
+    session.values[at(ParamSlot::MpeBendRange)] = 24.0f;
+    session.values[at(ParamSlot::BendRange)] = 7.0f;
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
+    CHECK(plugin.value(paramId(ParamSlot::Mpe)) == 1.0);
+    CHECK(plugin.value(paramId(ParamSlot::MpeBendRange)) == 24.0);
+    CHECK(plugin.value(paramId(ParamSlot::BendRange)) == 7.0);
+    CHECK(plugin.value(paramId(ParamSlot::Size)) ==
+          static_cast<double>(gg::core::initState(mode).values[at(ParamSlot::Size)]));
+    CHECK_FALSE(plugin.impl().presetEdited());
+}
+
 TEST_CASE("the other product's preset is refused and changes nothing", "[plugin][preset]")
 {
     const char *id = GENERATE(kInstrumentId, kFxId);

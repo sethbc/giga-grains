@@ -228,8 +228,9 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// appended with new IDs.
 ///
 /// The 28 M1 slots come first, in their order (layer A's eleven M1 parameters among them, under
-/// their M1 names), then layer A's 51 new parameters (M2 sub-project 1's 37, sub-project 2's five,
-/// sub-project 3's Quality and sub-project 4's eight), then layers B, C and D in full
+/// their M1 names), then layer A's 52 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
+/// Mode, sub-project 2's five, sub-project 3's Quality and sub-project 4's eight), then layers B, C
+/// and D in full
 /// (`B_Position` ... `D_Bus2Resonance`, 63 each, in row order), then the nine new globals (M2
 /// sub-project 1's spec §6.9), Budget (M2 sub-project 3's spec §6.8) and the Extremes' eight
 /// globals (M2 sub-project 4's spec §6.7). A layer row appended to GG_LAYER_PARAMS moves the later

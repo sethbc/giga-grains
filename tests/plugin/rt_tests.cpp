@@ -1119,9 +1119,10 @@ TEST_CASE("plugin process takes more notes than its note array holds", "[plugin]
 {
     // 1,500 notes in one call, past the fixed note array (1,024): the notes beyond it apply at
     // the block end, at the next grid boundary, without allocating, and none is lost. Notes
-    // 0..1498 hold (channel i % 16, key i / 16), CLAP and MIDI in turn, so keys 0..93 are held,
-    // and the keys from 64 up only by notes past the array. The last note, a CLAP note-off
-    // (channel −1, key 93), releases key 93 on every channel.
+    // 0..1498 hold (channel i % 16, key i / 16), CLAP and MIDI in turn. The note table holds
+    // 128 notes and replaces the oldest when full (M3 Voice spec §4.2), so the last 128, notes
+    // 1371..1498 (keys 85..93), are what remains, every one of them past the array. The last
+    // note, a CLAP note-off (channel −1, key 93), releases key 93 on every channel.
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
@@ -1154,17 +1155,18 @@ TEST_CASE("plugin process takes more notes than its note array holds", "[plugin]
     }
     clapNotes.push_back(gg::test::noteEvent(CLAP_EVENT_NOTE_OFF, -1, 93, 499));
     events.add(&clapNotes.back().header);
-    std::vector<int> expected(93);
+    std::vector<int> expected(8);
     for (std::size_t k = 0; k < expected.size(); ++k)
     {
-        expected[k] = static_cast<int>(k);
+        expected[k] = static_cast<int>(85 + k);
     }
 
     std::vector<float> inLeft(512, 0.25f), inRight(512, -0.25f), outLeft(512), outRight(512);
     float *inputs[2] = {inLeft.data(), inRight.data()};
     float *outputs[2] = {outLeft.data(), outRight.data()};
     gg::test::InputEvents none;
-    // Then key 80, held only by notes past the array (1280..1295), released channel by channel:
+    // Then key 80, which the full table has already dropped, released channel by channel (no
+    // effect now):
     // CLAP and MIDI note-offs in turn.
     std::vector<clap_event_note> clapOffs;
     std::vector<clap_event_midi> midiOffs;
@@ -1207,7 +1209,6 @@ TEST_CASE("plugin process takes more notes than its note array holds", "[plugin]
         CHECK(s == CLAP_PROCESS_CONTINUE);
     }
     CHECK(heldAfterStorm == expected.size());
-    expected.erase(expected.begin() + 80);
     CHECK(heldKeys(plugin) == expected);
     CHECK(plugin.impl().noteOnCount.load() == kNotes - 1);
     REQUIRE_NO_ALLOCATIONS(allocations);
@@ -1217,9 +1218,11 @@ TEST_CASE("plugin note ids stay bounded and do not allocate", "[plugin][rt]")
 {
     // Ruling R15: the plugin remembers at most kMaxNoteIds (256) CLAP note IDs, replacing the
     // oldest. 258 note-ons with IDs 0..257: ID 0 holds (channel 0, key 0), ID i > 0 holds
-    // (channel 1, key 1 + i % 127), so keys 0..127 are held. ID 256 replaces ID 0 and ID 257
-    // replaces ID 1, the oldest left. A note-off by ID 256 releases its key (3) alone; one by
-    // ID 1, replaced, is unknown, so it releases everything.
+    // (channel 1, key 1 + i % 127). ID 256 replaces ID 0 and ID 257 replaces ID 1, the oldest
+    // left. A note-off by ID 256 resolves to (channel 1, key 3); one by ID 1, replaced, is
+    // unknown, so it releases everything. Since M3's note table (128 notes, the oldest replaced
+    // when full; two notes on a pair are two notes) the 258 notes leave the last 128, IDs
+    // 130..257, holding keys 1..127 (126 after key 3's only note, 256, is released).
     const char *id = GENERATE(kInstrumentId, kFxId);
     CAPTURE(id);
     gg::test::PluginUnderTest plugin(id);
@@ -1272,11 +1275,11 @@ TEST_CASE("plugin note ids stay bounded and do not allocate", "[plugin][rt]")
     const uint64_t allocations = AllocTripwire::count();
 
     CHECK(allContinue);
-    CHECK(held[0] == 128);
-    CHECK(held[1] == 128);
-    CHECK(held[2] == 127); // ID 256 still remembered: 0 if ID 257 had replaced it
+    CHECK(held[0] == 127);
+    CHECK(held[1] == 127);
+    CHECK(held[2] == 126); // ID 256 still remembered (else the off would have been a wildcard)
     CHECK_FALSE(key3Held);
-    CHECK(held[3] == 0); // a remembered ID 1 would have left 126
+    CHECK(held[3] == 0); // a remembered ID 1 would have left 125
     REQUIRE_NO_ALLOCATIONS(allocations);
 }
 

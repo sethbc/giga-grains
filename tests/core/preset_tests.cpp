@@ -511,8 +511,10 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // INST add 1,091 bytes, without which they are sub-project 3's merge's, 13,381 d3fce75c...
     // and 13,382 ffdb8cc2...; and retaken at the merge of sub-projects 2 and 4: sub-project 4's
     // forty parameters add 2,047 bytes to sub-project 2's merge's, 14,472 5c5c3e20... and 14,473
-    // 58a43b60...); retaken for M3 sub-project 1's seven parameters, 352 bytes (16,519, 129442fb...
-    // and 16,520, 4e77e2b6...).
+    // 58a43b60...); retaken at M3 Voice's Task 4: the five voice-only factory routes (44 to 48)
+    // add 784 bytes, so INIT's are 17,303 7211d643... and 17,304 36b032f0..., and without them the
+    // pins above stand), and again for sub-project 1's seven
+    // parameters, 352 bytes more, 17,655 5337a57b... and 17,656 81fb0c52...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -520,12 +522,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 16871);
-    CHECK(sha256Of(fxBytes) == "657f18fbc963da34fba28d911475229a51d34e6d42e0b419c697b08b868df9b1");
+    CHECK(fxBytes.size() == 17655);
+    CHECK(sha256Of(fxBytes) == "5337a57bc546f56960c233796bf1c6cef26547c632db1563054ad02fc36e1355");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 16872);
+    CHECK(instBytes.size() == 17656);
     CHECK(sha256Of(instBytes) ==
-          "ba62fd45297a82ff65717d1048b65c602e826f69befe1924c05fb46365defaa9");
+          "81fb0c5209bb7ff0fd75b80cfba4aa1164decd13c13cca6f6f01758f9e92df2e");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());
@@ -745,7 +747,7 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
     CHECK_FALSE(gg::core::isMidiSetting(ParamSlot::Budget));
     CHECK_FALSE(gg::core::isMidiSetting(ParamSlot::Count));
 
-    // keepRingLengths (INIT's) copies each layer's Ring Length alone.
+    // keepRingLengths (INIT's) copies each layer's Ring Length and the three MIDI settings.
     loaded.fill(0.75f);
     gg::core::keepRingLengths(current, loaded);
     std::size_t kept = 0;
@@ -754,7 +756,8 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
         INFO("slot " << s);
         const auto ref = gg::core::layerOf(static_cast<ParamSlot>(s));
         const bool length = ref && ref->param == gg::core::LayerParam::RingLength;
-        CHECK(loaded[s] == (length ? 0.25f : 0.75f));
+        const bool midi = gg::core::isMidiSetting(static_cast<ParamSlot>(s));
+        CHECK(loaded[s] == (length || midi ? 0.25f : 0.75f));
         kept += length ? 1 : 0;
     }
     CHECK(kept == gg::core::kLayers);

@@ -18,6 +18,7 @@ add_executable(gg-tests
         core/mod_processor_tests.cpp
         core/mod_sources_tests.cpp
         core/mutate_tests.cpp
+        core/note_table_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
@@ -50,6 +51,7 @@ add_executable(gg-tests
         engine/spectral_tests.cpp
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
+        engine/voice_tests.cpp
         engine/window_tests.cpp
         media/budget_tests.cpp
         media/collect_tests.cpp
@@ -878,6 +880,16 @@ if (APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR)
             -DOUT=${CMAKE_CURRENT_BINARY_DIR}/test-output/snap_cli_usage
             -P ${CMAKE_CURRENT_SOURCE_DIR}/plugin/check-snap-usage.cmake)
     set_tests_properties(snap_cli_usage PROPERTIES LABELS "plugin" TIMEOUT 60)
+endif ()
+
+# Row 405: the label check again with DejaVu Sans as JUCE's only font (JUCE_FONT_PATH), where a
+# Linux machine has it: the fresh-container bootstrap job's only font, wider than the CI legs'.
+set(GG_DEJAVU_DIR /usr/share/fonts/truetype/dejavu)
+if (UNIX AND NOT APPLE AND GG_BUILD_PLUGINS AND GG_BUILD_EDITOR AND EXISTS ${GG_DEJAVU_DIR}/DejaVuSans.ttf)
+    add_test(NAME editor_labels_dejavu
+            COMMAND gg-tests "no control's label is elided or collides at 960 by 600 and 640 by 360")
+    set_tests_properties(editor_labels_dejavu PROPERTIES LABELS "plugin"
+            ENVIRONMENT "JUCE_FONT_PATH=${GG_DEJAVU_DIR}")
 endif ()
 
 # The installers (spec §6), label `installer`. installer_build_products builds gg-products (not

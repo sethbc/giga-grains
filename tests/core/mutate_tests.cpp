@@ -114,7 +114,7 @@ TEST_CASE("mutate follows the jitter law with its RNG key", "[core][mutate]")
     {
         const double u = gg::rng::uniform01(gg::rng::hash(
             {kSeed, gg::core::kMutateLayer, gg::core::kMutateStream, gg::rng::Field::PositionJitter,
-             static_cast<uint64_t>(counter) * kParamCount + s}));
+             (static_cast<uint64_t>(counter) << 32) | gg::core::paramId(ParamSlot::Size)}));
         const float range = meta.maxVal - meta.minVal;
         const float expected = std::clamp(in[s] + 0.25f * range * static_cast<float>(2.0 * u - 1.0),
                                           meta.minVal, meta.maxVal);
@@ -537,4 +537,30 @@ TEST_CASE("a press from an infinite Decay may still move it, by its usual law", 
     }
     CHECK(moved > 0);
     CHECK(left > 0);
+}
+
+TEST_CASE("mutate draws are keyed by CLAP ID", "[core][mutate]")
+{
+    // A slot's moved value is a function of its CLAP ID and the press counter alone (re-keyed by
+    // CLAP ID, M3 sub-project 1 Task 1), so a parameter appended later moves no other slot's draw.
+    const Mode mode = Mode::Fx;
+    const ParamValues in = defaults(mode);
+    const LockSet locks = defaultMutateLocks(in, mode);
+    for (const ParamSlot slot : {ParamSlot::Size, ParamSlot::Density, ParamSlot::Spray})
+    {
+        const auto s = idx(slot);
+        const auto &meta = paramMeta(slot, mode);
+        REQUIRE(meta.type == md_t::FLOAT);
+        const uint64_t id = gg::core::paramId(slot);
+        for (const uint32_t counter : {3u, 900u})
+        {
+            const double u = gg::rng::uniform01(
+                gg::rng::hash({kSeed, gg::core::kMutateLayer, gg::core::kMutateStream,
+                               gg::rng::Field::PositionJitter, (uint64_t(counter) << 32) | id}));
+            const float range = meta.maxVal - meta.minVal;
+            const float expected = std::clamp(
+                in[s] + 0.5f * range * static_cast<float>(2.0 * u - 1.0), meta.minVal, meta.maxVal);
+            CHECK(mutated(in, locks, 0.5f, kSeed, counter, mode)[s] == expected);
+        }
+    }
 }

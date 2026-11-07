@@ -50,7 +50,8 @@
 ///   - `sourceLayer`: `A` to `D`, or `same` (kSameLayer); `targetLayer`: `A` to `D`, or `all`
 ///     (kAllLayers);
 ///   - `depth` and `bits`: the depth as `<p>`'s `v` and `bits` write a value, and read back the
-///     same way (exact when `bits` agrees with `depth`).
+///     same way (exact when `bits` agrees with `depth`);
+///   - `voiceOnly` (M3 Voice): `"1"`, written only for a Voice-only route; absent reads as false.
 /// - `<preset>` (M2 sub-project 5's spec §6.1): a preset's metadata (gg/core/PresetInfo.h),
 ///   after `<mod>`, only in a preset. What makes a state a preset; a reader that doesn't know it
 ///   ignores it, and it is read at any version. Its attributes:

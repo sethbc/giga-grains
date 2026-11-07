@@ -120,7 +120,8 @@ void keepRingLengths(const ParamValues &current, ParamValues &loaded) noexcept
     for (size_t s = 0; s < kParamCount; ++s)
     {
         const auto ref = layerOf(static_cast<ParamSlot>(s));
-        if (ref && ref->param == LayerParam::RingLength)
+        if ((ref && ref->param == LayerParam::RingLength) ||
+            isMidiSetting(static_cast<ParamSlot>(s)))
         {
             loaded[s] = current[s];
         }

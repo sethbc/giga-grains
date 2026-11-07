@@ -37,8 +37,8 @@ class SourceChip final : public juce::TextButton
     juce::String baseText_;
 };
 
-/// The 24 chips in five groups (macros · LFO 1 to Step · Wheel to Key · Follower · Beat to
-/// Playing), wrapped in the strip's width (component ID "sources").
+/// The 28 chips in six groups (macros · LFO 1 to Step · Wheel to Key · Follower · Beat to
+/// Playing · Pressure to Release Velocity), wrapped in the strip's width (component ID "sources").
 class SourceStrip final : public juce::Component
 {
   public:

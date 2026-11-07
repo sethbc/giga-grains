@@ -71,17 +71,25 @@ const char *labelOf(ModSource s)
         return "Bar";
     case ModSource::TransportPlaying:
         return "Playing";
+    case ModSource::Pressure:
+        return "Pressure";
+    case ModSource::Timbre:
+        return "Timbre";
+    case ModSource::NotePitch:
+        return "Note";
+    case ModSource::ReleaseVelocity:
+        return "Rel Vel";
     default:
         return "";
     }
 }
 
 /// Whether a group starts at `s`: the macros, the modulators, the MIDI sources, the follower and
-/// the transport's.
+/// the transport's, and the note expressions (Pressure to Release Velocity).
 bool startsGroup(ModSource s)
 {
     return s == ModSource::Macro1 || s == ModSource::Lfo1 || s == ModSource::ModWheel ||
-           s == ModSource::EnvFollower || s == ModSource::TransportBeat;
+           s == ModSource::EnvFollower || s == ModSource::TransportBeat || s == ModSource::Pressure;
 }
 } // namespace
 

@@ -655,6 +655,33 @@ TEST_CASE("event lines use the documented format", "[render]")
     CHECK(parsed["pan"].get<float>() == h.pan);
 }
 
+TEST_CASE("a voice grain's event line carries its ordinal", "[render][voice]")
+{
+    // M3 Voice spec §4.3: "v" follows "layer" on a voice grain's line alone; a Cloud grain's
+    // (GrainSpec::voice kNoVoice) is the line above, byte for byte.
+    gg::GrainSpec g{
+        .index = 3,
+        .onsetSample = 18000,
+        .onsetFrac = 0.5,
+        .startPos = 95999.5,
+        .rate = 0.5,
+        .durationSamples = 2880.0,
+        .gain = 0.8f,
+        .pan = 0.0f,
+    };
+    REQUIRE(g.voice == gg::kNoVoice);
+    const std::string cloud = gg::render::formatEventLine(1, g);
+    CHECK(cloud == R"({"i":3,"layer":1,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,)"
+                   R"("dur":2880,"tex":0,"tier":1,"lvl":0,"gain":0.8,"pan":0})");
+    g.voice = 5;
+    const std::string voice = gg::render::formatEventLine(1, g);
+    CHECK(voice == R"({"i":3,"layer":1,"v":5,"onset":18000,"frac":0.5,"pos":95999.5,"rate":0.5,)"
+                   R"("dur":2880,"tex":0,"tier":1,"lvl":0,"gain":0.8,"pan":0})");
+    CHECK(nlohmann::json::parse(voice)["v"].get<uint32_t>() == 5);
+    g.voice = 0;
+    CHECK(gg::render::formatEventLine(1, g).find(R"("layer":1,"v":0,)") != std::string::npos);
+}
+
 TEST_CASE("event lines carry each grain's texture", "[render]")
 {
     // Spec §4: "tex" follows "dur". A stream at its defaults (Texture 0) writes "tex":0 on every
@@ -3147,4 +3174,29 @@ TEST_CASE(
         embedded += payload.bytes.size();
     }
     CHECK(embedded <= gg::core::kEmbedCapBytes);
+}
+
+TEST_CASE("render spec route takes voiceOnly", "[render]")
+{
+    using gg::render::RouteSpec;
+    auto j = fxLayersJson();
+    j["mod"] = nlohmann::json::parse(R"([
+        {"slot": 44, "source": "Pressure", "target": "Density", "depth": 2, "curve": "Unipolar",
+         "voiceOnly": true},
+        {"slot": 45, "source": "Timbre", "target": "Position", "depth": 0.5, "voiceOnly": false},
+        {"slot": 46, "source": "Note Pitch", "target": "Pitch", "depth": 1},
+        {"slot": 47, "source": "Release Velocity", "target": "Size", "depth": 1}
+    ])");
+    const RenderSpec spec = parseJson(j);
+    REQUIRE(spec.fx.mod.size() == 4);
+    CHECK(spec.fx.mod[0].voiceOnly);
+    CHECK_FALSE(spec.fx.mod[1].voiceOnly);
+    CHECK_FALSE(spec.fx.mod[2].voiceOnly);
+    CHECK(spec.fx.mod[3].source == "Release Velocity");
+    CHECK(gg::render::routesWith(gg::core::factoryRoutes(gg::core::Mode::Fx), spec.fx.mod)[43]
+              .voiceOnly);
+
+    auto bad = j;
+    bad["mod"][0]["voiceOnly"] = 1;
+    CHECK(rejection(bad) == "mod[0].voiceOnly must be true or false");
 }
