@@ -534,3 +534,34 @@ the four goldens with the expected-frequency test; the plugin's local load, the 
 the poller, the seam and the hook; the minimal UI and the frame tests; the CI step and the real
 master test; INTENT, CLAUDE.md and the carry-over rows. The exact contents of the four golden
 specs (the scales' texts, note times) and the poller's file layout are the builder's.
+
+## 12. Addendum (2026-11-07): Pitch Quantize (T16)
+
+A scope addition from the top controller, provisional for the director: a competitor comparison
+(the S-4's Mosaic and the GR-MEGA's pitch quantize) found grain pitch quantized to a scale missing,
+though INTENT §8.1 names "scale quantize" as how randomness is shaped and §22 left it at "after
+M2". The tuning table already holds the scale.
+
+- **T16. A per-layer Pitch Quantize (Off, Scale; default Off).** A layer parameter, stepped, 0 Off,
+  1 Scale, CLAP layer index **0x3C** (this sub-project's layer block, 0x3C to 0x3F), in all four
+  layers: 4 parameters, so `kParamCount` 291 → 295 and `kNextFreeLayerIndex` 0x3D. Automatable
+  like Quality; not a mod target; Mutate follows Quality's rule for a stepped layer parameter.
+  - **What snaps.** With it on, a grain's semitones before Smear's micro-detune (the key term, the
+    layer's Pitch with its modulation, and Pitch Spread's draw) snap at the grain's onset to the
+    nearest **degree** of the effective tuning; Smear's detune is then added and the ±48 clamp
+    applied as today. The degrees are the sorted, distinct `keySemitones` of the effective table's
+    mapped keys (12-TET: the integers −60 to 67, so semitones). A tie goes to the lower degree; a
+    value past the lowest or highest degree snaps to it. In both modes (Cloud and Voice), both
+    products (the FX's cloud without a key: the same snap of its Pitch and spread).
+  - *Ruling (provisional):* the layer's Pitch, base and modulation, snaps with the spread, because
+    the engine sees one pitch value per grain; a transpose by one of the scale's intervals (an
+    octave, in any octave-repeating scale) is unchanged by it. *Declined:* snapping the random and
+    modulated part alone around an unsnapped base (needs the base split from its modulation in the
+    engine); a period-repeating degree set beyond the 128 keys (the ends clamp; a carry-over row).
+  - **Off is exactly today:** no snap, no extra draw, so every golden at rest is bit-identical.
+  - **The engine** gets the degrees through `EngineConfig` (a pointer to a sorted array and its
+    count, owned by the `Processor` beside the key table, rebuilt in `resolveTuning` when the
+    effective table changes): a binary search per grain, bounded, no allocation.
+  - **Tests:** a quantized Pitch Spread lands only on scale degrees (12-TET and a 5-note scale);
+    Off bit-identical; block-size invariance; one golden, `inst-quantize-pentatonic` (a 5-note
+    `.scl`, Pitch Spread 12, Pitch Quantize Scale, one held note), its grains' rates each a degree.
