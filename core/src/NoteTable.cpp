@@ -82,15 +82,25 @@ void NoteTable::release(size_t i, float releaseVelocity) noexcept
     }
 }
 
-void NoteTable::apply(const NoteEvent &e, uint64_t ordinalClock) noexcept
+bool NoteTable::apply(const NoteEvent &e, uint64_t ordinalClock, Note *replaced) noexcept
 {
     const float rv = clampNaNLow(e.releaseVelocity, 0.0f, 1.0f);
+    bool replacedOne = false;
     switch (e.type)
     {
     case NoteEventType::On:
     {
         const size_t i = slotForNew();
         Note &n = notes_[i];
+        if (n.state != State::Free)
+        {
+            // A full table: the note this slot held leaves it now (the caller ends it).
+            replacedOne = true;
+            if (replaced != nullptr)
+            {
+                *replaced = n;
+            }
+        }
         n = Note{};
         n.id = e.noteId;
         n.channel = e.channel;
@@ -166,6 +176,7 @@ void NoteTable::apply(const NoteEvent &e, uint64_t ordinalClock) noexcept
         }
         break;
     }
+    return replacedOne;
 }
 
 void NoteTable::setChannelBend(int ch, float bend) noexcept

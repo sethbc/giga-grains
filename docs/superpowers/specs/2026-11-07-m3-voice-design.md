@@ -60,6 +60,16 @@ voice tints and new presets (5); per-sample pitch glides inside a grain (later, 
   CC 74, so Timbre → Position does nothing for it; a LinnStrument's first Y lands before its
   note-on, so its voice starts with it.
 
+- **V7. Voice layers get automatic headroom** (the director, 2026-11-07: "yes voice lyaers should
+  get automatic headroom"; the form is Claude's call). Each voice grain's gain is multiplied by
+  `1 / sqrt(n)`, where n is the number of the layer's voices spawning in the `process()` call that
+  admits the grain (its own voice included; releasing and pedal-held voices count until they
+  finish). It is latched at the grain's onset like the existing `1 / sqrt(max(1, Density × Size))`,
+  so a chord's summed power stays near one voice's, a new note thins the others grain by grain
+  without a step, one note is unchanged (n = 1), and Cloud layers are untouched. Voices start and
+  finish only at control boundaries, where the `Processor` cuts its pieces, so n is block-size
+  invariant.
+
 ## 3a. The builder check's rulings (2026-11-07; Claude's, binding on the plan)
 
 - **B1. Every cell is applied while a Voice layer has a sounding voice,** as with time-varying

@@ -1271,7 +1271,14 @@ void Processor::stepSources(const Buffers &b, int64_t upTo, int64_t scanTo) noex
 
 void Processor::applyNote(const NoteEvent &n) noexcept
 {
-    noteTable_.apply(n, noteOrdinal_);
+    // A note-on into a full table replaces a note the host knows (held, pedal-held or released):
+    // it ends there, so its NOTE_END isn't lost (clap-wrapper's VST3 keeps an active-note record
+    // until it comes).
+    NoteTable::Note replaced{};
+    if (noteTable_.apply(n, noteOrdinal_, &replaced))
+    {
+        pushEnded(replaced);
+    }
     if (n.type == NoteEventType::On)
     {
         ++noteOrdinal_;
