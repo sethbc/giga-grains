@@ -59,6 +59,35 @@ float applyCurve(ModCurve c, float v) noexcept
 void applyRoutes(const ModRoutes &routes, const std::array<ModSourceValues, kLayers> &sources,
                  ParamValues &offsets) noexcept
 {
+    applyRoutes(routes, sources, offsets, 0);
+}
+
+void applyVoiceRoutes(std::span<const ModRoute> routes, uint8_t layer,
+                      const ModSourceValues &voiceSources, std::span<float> offsets) noexcept
+{
+    if (layer >= kLayers)
+    {
+        return;
+    }
+    for (const ModRoute &r : routes)
+    {
+        if (r.source == ModSource::None || r.source >= ModSource::Count ||
+            !isValidTarget(r.target) || !actsPerVoice(r, layer))
+        {
+            continue;
+        }
+        const auto slot = static_cast<size_t>(routeTargetSlot(r.target, layer));
+        if (slot < offsets.size())
+        {
+            offsets[slot] +=
+                r.depth * applyCurve(r.curve, voiceSources.v[static_cast<size_t>(r.source)]);
+        }
+    }
+}
+
+void applyRoutes(const ModRoutes &routes, const std::array<ModSourceValues, kLayers> &sources,
+                 ParamValues &offsets, uint8_t voiceLayers) noexcept
+{
     for (const ModRoute &r : routes)
     {
         if (r.voiceOnly || r.source == ModSource::None || r.source >= ModSource::Count ||
@@ -76,6 +105,11 @@ void applyRoutes(const ModRoutes &routes, const std::array<ModSourceValues, kLay
             return r.sourceLayer == kSameLayer ? layer : r.sourceLayer;
         };
         const auto add = [&](ParamSlot slot, uint8_t layer) {
+            // A Voice layer's voices carry a route that acts per voice there (spec B2).
+            if ((voiceLayers >> layer & 1u) != 0 && actsPerVoice(r, layer))
+            {
+                return;
+            }
             offsets[static_cast<size_t>(slot)] +=
                 r.depth * applyCurve(r.curve, sourceValue(sources, r.source, from(layer)));
         };
