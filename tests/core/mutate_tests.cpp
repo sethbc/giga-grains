@@ -289,8 +289,9 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         ParamSlot::BendRange,
     };
     for (const LayerParam p :
-         {LayerParam::Mode, LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
-          LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
+         {LayerParam::Mode, LayerParam::ScanSpeed, LayerParam::ScanEdge, LayerParam::ScanTrack,
+          LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop, LayerParam::LoopLength,
+          LayerParam::Overdub, LayerParam::Splice})
     {
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
@@ -302,7 +303,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 62 + 4 + 3);
+    REQUIRE(expectedStructural.count() == 74 + 4 + 3);
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -327,7 +328,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 175);
+    CHECK(bOn.count() == 187);
     LockSet unlocked = ~bOn;
     CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
@@ -364,14 +365,14 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         }
     }
 
-    // With layer B off (the default), its 62 slots are locked too.
+    // With layer B off (the default), its 65 slots are locked too.
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 228);
+    CHECK(bOff.count() == 240);
     CHECK((bOff & ~bOn).count() == 53);
 
-    // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".
+    // Layer A off locks its 65, the M1 slots among them; Layer On is read as "below 0.5".
     values[idx(ParamSlot::LayerAOn)] = 0.49f;
     CHECK(offLayerLocks(values) == (layerLocks(0) | layerLocks(1) | layerLocks(2) | layerLocks(3)));
     values[idx(ParamSlot::LayerAOn)] = 0.5f;
@@ -561,6 +562,36 @@ TEST_CASE("mutate draws are keyed by CLAP ID", "[core][mutate]")
             const float expected = std::clamp(
                 in[s] + 0.5f * range * static_cast<float>(2.0 * u - 1.0), meta.minVal, meta.maxVal);
             CHECK(mutated(in, locks, 0.5f, kSeed, counter, mode)[s] == expected);
+        }
+    }
+}
+
+TEST_CASE("mutate leaves the scan parameters", "[core][mutate]")
+{
+    // M3 sub-project 3b: Scan Speed, Edge and Track are locked in every layer by default.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        ParamValues in = defaults(mode);
+        for (uint8_t layer = 0; layer < kLayers; ++layer)
+        {
+            in[idx(layerOnSlot(layer))] = 1.0f;
+            in[idx(layerSlot(LayerParam::ScanSpeed, layer))] = 0.3f;
+            in[idx(layerSlot(LayerParam::ScanEdge, layer))] = 1.0f;
+            in[idx(layerSlot(LayerParam::ScanTrack, layer))] = 1.0f;
+        }
+        const LockSet locks = defaultMutateLocks(in, mode);
+        for (uint32_t counter = 0; counter < 20; ++counter)
+        {
+            const ParamValues out = mutated(in, locks, 1.0f, kSeed, counter, mode);
+            for (uint8_t layer = 0; layer < kLayers; ++layer)
+            {
+                for (const LayerParam p :
+                     {LayerParam::ScanSpeed, LayerParam::ScanEdge, LayerParam::ScanTrack})
+                {
+                    const size_t s = idx(layerSlot(p, layer));
+                    CHECK(std::memcmp(&out[s], &in[s], sizeof(float)) == 0);
+                }
+            }
         }
     }
 }

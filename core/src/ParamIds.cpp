@@ -312,6 +312,29 @@ md_t layerMeta(LayerParam p, Mode mode)
             .withUnorderedMapFormatting({{0, "Cloud"}, {1, "Voice"}})
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 
+    // M3 sub-project 3b's spec §4.1: the playhead.
+    case LayerParam::ScanSpeed:
+        // v in -1..1, the speed 8 v^3 times real time (scanSpeedOf); the plugin and the editor
+        // show it through scanSpeedText, so this linear text is only the fallback.
+        return fresh().asFloat().withRange(-1.f, 1.f).withDefault(0.0f).withLinearScaleFormatting(
+            "", 1.f);
+    case LayerParam::ScanEdge:
+        // what the playhead does at the material's ends, stepped 0..2: Wrap by default.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 2.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting({{0, "Wrap"}, {1, "Bounce"}, {2, "Stop"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+    case LayerParam::ScanTrack:
+        // whether the playhead follows the notes' keys, stepped 0..1.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 1.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting({{0, "Off"}, {1, "On"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
     // M2 sub-project 3's spec §6.1, §6.8.
     case LayerParam::Quality:
         // the grains' interpolation tier, stepped 0..2 (gg::Tier): Normal, M1's, by default.

@@ -23,7 +23,7 @@ struct ParamMetaData;
 /// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), M2 sub-project 3's
 /// Quality, per layer, and Budget (its spec §6.8), and the Extremes' eight per layer and eight
 /// globals (M2 sub-project 4's spec §6.7), and M3 sub-project 1's Mode per layer and three MIDI
-/// settings (its spec §4.1): 63 per layer and 290 in all. Their slots, CLAP IDs and
+/// settings (its spec §4.1): 66 per layer and 302 in all. Their slots, CLAP IDs and
 /// metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
@@ -37,10 +37,11 @@ enum class Mode
     Fx,         ///< The input feeds the live ring and the dry side of the Mix.
 };
 
-/// The 63 parameters of a layer (M3 sub-project 1's Mode, its spec §4.1; M2 sub-project 1's spec
+/// The 66 parameters of a layer (M3 sub-project 1's Mode, its spec §4.1; M2 sub-project 1's spec
 /// §6.9, M2 sub-project 2's five ring parameters in its reserved block, its spec §6.3, M2
-/// sub-project 3's Quality in its, its spec §6.8, and sub-project 4's eight in its, its spec §6.7),
-/// one row each, in index order: `X(name, index, "Display Name")`. A layer parameter's CLAP ID is
+/// sub-project 3's Quality in its, its spec §6.8, and sub-project 4's eight in its, its spec §6.7,
+/// and M3 sub-project 3b's three at 0x68), one row each, in index order: `X(name, index, "Display
+/// Name")`. A layer parameter's CLAP ID is
 /// `(layer + 1) << 16 | index`, the same index in each of the scopes 1 to 4, and it is displayed
 /// with its layer's letter ("A Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot
 /// entries and their IDs are generated from it, so no name is typed four times. Append-only, as the
@@ -129,16 +130,24 @@ enum class Mode
     X(Bus2Filter, 0x65, "Bus 2 Filter")                                                            \
     X(Bus2Cutoff, 0x66, "Bus 2 Cutoff")                                                            \
     X(Bus2Resonance, 0x67, "Bus 2 Resonance")
+/// M3 sub-project 3b's (the playhead; its spec §4.1): Scan Speed, Scan Edge and Scan Track, in
+/// 0x68-0x6A of M2 sub-project 4's reserved block; 0x6B to 0x6F stay unused.
+#define GG_LAYER_PARAMS_M3_PLAYHEAD(X)                                                             \
+    X(ScanSpeed, 0x68, "Scan Speed")                                                               \
+    X(ScanEdge, 0x69, "Scan Edge")                                                                 \
+    X(ScanTrack, 0x6A, "Scan Track")
 #define GG_LAYER_PARAMS(X)                                                                         \
     GG_LAYER_PARAMS_M1(X)                                                                          \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
-    GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
+    GG_LAYER_PARAMS_M2_SOURCES(X)                                                                  \
+    GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X) GG_LAYER_PARAMS_M3_PLAYHEAD(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
 #define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
-    GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
+    GG_LAYER_PARAMS_M2_SOURCES(X)                                                                  \
+    GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X) GG_LAYER_PARAMS_M3_PLAYHEAD(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
 /// its index in the layer's scope is the row's index column (layerParamIndex).
@@ -154,7 +163,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 63;
+inline constexpr size_t kLayerParamCount = 66;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -231,7 +240,7 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// their M1 names), then layer A's 52 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
 /// Mode, sub-project 2's five, sub-project 3's Quality and sub-project 4's eight), then layers B, C
 /// and D in full
-/// (`B_Position` ... `D_Bus2Resonance`, 63 each, in row order), then the nine new globals (M2
+/// (`B_Position` ... `D_Bus2Resonance`, 66 each, in row order), then the nine new globals (M2
 /// sub-project 1's spec §6.9), Budget (M2 sub-project 3's spec §6.8) and the Extremes' eight
 /// globals (M2 sub-project 4's spec §6.7). A layer row appended to GG_LAYER_PARAMS moves the later
 /// layers' slots, never an ID.
@@ -409,7 +418,7 @@ enum class LfoShape : uint8_t
 
 namespace detail
 {
-/// The first slot of layer A's new parameters, and of layer B's 63.
+/// The first slot of layer A's new parameters, and of layer B's 66.
 inline constexpr size_t kLayerANewFirst = static_cast<size_t>(ParamSlot::Source);
 inline constexpr size_t kLayerBFirst = static_cast<size_t>(ParamSlot::B_Position);
 inline constexpr size_t kLayersEnd = static_cast<size_t>(ParamSlot::MorphX);
@@ -515,13 +524,15 @@ inline constexpr auto kGlobalSlots = [] {
 
 // The reserved blocks' indices in use: 0x40-0x44, M2 sub-project 2's, in the layer scopes (Ring
 // Length, Loop, Loop Length, Overdub, Splice); 0x50, M2 sub-project 3's, in every scope (Quality
-// in the layer scopes, Budget in scope 0); and 0x60 to 0x67, M2 sub-project 4's, in every scope
-// (its eight layer rows, and the delay's and the limiter's eight globals in scope 0). A wave-2 row
-// adds its index here.
+// in the layer scopes, Budget in scope 0); 0x60 to 0x67, M2 sub-project 4's, in every scope
+// (its eight layer rows, and the delay's and the limiter's eight globals in scope 0); and 0x68 to
+// 0x6A, M3 sub-project 3b's, in the layer scopes (Scan Speed, Scan Edge, Scan Track). A wave-2
+// row adds its index here.
 inline constexpr bool isReservedIndexInUse(clap_id scope, uint32_t index) noexcept
 {
     const bool sources = scope >= 1 && index >= 0x40u && index <= 0x44u;
-    return sources || index == 0x50u || (index >= 0x60u && index <= 0x67u);
+    const bool playhead = scope >= 1 && index >= 0x68u && index <= 0x6Au;
+    return sources || playhead || index == 0x50u || (index >= 0x60u && index <= 0x67u);
 }
 static_assert([] {
     for (const clap_id id : kParamIds)

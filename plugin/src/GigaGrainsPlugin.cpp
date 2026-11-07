@@ -1458,6 +1458,13 @@ bool GigaGrainsPlugin::paramsValueToText(clap_id paramId, double value, char *di
     }
     try
     {
+        if (gg::core::isScanSpeed(*slot))
+        {
+            // Scan Speed reads in times real time (M3 sub-project 3b): no sst display has the law.
+            std::snprintf(display, size, "%s",
+                          gg::core::scanSpeedText(static_cast<float>(value)).c_str());
+            return true;
+        }
         // Position's display follows its layer's kind (displayModeOf).
         const auto text = gg::core::paramMeta(*slot, displayModeOf(*slot))
                               .valueToString(static_cast<float>(value));
@@ -1484,6 +1491,17 @@ bool GigaGrainsPlugin::paramsTextToValue(clap_id paramId, const char *display,
     }
     try
     {
+        if (gg::core::isScanSpeed(*slot))
+        {
+            const auto speed = gg::core::scanSpeedFromText(display);
+            if (!speed.has_value())
+            {
+                return false;
+            }
+            const auto s = static_cast<std::size_t>(*slot);
+            *value = std::clamp(*speed, minValues_[s], maxValues_[s]);
+            return true;
+        }
         std::string error;
         const auto parsed =
             gg::core::paramMeta(*slot, displayModeOf(*slot)).valueFromString(display, error);

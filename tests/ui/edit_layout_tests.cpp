@@ -131,10 +131,12 @@ TEST_CASE("the panel order is the spec's", "[ui]")
 {
     CHECK(gg::ui::slotsIn(Panel::Source, 0) ==
           std::vector<ParamSlot>{ParamSlot::Source, ParamSlot::Mode});
-    // Smear sits beside Texture, before Quality (M2 sub-project 6's PR 2).
+    // The playhead's three follow Spray (M3 sub-project 3b, ruling R1); Smear sits beside
+    // Texture, before Quality (M2 sub-project 6's PR 2).
     CHECK(gg::ui::slotsIn(Panel::Grain, 0) ==
           std::vector<ParamSlot>{ParamSlot::Size, ParamSlot::SizeSpread, ParamSlot::Position,
-                                 ParamSlot::Spray, ParamSlot::Texture, ParamSlot::Smear,
+                                 ParamSlot::Spray, ParamSlot::ScanSpeed, ParamSlot::ScanEdge,
+                                 ParamSlot::ScanTrack, ParamSlot::Texture, ParamSlot::Smear,
                                  ParamSlot::Quality});
     // The engine's Budget follows Mix in the Output panel (ruling VW-T19a); the delay and the
     // limiter have panels of their own since PR 2.

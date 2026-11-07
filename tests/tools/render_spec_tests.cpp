@@ -1201,6 +1201,24 @@ TEST_CASE("specs name Quality and Budget", "[render]")
     }
 }
 
+TEST_CASE("render spec takes the scan names", "[render]")
+{
+    // M3 sub-project 3b: "A Scan Speed" ... "D Scan Track" by their letters; no bare M1-style name.
+    CHECK(gg::render::paramSlotNamed("A Scan Speed") == ParamSlot::ScanSpeed);
+    CHECK(gg::render::paramSlotNamed("D Scan Track") == ParamSlot::D_ScanTrack);
+    CHECK_FALSE(gg::render::paramSlotNamed("Scan Speed").has_value());
+    for (auto j : {nlohmann::json::parse(readCase("fx-sine")), instrumentJson()})
+    {
+        j["params"] = {{"B Scan Speed", 0.5}, {"C Scan Edge", 1}, {"D Scan Track", 1}};
+        const RenderSpec spec = parseJson(j);
+        const auto &params = spec.mode == RenderMode::Fx ? spec.fx.params : spec.instrument.params;
+        CHECK(params.size() == 3);
+        auto bare = j;
+        bare["params"] = {{"Scan Speed", 0.5}};
+        CHECK_FALSE(rejection(bare).empty());
+    }
+}
+
 TEST_CASE("fx render matches the processor", "[render]")
 {
     // A short FX render in blocks of 100 frames, which the 32-sample grid doesn't divide, so

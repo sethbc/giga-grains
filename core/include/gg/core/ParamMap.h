@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
 
 #include "gg/core/ModSources.h"
 #include "gg/core/ParamIds.h"
@@ -70,6 +73,21 @@ enum class LayerMode : uint8_t
 
 /// The mode a Mode value means: below 0.5 (or NaN) is Cloud, else Voice.
 LayerMode layerModeOf(float value) noexcept;
+
+/// Scan Speed's law (M3 sub-project 3b's spec §4.1): the playhead's speed in times real time,
+/// 8 v^3 in double from the value v clamped to [-1, 1] (1x is v = 0.5); a NaN is 0.
+double scanSpeedOf(float v) noexcept;
+
+/// Scan Speed's text: the speed to three significant digits, trailing zeros kept, a minus sign for
+/// a negative speed and the suffix "x" ("1.00x", "-0.125x", "0.00195x"); exactly "0.00x" at 0.
+std::string scanSpeedText(float v);
+
+/// The value a speed typed as text means: a number with or without a trailing "x", to
+/// cbrt(speed / 8) clamped to [-1, 1]; nullopt for anything that isn't a finite number.
+std::optional<float> scanSpeedFromText(std::string_view text);
+
+/// Whether `slot` is one of the four layers' Scan Speed.
+bool isScanSpeed(ParamSlot slot) noexcept;
 
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
 /// built in wave 1, in both products; Resample, a Live-mode engine whose ring the instance's

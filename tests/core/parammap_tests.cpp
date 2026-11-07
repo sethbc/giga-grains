@@ -1784,3 +1784,50 @@ TEST_CASE("smoothstep", "[core]")
         previous = y;
     }
 }
+
+TEST_CASE("scan speed law is eight v cubed", "[core]")
+{
+    // M3 sub-project 3b's spec §4.1: speed = 8 v^3 in double, v clamped to [-1, 1], 1x at 0.5.
+    CHECK(gg::core::scanSpeedOf(0.5f) == 1.0);
+    CHECK(gg::core::scanSpeedOf(0.25f) == 0.125);
+    CHECK(gg::core::scanSpeedOf(0.0625f) == 1.0 / 512);
+    CHECK(gg::core::scanSpeedOf(1.0f) == 8.0);
+    CHECK(gg::core::scanSpeedOf(-0.5f) == -1.0);
+    CHECK(gg::core::scanSpeedOf(0.0f) == 0.0);
+    CHECK(gg::core::scanSpeedOf(std::numeric_limits<float>::quiet_NaN()) == 0.0);
+    CHECK(gg::core::scanSpeedOf(2.0f) == 8.0);
+    CHECK(gg::core::scanSpeedOf(-2.0f) == -8.0);
+}
+
+TEST_CASE("scan speed text round trips", "[core]")
+{
+    CHECK(gg::core::scanSpeedText(0.5f) == "1.00x");
+    CHECK(gg::core::scanSpeedText(0.0f) == "0.00x");
+    CHECK(gg::core::scanSpeedText(-0.0f) == "0.00x");
+    CHECK(gg::core::scanSpeedText(-0.25f) == "-0.125x");
+    CHECK(gg::core::scanSpeedText(0.0625f) == "0.00195x");
+    CHECK(gg::core::scanSpeedText(1.0f) == "8.00x");
+
+    CHECK_THAT(*gg::core::scanSpeedFromText("1x"), WithinAbs(0.5, 1e-6));
+    CHECK_THAT(*gg::core::scanSpeedFromText("1.00"), WithinAbs(0.5, 1e-6));
+    CHECK_THAT(*gg::core::scanSpeedFromText(" -1 x "), WithinAbs(-0.5, 1e-6));
+    CHECK_FALSE(gg::core::scanSpeedFromText("abc").has_value());
+    CHECK_FALSE(gg::core::scanSpeedFromText("").has_value());
+    CHECK_FALSE(gg::core::scanSpeedFromText("x").has_value());
+    CHECK_FALSE(gg::core::scanSpeedFromText("nan").has_value());
+    CHECK_FALSE(gg::core::scanSpeedFromText("1.0xx").has_value());
+    CHECK(*gg::core::scanSpeedFromText("100") == 1.0f);
+    CHECK(*gg::core::scanSpeedFromText("-100") == -1.0f);
+
+    // The text of a value reads back to it, to the three digits shown.
+    for (const float v : {-1.0f, -0.7f, -0.1f, 0.0f, 0.1f, 0.33f, 0.5f, 0.9f, 1.0f})
+    {
+        const auto back = gg::core::scanSpeedFromText(gg::core::scanSpeedText(v));
+        REQUIRE(back.has_value());
+        CHECK_THAT(*back, WithinAbs(static_cast<double>(v), 2e-3));
+    }
+    CHECK(gg::core::isScanSpeed(ParamSlot::ScanSpeed));
+    CHECK(gg::core::isScanSpeed(ParamSlot::D_ScanSpeed));
+    CHECK_FALSE(gg::core::isScanSpeed(ParamSlot::ScanEdge));
+    CHECK_FALSE(gg::core::isScanSpeed(ParamSlot::Count));
+}

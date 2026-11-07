@@ -24,6 +24,7 @@
 
 #include "Palette.h"
 #include "ParamValue.h"
+#include "gg/core/ParamMap.h"
 #include "gg/ui/LayerColors.h"
 
 namespace gg::ui
@@ -75,6 +76,10 @@ struct ContinuousSource final : jdata::Continuous
     float getMax() const override { return value.meta().maxVal; }
     std::string getValueAsStringFor(float f) const override
     {
+        if (gg::core::isScanSpeed(value.slot()))
+        {
+            return gg::core::scanSpeedText(f); // times real time (M3 sub-project 3b)
+        }
         return value.meta().valueToString(f).value_or(std::string());
     }
 
@@ -410,6 +415,10 @@ juce::String ParamControl::tooltip() const
 
 juce::String ParamControl::shownText() const
 {
+    if (gg::core::isScanSpeed(impl_->value.slot()))
+    {
+        return juce::String::fromUTF8(gg::core::scanSpeedText(impl_->value.value()).c_str());
+    }
     const auto text = impl_->value.meta().valueToString(impl_->value.value());
     return juce::String::fromUTF8(text ? text->c_str() : "");
 }

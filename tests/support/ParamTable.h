@@ -172,6 +172,14 @@ inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
     {0x010066, "A Bus 2 Cutoff", kBusCutoffMin, kBusCutoffMax, kBusCutoffDefault, false},
     {0x010067, "A Bus 2 Resonance", 0.0f, 1.0f, 0.0f, false},
 }};
+// Layer A's three playhead parameters (M3 sub-project 3b's spec §4.1), at 0x68 to 0x6A after the
+// Extremes' eight: Scan Speed in -1..1 (the speed is 8 v^3), Scan Edge 0 Wrap, 1 Bounce, 2 Stop,
+// Scan Track 0 Off, 1 On.
+inline constexpr std::array<ParamRow, 3> kLayerAPlayheadRows{{
+    {0x010068, "A Scan Speed", -1.0f, 1.0f, 0.0f, false},
+    {0x010069, "A Scan Edge", 0.0f, 2.0f, 0.0f, true},
+    {0x01006A, "A Scan Track", 0.0f, 1.0f, 0.0f, true},
+}};
 // The parameters that are neither automatable nor modulatable: every layer's Ring Length, which the
 // main thread resizes (M2 sub-project 2's spec §5, §6.3).
 // The three MIDI globals are fixed too (M3 sub-project 1's spec §4.1).
@@ -214,7 +222,7 @@ inline constexpr std::array<ParamRow, 3> kMidiGlobalRows{{
     {0x000024, "Bend Range", 0.0f, 24.0f, 2.0f, true},
 }};
 
-// All 290 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 302 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -260,6 +268,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         {
             push(r.id, r.name, r);
         }
+        for (const ParamRow &r : kLayerAPlayheadRows)
+        {
+            push(r.id, r.name, r);
+        }
         std::vector<ParamRow> layerA;
         for (clap_id index = 0x01; index <= 0x0B; ++index)
         {
@@ -274,6 +286,7 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         layerA.insert(layerA.end(), kLayerASourcesRows.begin(), kLayerASourcesRows.end());
         layerA.insert(layerA.end(), kLayerAEngineRows.begin(), kLayerAEngineRows.end());
         layerA.insert(layerA.end(), kLayerAExtremesRows.begin(), kLayerAExtremesRows.end());
+        layerA.insert(layerA.end(), kLayerAPlayheadRows.begin(), kLayerAPlayheadRows.end());
         expect(layerA.size() == gg::core::kLayerParamCount);
         for (const char letter : {'B', 'C', 'D'})
         {

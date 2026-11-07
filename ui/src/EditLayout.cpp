@@ -67,9 +67,13 @@ constexpr std::array kRows{
     edit(ParamSlot::SizeSpread, Panel::Grain, 1),
     edit(ParamSlot::Position, Panel::Grain, 2, ParamSlot::Spray),
     edit(ParamSlot::Spray, Panel::Grain, 3),
-    edit(ParamSlot::Texture, Panel::Grain, 4),
-    edit(ParamSlot::Smear, Panel::Grain, 5),
-    edit(ParamSlot::Quality, Panel::Grain, 6),
+    // The playhead (M3 sub-project 3b; ruling R1): Scan Speed, Edge and Track after Spray.
+    edit(ParamSlot::ScanSpeed, Panel::Grain, 4),
+    edit(ParamSlot::ScanEdge, Panel::Grain, 5),
+    edit(ParamSlot::ScanTrack, Panel::Grain, 6),
+    edit(ParamSlot::Texture, Panel::Grain, 7),
+    edit(ParamSlot::Smear, Panel::Grain, 8),
+    edit(ParamSlot::Quality, Panel::Grain, 9),
     // Pitch and Pitch Spread.
     edit(ParamSlot::Pitch, Panel::Pitch, 0, ParamSlot::PitchSpread),
     edit(ParamSlot::PitchSpread, Panel::Pitch, 1),
