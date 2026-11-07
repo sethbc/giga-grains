@@ -221,6 +221,10 @@ constexpr std::array<LayerParam, 12> kVoiceTargets{
     LayerParam::Smear,   LayerParam::Quality, LayerParam::PitchSpread,  LayerParam::SizeSpread,
 };
 
+/// What a layer's voice-parameter generation is keyed on (updateVoices): the voice targets, the
+/// Source, Bus Split and Level.
+constexpr size_t kVoiceKeySlots = kVoiceTargets.size() + 3;
+
 /// Whether the note state holds the note (its gate open or the pedal holding it).
 bool heldState(NoteTable::State s) noexcept
 {
@@ -799,6 +803,33 @@ const NoteTable::Note *Processor::noteOf(const VoiceAllocator::Voice &v) const n
 void Processor::commitVoices(int64_t b) noexcept
 {
     const std::span<const NoteTable::Note> notes = noteTable_.notes();
+    // A voice follows its note: released (or gone from the table), its gate closes, at b or, for
+    // a note that started in this group too, one cell later (B5); pedal-held, it ranks with the
+    // released ones for a steal (V4).
+    const auto follow = [this, b](VoiceAllocator::Voice &v) {
+        if (!v.spawning || v.released)
+        {
+            return;
+        }
+        const NoteTable::Note *n = noteOf(v);
+        const NoteTable::State state = n != nullptr ? n->state : NoteTable::State::Released;
+        if (state == NoteTable::State::PedalHeld)
+        {
+            v.weak = true;
+        }
+        else if (!heldState(state))
+        {
+            v.weak = true;
+            if (v.startedAt == b)
+            {
+                v.releaseLater = true;
+            }
+            else
+            {
+                v.released = true;
+            }
+        }
+    };
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
@@ -806,8 +837,16 @@ void Processor::commitVoices(int64_t b) noexcept
         {
             continue;
         }
-        // The group's note-ons, in event order: each starts a voice (the engine is told with
-        // its parameters at updateVoices).
+        // The group's releases and pedal holds first, so a note-on of the same group steals a
+        // voice this group released rather than a held one (V4).
+        for (VoiceAllocator::Voice &v : l.voices.voices())
+        {
+            follow(v);
+        }
+        // Then the group's note-ons, in event order: each starts a voice (the engine is told
+        // with its parameters at updateVoices), which follows its note at once.
+        const AdsrParams env1 = envParams(effective_, L, 0);
+        const AdsrParams env2 = envParams(effective_, L, 1);
         for (const uint8_t index : noteTable_.startedThisGroup())
         {
             const NoteTable::Note &n = notes[std::min<size_t>(index, notes.size() - 1)];
@@ -818,35 +857,19 @@ void Processor::commitVoices(int64_t b) noexcept
             uint32_t ordinal = 0;
             int stolen = -1;
             const int slot = l.voices.start(index, n.ordinal, b, ordinal, stolen);
+            VoiceAllocator::Voice &v = l.voices.voices()[static_cast<size_t>(slot)];
             l.voiceCache[static_cast<size_t>(slot)].valid = false;
-        }
-        // Each voice follows its note: released (or gone from the table), its gate closes, at
-        // b or, for a note that started in this group too, one cell later (B5); pedal-held, it
-        // ranks with the released ones for a steal.
-        for (VoiceAllocator::Voice &v : l.voices.voices())
-        {
-            if (!v.spawning || v.released)
+            // A voice's envelopes step at its boundary with the other sources, which process()
+            // steps after this commit: it never commits a group at a boundary already stepped
+            // (an out-of-order event joins the pending group, and every group's boundary is past
+            // the last one stepped). Should one ever be, its new voices step once here, gate
+            // open, so the strike still speaks at the attack's level.
+            if (lastStepped_ >= b)
             {
-                continue;
+                v.envValue[0] = v.env[0].step(env1, true, cellSeconds_);
+                v.envValue[1] = v.env[1].step(env2, true, cellSeconds_);
             }
-            const NoteTable::Note *n = noteOf(v);
-            const NoteTable::State state = n != nullptr ? n->state : NoteTable::State::Released;
-            if (state == NoteTable::State::PedalHeld)
-            {
-                v.weak = true;
-            }
-            else if (!heldState(state))
-            {
-                v.weak = true;
-                if (v.startedAt == b)
-                {
-                    v.releaseLater = true;
-                }
-                else
-                {
-                    v.released = true;
-                }
-            }
+            follow(v);
         }
     }
     updateVoicesSounding();
@@ -925,23 +948,11 @@ void Processor::updateVoices() noexcept
         voicesSounding_ = false;
         return;
     }
-    // The inputs every voice's parameters depend on, besides its own: a change of any moves the
-    // generation, and a voice whose own inputs are unchanged too keeps its CloudParams (spec
-    // §4.4: so ruling M1-h's rescale doesn't fire every cell).
-    if (std::memcmp(base_.data(), inputsBase_.data(), sizeof(base_)) != 0 ||
-        std::memcmp(mod_.data(), inputsMod_.data(), sizeof(mod_)) != 0 ||
-        std::memcmp(offsets_.data(), inputsOffsets_.data(), sizeof(offsets_)) != 0)
-    {
-        inputsBase_ = base_;
-        inputsMod_ = mod_;
-        inputsOffsets_ = offsets_;
-        ++inputsGeneration_;
-    }
     voiceScratch_ = effective_;
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
-        if (l.mode != LayerMode::Voice)
+        if (l.mode != LayerMode::Voice || !l.voices.anySpawning())
         {
             continue;
         }
@@ -949,6 +960,37 @@ void Processor::updateVoices() noexcept
         const AdsrParams env1 = envParams(effective_, L, 0);
         const auto pitchSlot = static_cast<size_t>(layerSlot(LayerParam::Pitch, L));
         const auto levelIndex = static_cast<size_t>(levelSlot(L));
+        // What toCloudParams and a voice's own clamps read of the layer (spec §4.4): base,
+        // modulation and layer-wide offset of the voice targets, the Source, Bus Split and
+        // Level, and the material (a Spectral layer's Position units). A change of any moves
+        // the layer's generation, and every voice recomputes once.
+        std::array<size_t, kVoiceKeySlots> keySlots{};
+        for (size_t i = 0; i < kVoiceTargets.size(); ++i)
+        {
+            keySlots[i] = static_cast<size_t>(layerSlot(kVoiceTargets[i], L));
+        }
+        keySlots[kVoiceTargets.size()] = static_cast<size_t>(layerSlot(LayerParam::Source, L));
+        keySlots[kVoiceTargets.size() + 1] =
+            static_cast<size_t>(layerSlot(LayerParam::BusSplit, L));
+        keySlots[kVoiceTargets.size() + 2] = levelIndex;
+        std::array<float, 3 * kVoiceKeySlots> key{};
+        static_assert(sizeof(key) == sizeof(l.voiceKey));
+        static_assert(sizeof(std::array<float, kVoiceTargets.size() + 1>) ==
+                      sizeof(Layer::VoiceCache::offsets));
+        for (size_t i = 0; i < kVoiceKeySlots; ++i)
+        {
+            key[3 * i] = base_[keySlots[i]];
+            key[3 * i + 1] = mod_[keySlots[i]];
+            key[3 * i + 2] = offsets_[keySlots[i]];
+        }
+        if (!l.voiceKeyValid || l.voiceKeyMaterial != material ||
+            std::memcmp(key.data(), l.voiceKey.data(), sizeof(key)) != 0)
+        {
+            l.voiceKey = key;
+            l.voiceKeyMaterial = material;
+            l.voiceKeyValid = true;
+            ++l.voiceGeneration;
+        }
         const std::span<VoiceAllocator::Voice> voices = l.voices.voices();
         for (size_t slot = 0; slot < voices.size(); ++slot)
         {
@@ -983,28 +1025,37 @@ void Processor::updateVoices() noexcept
             set(ModSource::ReleaseVelocity, v.released || note.state != NoteTable::State::Held
                                                 ? unitClamped(note.releaseVelocity)
                                                 : 0.0f);
-            // The note's own pitch and gain inputs (§4.3, §4.5).
+            // The voice's route offsets on its slots (applyVoiceRoutes writes the layer's voice
+            // targets alone; each is read and zeroed again here), its pitch and gain inputs
+            // (§4.3, §4.5): with the layer's generation, what its CloudParams are made of.
+            applyVoiceRoutes(routes_, L, vs, voiceOffsets_);
+            std::array<float, kVoiceTargets.size() + 1> offsets{};
+            for (size_t i = 0; i < kVoiceTargets.size(); ++i)
+            {
+                offsets[i] = voiceOffsets_[keySlots[i]];
+                voiceOffsets_[keySlots[i]] = 0.0f;
+            }
+            offsets[kVoiceTargets.size()] = voiceOffsets_[levelIndex];
+            voiceOffsets_[levelIndex] = 0.0f;
             const double pitchIn = (static_cast<double>(note.key) - 60.0) + bend + tuning;
             const float volume = std::clamp(note.volume, 0.0f, 4.0f);
             const bool same =
-                cache.valid && cache.generation == inputsGeneration_ &&
-                std::memcmp(cache.sources.v.data(), vs.v.data(), sizeof(vs.v)) == 0 &&
+                cache.valid && cache.generation == l.voiceGeneration &&
+                std::memcmp(cache.offsets.data(), offsets.data(), sizeof(offsets)) == 0 &&
                 std::bit_cast<uint64_t>(cache.pitchIn) == std::bit_cast<uint64_t>(pitchIn) &&
                 std::bit_cast<uint32_t>(cache.volume) == std::bit_cast<uint32_t>(volume);
             if (!same)
             {
-                // The voice's route offsets, then only the slots they touch re-clamped (spec
-                // §4.4); Pitch and Level are the voice's own (§4.3, §4.5). applyVoiceRoutes
-                // writes the layer's voice targets alone, and each is zeroed again here.
-                applyVoiceRoutes(routes_, L, vs, voiceOffsets_);
+                ++voiceRecomputes_;
+                // Only the slots the voice's routes touch are re-clamped (spec §4.4); Pitch and
+                // Level are the voice's own (§4.3, §4.5).
                 float pitchOffset = 0.0f;
                 std::array<size_t, kVoiceTargets.size()> touched{};
                 size_t touchedCount = 0;
-                for (const LayerParam p : kVoiceTargets)
+                for (size_t i = 0; i < kVoiceTargets.size(); ++i)
                 {
-                    const auto s = static_cast<size_t>(layerSlot(p, L));
-                    const float off = voiceOffsets_[s];
-                    voiceOffsets_[s] = 0.0f;
+                    const size_t s = keySlots[i];
+                    const float off = offsets[i];
                     if (off == 0.0f)
                     {
                         continue;
@@ -1018,8 +1069,7 @@ void Processor::updateVoices() noexcept
                     voiceScratch_[s] = clampToRange(s, std::isnan(sum) ? base_[s] + mod_[s] : sum);
                     touched[touchedCount++] = s;
                 }
-                const float levelOffset = voiceOffsets_[levelIndex];
-                voiceOffsets_[levelIndex] = 0.0f;
+                const float levelOffset = offsets[kVoiceTargets.size()];
                 CloudParams cloud = toCloudParams(voiceScratch_, config_.mode, L, material);
                 // Back to the layer's values for the next voice.
                 for (size_t i = 0; i < touchedCount; ++i)
@@ -1041,10 +1091,10 @@ void Processor::updateVoices() noexcept
                     exp2Det((totalDb - layerDb) * kLog2Of10 / 20.0) * static_cast<double>(volume);
                 cache.cloud = cloud;
                 cache.gain = static_cast<float>(gain);
-                cache.sources = vs;
+                cache.offsets = offsets;
                 cache.pitchIn = pitchIn;
                 cache.volume = volume;
-                cache.generation = inputsGeneration_;
+                cache.generation = l.voiceGeneration;
                 cache.valid = true;
             }
             VoiceParams params;
