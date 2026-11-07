@@ -462,7 +462,8 @@ per-layer parameters, each uniform bipolar, 0 by default:
 design's decision 7; §23 #64, #65). `gg/core/ModMatrix.h` and `gg/core/ModSources.h`.
 - **48 slots**, each `{source, sourceLayer, target, targetLayer, depth, curve}`, saved in the
   patch (`PTCH`'s `<mod>`, §18), never as parameters, and evaluated in slot order. A fresh
-  instance, and a migrated M1 state, fill slots 1 to 12 with the factory routes (below); any
+  instance, and a migrated M1 state, fill slots 1 to 12 and, since M3 sub-project 1, 44 to 48 with
+  the factory routes (below); a state saved before M3 loads 44 to 48 empty; any
   slot may be edited or cleared (from `gg-render`, a state and, since M2 sub-project 6, the Mod
   view; §17, §18).
 - **The sources,** each a value in [0, 1] on the 32-sample grid, each a function of the sample
@@ -477,6 +478,7 @@ design's decision 7; §23 #64, #65). `gg/core/ModMatrix.h` and `gg/core/ModSourc
   | Step | per layer | Step 1–16's values at Step Rate, Step Length of them cycling | the step counter, from the clock |
   | Mod Wheel, Aftertouch, Pitch Bend | global | the last MIDI CC 1, channel pressure and pitch bend (center 0.5) | events on the grid, as notes are |
   | Velocity, Key | global | the last note-on's velocity and key / 127, CLAP's or MIDI's | ditto |
+  | Pressure, Timbre, Note Pitch, Release Velocity (M3 sub-project 1) | per voice on a Voice layer; else global | a note's pressure, its channel's CC 74 / 127 or brightness, `(key + bend + tuning) / 127` clamped, and the release velocity (0 until the note's off); per voice on a Voice layer, else the newest held note's (Release Velocity the last note-off's), 0 until a value | events on the grid; appended to `ModSource`, saved by name ("Pressure", "Timbre", "Note Pitch", "Release Velocity") |
   | Env Follower | global | a one-pole on the input's peak over the previous cell, 5 ms attack and 200 ms release, at most 1 | coefficients fixed at construction (`exp2Det`); the first cell's input counts as silence |
   | Transport Beat, Bar, Playing | global | the host's beat phase, bar phase and playing flag, advanced per cell while it plays and held otherwise; 0 before any | the host's transport alone; `gg-render` gives a steady one or none |
 
@@ -517,6 +519,24 @@ design's decision 7; §23 #64, #65). `gg/core/ModMatrix.h` and `gg/core/ModSourc
 
   They give M1's `macroOffsets` bit for bit (a test compares them over 10,000 random macro
   vectors in both products, against a copy of M1's function), and at rest each is exactly +0.0f.
+- **The five Voice-only factory routes** (M3 sub-project 1; spec §4.7; V5), slots 44 to 48, on
+  every layer, like the macro routes. They are **Voice only**: skipped on Cloud layers (and so
+  moving no Cloud render), per voice on a Voice layer. They sit at the end of the 48 (V5; this
+  amends the program design's P4, which named 13 to 17) because the Mod view adds a user's first
+  route at the first free slot from 13. The depths are starting values, to be set by ear (row
+  418):
+
+  | Slot | Source | Target | Depth | Curve |
+  |---|---|---|---|---|
+  | 44 | Pressure | Density | +2 (log2 Hz: two octaves denser at full pressure) | Unipolar |
+  | 45 | Pressure | Level | +6 dB | Unipolar |
+  | 46 | Timbre | Position | +0.5 (half the sample or ring span) | Unipolar |
+  | 47 | Velocity | Level | +6 dB (+-6 around velocity 64) | Bipolar |
+  | 48 | Velocity | Size | +0.5 (log2: up to sqrt 2 longer) | Unipolar |
+
+  A route's **Voice only** flag is saved as `<route voiceOnly="1">` (written only when true;
+  absent reads false) and set in `gg-render` by `"voiceOnly"`. A Voice-only route whose source
+  isn't per voice or whose target isn't an engine or Level target never acts (row 415).
 - **The sources' clock.** Every source steps exactly once per grid boundary b, in order, as
   rendering reaches b: after b's events are committed, before b's effective values are computed,
   however the host splits blocks. A source's value after stepping at b is the cell
@@ -1181,9 +1201,10 @@ like Mix.
     notes apply in order, and only the held set after the group counts, so a note that starts
     and ends within one group does nothing.
   - **The held set** is the held (channel, key) pairs. A key held on two channels counts once,
-    and stays held until both are off. Two notes on one (channel, key) share it, so the first
-    note-off releases both; M3's Voice scheduler revisits this. An activation or reset clears
-    it.
+    and stays held until both are off. Since M3 sub-project 1 (§23 #95; row 184 closed) two notes
+    on one (channel, key) are two notes: a note-off by CLAP note ID releases that note, one by
+    (channel, key) the oldest held note on the pair, and the pair stays in the held set until
+    both are off (Voice mode, below). An activation or reset clears it.
   - **Each grain's note:** while n > 0 keys are held, grain k plays the key at index
     `min(floor(u × n), n − 1)` of the held keys, distinct and ascending, with `u` keyed by (seed,
     layer, stream, `Field::Note`, k). Every grain draws, however many keys are held; with none
@@ -1209,6 +1230,103 @@ like Mix.
   reads from
   `clamp(position × (frames − 1) + spray × bipolar(u) × sourceRate, 0, frames − 1)`. A Live
   layer keeps seconds behind the head for both (ruling M1-k), in either product.
+
+**Voice mode** (M3 sub-project 1, built 2026-11-07; §23 #95; spec
+`docs/superpowers/specs/2026-11-07-m3-voice-design.md`; the director's decisions are §23 #94; of the
+calls, V1, V2, V3, V4 and B10 are the director's (approved by name, 2026-11-07, "3) approved"),
+and V5, V6 and B1 to B9 are Claude's, standing until the director overrules them).
+Every layer has a **Mode** (`0x..31`, §18): **Cloud**, the default and today's behavior, or
+**Voice**. At Cloud nothing moves: all 108 earlier goldens keep their WAV SHA-256. At Voice every
+note-on starts a voice with its own grain stream, pitch, envelopes and expression, and the voice
+keeps spawning through its release (row 404 closed).
+- **The note table** (`gg/core/NoteTable.h`): the `Processor`'s, 128 entries, fixed. Each is a
+  note: its CLAP note ID (-1 when none), channel, key, velocity, state (held, pedal-held,
+  released), per-note expression (bend, pressure, timbre, tuning, volume) and start ordinal. A
+  note-off by ID releases that note; one by (channel, key) releases the **oldest** held note on
+  the pair (row 184 closed); the wildcard and CC 123 rules stand (R14, R15). A full table gives a
+  new note a free slot, else replaces the oldest released, else pedal-held, else held note.
+  **The held set Cloud layers read** is the keys with any held or pedal-held note, ascending and
+  distinct, applied per group as before, so every M2 note sequence gives today's held keys (a
+  test); a note that starts and ends in one group still leaves the held set unchanged.
+- **The sustain pedal:** CC 64 at 64 or more is down, per channel; with MPE On the master channel's
+  (channel 1) pedal acts on every channel. While down a note-off makes the note pedal-held; pedal-up
+  releases it. Pedal-held notes count as held for Cloud's held set and the FX's notes-freeze (P8).
+- **Voices.** Each layer's `Engine` has **up to 16 voice streams** beside its Cloud stream, each a
+  `CloudScheduler` with no held keys, its pitch folded into its parameters and a forced onset at
+  the voice's start. A voice's draws use `stream = 1 + ordinal` (the layer's voices since
+  activation, a `uint32_t`; Cloud's stream 0 untouched; `rng::Key` is unchanged). Every stream's
+  draws for a cell are merged by onset, ties by stream (Cloud first, then ordinal), before
+  admission, so the pool's ledger still sees non-decreasing onsets; grains are summed in spawn
+  order (this amends the parent rule of per-voice ordinals, B6). Voices share the layer's pool
+  and quota, and the overload ladder treats their grains as any others. At Voice the layer's
+  Cloud stream doesn't schedule (B3). A voice is **started** at its note's boundary, **releasing**
+  from its note-off (or pedal-up) boundary and still spawning, and **finished** at the boundary
+  Env 1's release reaches 0, or at once on a steal or a switch to Cloud; its grains play out their
+  windows. A voice held at Env 1 Sustain 0 stops spawning as if finished (B8). The enable gate,
+  `Engine::reset` and a layer's ramp to off clear voices with the pool.
+- **A voice's amplitude is Env 1** (V1). Each voice runs the layer's Env 1 (its global
+  parameters) as its own linear ADSR, and its value multiplies the gain of every grain the voice
+  spawns, latched at the grain's onset as the value Env 1 reaches at the grain's peak (onset plus
+  half its duration), in closed form with the note's gate as it stands at the onset, so the
+  strike's forced grain speaks at the attack's level and a release thins grain by grain. The
+  gain also carries the voice's Level offset (dB) and its volume expression. Env 1 stays a mod
+  source.
+- **Pitch** (V3): the layer's Pitch (with its non-per-voice routes) plus the voice's per-voice
+  Pitch offsets plus (key - 60) plus bend plus the tuning expression, clamped to [-48, 48]. It is
+  **latched per grain**, so a slide moves the pitch grain by grain (a per-sample glide inside a
+  grain is deferred, row 414). **Bend:** MPE Off, a channel's pitch bend x Bend Range bends that
+  channel's voices; MPE On, a member channel's (2 to 16) x MPE Bend Range bends its voices and the
+  master channel's x Bend Range bends every voice. The direct bend is `(v - 8192) / 8192` from the
+  14-bit value, exact at the center (B7; the Pitch Bend mod source keeps `(msb << 7 | lsb) / 16383`).
+  Cloud layers take no direct bend.
+- **Pressure** is a note's poly aftertouch once it has had one, else its channel's pressure (with
+  MPE On the master channel's isn't a note's); **Timbre** is its channel's CC 74 / 127; the CLAP
+  note expressions match by note ID, else by (channel, key): TUNING adds semitones, PRESSURE and
+  BRIGHTNESS set Pressure and Timbre, VOLUME multiplies the gain (0 to 4), and PAN, VIBRATO and
+  EXPRESSION are accepted and ignored until sub-project 2. Pressure, Timbre and Note Pitch are 0
+  until a voice has a value (V6).
+- **Per-voice modulation.** The new sources **Pressure**, **Timbre**, **Note Pitch** and **Release
+  Velocity** join Velocity, Key, Env 1 and Env 2 as per-voice sources on Voice layers. The layer's
+  effective values are computed as before from the global sources; then each voice's routes whose
+  source is per voice add their offsets, and only the touched slots are clamped. The targets a
+  voice carries are the engine's (Density, Size, Position, Pitch, Spray, Stereo, Distribution,
+  Texture, Smear, Quality's tier and the spreads), latched at each grain's onset, and Level (the
+  voice's gain). On a Voice layer a route with a per-voice source acts per voice only, never also
+  layer-wide (B2); every other target reads the instance-wide value (**B4**, which amends the
+  program's P7): Velocity and Key the last note-on's, Env 1 and Env 2 gated by the held set as
+  before, Pressure, Timbre and Note Pitch the newest held note's, Release Velocity the last
+  note-off's. Note Pitch is `(key + bend + tuning) / 127` clamped (B9). A route marked **Voice
+  only** is skipped on Cloud layers; a route that acts per voice applies per voice on a Voice
+  layer whether or not it is marked. Every cell is applied while a Voice layer has a sounding voice
+  (B1), so a voice's envelopes step and its end reaches the engine at the cell it happens.
+- **Voice-mode grouping.** A note that starts and ends in one group starts its voice with the gate
+  on and applies the off at the next cell (b + 32), so its Env 1 attacks and the voice plays its
+  release (B5); Cloud's held set is unchanged.
+- **Steals** (V4). The cap counts spawning voices: a 17th note-on steals the oldest released voice,
+  else the oldest held one. A stolen voice stops spawning and its grains play out their windows,
+  which is the fade (a window never clicks), so a voice has no steal fade of its own (B6). A steal
+  is not a grain steal, and the event log's steal lines carry no `"v"` (row 412).
+- **FX layers** (V2). Notes don't freeze a Voice layer: its Freeze parameter alone freezes its ring,
+  so voices play the live input pitched. Cloud layers freeze on notes as before. A Spectral layer's
+  voices read its smear like any grain; its analysis follows the layer's base Position.
+- **B10.** A layer switched from Cloud to Voice, or turned on, starts no voices for notes already
+  held; the next note-on starts one. Voice to Cloud resumes Cloud from the held set at once (row
+  413; approved by the director, 2026-11-07).
+- **The event log:** a voice grain's line adds `"v":ordinal` after `"layer"`; Cloud lines are
+  byte-identical. `i` is the stream's grain index.
+- **Cost:** `gg-bench`'s report-only `engine-voices` (16 voices over `engine-sample`'s workload)
+  measured 0.8637 / 0.7953 / 0.7300 of `reference` at blocks 32, 64 and 256 against
+  `engine-sample`'s 0.8704 / 0.7933 / 0.7290 (`--quick`, a busy machine): the voice scheduler adds
+  no measurable cost over X.
+- **Headroom** (V7, built 2026-11-07; the director: "yes voice lyaers should get automatic
+  headroom"; the form is Claude's call; row 411 closed, commit `11ba5b5`). Each voice grain's gain is
+  multiplied by `1 / sqrt(n)`, n the number of the layer's voices spawning in the `process()` call
+  that admits the grain (its own included; releasing and pedal-held voices count until they
+  finish), latched at the grain's onset like the density normalization. A chord's summed power
+  stays near one voice's, a new note thins the others grain by grain, one note is unchanged (n =
+  1: a multiply by exactly 1), Cloud layers are untouched, and the result is block-size invariant
+  (voices start and finish only at control boundaries). It moved seven voice goldens' WAVs (all
+  but `inst-voice-release`; the earlier chord had peaked at -1.02 dBFS, saturating).
 
 **Extreme stretch.** Grains alone start to comb and sound static at 100× and beyond. Two tools
 address this:
@@ -1326,8 +1444,9 @@ earlier golden keeps its WAV SHA-256.
   re-read passes crackle: an accepted law (D-glide, the director, 2026-10-31; row 379).
   **Feedback reaches 100%** (D7, option 1; declined: the instrument's tail made
   infinite, a 95% cap), so the delay can hold a repeat as Decay ∞ does, and the instrument's
-  reported tail stays its constant 122.5 s: a host that suspends an instrument after its tail
-  cuts a held delay 122.5 s after the last note. The FX's tail is infinite already.
+  reported tail stays its constant, 132.5 s since M3 sub-project 1 (122.5 s before; §15): a host
+  that suspends an instrument after its tail cuts a held delay 132.5 s after the last note. The
+  FX's tail is infinite already.
   **The hold darkens** (the director's decision D7a, 2026-10-30, option 2; declined: Damping 0
   bypassing the damper for an exact hold): at Feedback 100% and Damping 0 the damper is still a
   20 kHz one-pole in the loop, so bright material slowly darkens. A noise burst loses about 2 dB
@@ -1718,6 +1837,34 @@ which restore bit for bit and need no encoder (§18, §23 #68).
   than trusting host loop flags.
 - Accept MPE both as CLAP note expressions (Bitwig) and as the MIDI-MPE dialect (Ableton and
   others, via VST3 and AU). Both feed one internal per-voice modulation path.
+- **The input paths, as built** (M3 sub-project 1; §23 #95; spec §4.5, `plugin/src/GigaGrainsPlugin.cpp`),
+  in both products:
+  - **CLAP note IDs and expressions.** A note-on's `note_id` and a note-off's release velocity
+    reach the core (a choke's is 0; MIDI 0x8n's is data2 / 127). A note-off by ID alone releases that
+    note; one with a wildcard keeps R15's meaning. The note expressions TUNING, PRESSURE,
+    BRIGHTNESS and VOLUME become note controls matched by ID, else by (channel, key); PAN,
+    VIBRATO and EXPRESSION are not converted.
+  - **MIDI and MIDI-MPE.** CC 64 (the pedal), CC 74 (Timbre, value / 127), poly aftertouch (0xAn)
+    and the per-channel pitch bend and channel pressure keep their channel; the `Processor` reads
+    them per channel (MPE On: members 2 to 16, master channel 1). The note-port dialects are
+    unchanged: CLAP preferred, MIDI and MIDI-MPE supported.
+  - **`clap_plugin_as_vst3`**, through clap-helpers' `extension()` override: 16 MIDI channels and
+    the supported note expressions TUNING, VOLUME, PAN and BRIGHTNESS. PRESSURE is left out on
+    purpose: the wrapper turns VST3 poly pressure into MIDI 0xAn, which the plugin converts. The
+    VST3 note IDs arrive as CLAP note IDs; Steinberg's validator lists the four expressions.
+  - **`CLAP_EVENT_NOTE_END`.** When a note is released and no Voice layer still has a spawning
+    voice for it, the plugin sends a note end (its ID, port 0, channel, key) from a fixed 128-entry
+    queue the `Processor` fills, at the end of `process()`, stamped at the call's last frame (row
+    416); a refused push waits for the next call; with no Voice layer it is at the release's
+    boundary. A reset ends every note still in the table, and so does a note the full table
+    replaces (at 129 simultaneous notes); `params.flush` sends none.
+  - **The wrapper's limits** (carry-over rows 406 to 410): the AU has no MPE (`SupportsMPE`), and
+    under the CLAP dialect it turns the channel's bend into a channel-wide +-2 semitone tuning
+    expression and the channel pressure into a PRESSURE expression, each with no key and no ID, so
+    neither reaches a voice there; VST3's channel-state parameters (pressure, bend, controllers)
+    reach the plugin at the last point per block; there is no VST3 PRESSURE note expression; and
+    whether Live sends per-note data to a VST3 awaits a host test. A pedal-down and a note-off at
+    one sample apply the off first (row 417).
 
 ### 16. Performance targets
 
@@ -1972,8 +2119,8 @@ which restore bit for bit and need no encoder (§18, §23 #68).
 - **As built** (M2 sub-project 5, group 1; §23 #70; the spec §6.8, §6.9), in both products' editors:
   - **The strip** replaces the header's "Init" label, in the same `header.preset` slot (90 px):
     previous and next, and the preset name, with a trailing dot (`Glass Hold •`) when a base
-    value differs from the loaded preset's (any of the 283 values, the ring parameters aside,
-    since a load keeps them), which opens the browser.
+    value differs from the loaded preset's (any value but the ring parameters and the three MIDI
+    settings, which a load keeps), which opens the browser.
   - **The browser** is an overlay on the canvas, closed by its button, Escape or a pick: a search
     field (name, description and tags), the four focus tags as toggles and the other tags as a
     list, a Favorites toggle with a star on each row, and the list (INIT first, the factory
@@ -2206,6 +2353,11 @@ and capture on the lanes.
   own line (Filter, Cutoff, Resonance), no longer hidden. The FX view holds **Delay, Reverb,
   Limiter and Output** in the signal chain's order, in one wrapping panel grid shared with Edit.
   Every parameter is still placed once.
+- **M3 sub-project 1's Edit placements** (§18; `ui/src/EditLayout.cpp`): each layer's **Mode** sits
+  in Edit's Source panel beside Source, in the same row; the three MIDI settings, **MPE**, **MPE
+  Bend Range** and **Bend Range**, are the FX view's last panel, **MIDI**. Every parameter is still
+  placed once (the frame tests require it). The Mod view lists the new sources and has no Voice-only
+  toggle yet (sub-project 2).
 - **The lane menu:** a right-click on a lane, or Shift+F10 on the keyboard lane: Add splice mark
   here, Clear splice marks, Loop, Capture to layer A to D, Save capture as..., and on a Sample
   lane Load sample.... Marks and captures are commands, no undo entries; Loop is a gesture. A
@@ -2459,7 +2611,8 @@ program lists and AU factory presets. As built (M2 sub-project 5, group 1; §23 
   no content installed. It is a fresh instance but for each layer's Ring Length, which it keeps so
   that no preset load resizes a ring (**D8a**, memory, not sound: the controller's ruling,
   ratified by the director, K-3, §23 #80; amended 2026-11-02: Loop, Loop Length, Overdub and Splice
-  return to their defaults, as every INIT value does; a preset file keeps all five). It is one
+  return to their defaults, as every INIT value does; a preset file keeps all five; since M3
+  sub-project 1 INIT also keeps the three MIDI settings). It is one
   discovered preset, load key `init`, at a plugin location carrying both products' ids.
 - **Discovery.** The factory (`CLAP_PRESET_DISCOVERY_FACTORY_ID` and its `_COMPAT`) is in
   `gg-plugin-core`, with one provider. It declares the `ggpreset` filetype; each content root's
@@ -2789,6 +2942,28 @@ they are frozen along with them.
   The patch stays at version 2: a state that doesn't mention them loads them at their defaults,
   and a literal wave-1 state decodes in a test and renders M1's bytes. The container is
   unchanged, and the AUv2 order is ascending ID as ever.
+- **M3 sub-project 1's four parameters, seven slots** (Mode in each of four layers, plus MPE, MPE
+  Bend Range and Bend Range; the Voice slice; §23 #95; spec §4.1), **290 slots in all**
+  (`kParamCount`: 283 and seven), 63 per layer. No patch version bump: a state without them loads their
+  defaults. Appended to the CLAP IDs (append-only):
+
+  | ID | Name | Range | Default | Flags |
+  |---|---|---|---|---|
+  | `0x10031`, `0x20031`, `0x30031`, `0x40031` | A Mode to D Mode (layer index `0x31`, the first free one) | stepped: Cloud, Voice | Cloud | `STEPPED`, automatable; a change applies at a grid boundary (Voice to Cloud finishes the layer's voices as a steal) |
+  | `0x000022` | MPE | stepped off/on | Off | `STEPPED` only |
+  | `0x000023` | MPE Bend Range | 1-96 semitones | 48 | `STEPPED` only |
+  | `0x000024` | Bend Range | 0-24 semitones | 2 | `STEPPED` only |
+
+  - **The three MIDI settings are the instance's** (program P2): not automatable, not modulatable,
+    no route targets them, and Mutate locks them (`isMidiSetting`); Mode is locked out of Mutate as
+    structural, like Source. **A preset load and INIT keep them,** as a load keeps the ring
+    parameters: a preset file may hold them and they are ignored on load, a factory source may set
+    none (the packer refuses one), and `gg-render --preset` does the same.
+  - **Mutate is keyed by CLAP ID** (the slice's first task): its draw for a slot was keyed by
+    `counter x kParamCount + slot`, so any new parameter moved every press; it is keyed by the
+    parameter's ID now, so later appends never move it. That one commit moved the `--mutate-preset`
+    outputs once and no audio golden.
+  - Placed in the Edit and FX views (§17).
 - **The patch** (the state's `PTCH` chunk) is `gg-core`'s versioned XML: patch id
   `org.sethbc.giga-grains.patch`, version 2 since M2 sub-project 1 (1 through M1; below). Each
   value also carries its float bits, so a saved
@@ -2868,13 +3043,16 @@ they are frozen along with them.
   product, and the plugins never call `tail.changed`:
   - **the FX's is infinite** (`CLAP_TAIL_INFINITE`): a live-buffer effect can sound with no
     input at any time (Freeze, a held note, a 16 s read, an infinite reverb);
-  - **the instrument's is its longest finite one,** 122.5 s at the active rate: Size's 2 s
-    release, plus Pre-delay's 0.5 s, plus twice Decay's longest finite 60 s.
+  - **the instrument's is its longest finite one,** 132.5 s at the active rate (6,360,000 frames at
+    48 kHz): Size's 2 s release, plus Pre-delay's 0.5 s, plus twice Decay's longest finite 60 s,
+    plus Env 1's longest release, 10 s, since a Voice layer's voice releases that long (M3
+    sub-project 1; `kVoiceReleaseSeconds`; it was 122.5 s). The FX's is unchanged: infinite
+    already, so no Voice layer can outlast it.
   - A tail that followed the values would need `tail.changed`, which clap-wrapper turns into
     VST3's `restartComponent(kLatencyChanged)`: the host deactivates and reactivates the plugin,
     which would empty the FX's ring and drop its notes and Freeze at every note, Freeze toggle or
     Amount change. The cost: the FX never sleeps on silence in hosts that suspend silent
-    plugins, and an instrument at ∞ is suspended 122.5 s after its last note.
+    plugins, and an instrument at ∞ is suspended 132.5 s after its last note.
   - clap-wrapper's AUv2 hard-codes `SupportsTail()` false, so AU hosts never see either tail
     (§15; carry-over). The plugins keep processing through the tail.
 
@@ -2957,6 +3135,18 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
     the 60 earlier cases' WAV SHA-256s were unchanged through every task of group 2
     (`scripts/update-goldens.sh` before and after). The listening pack (`docs/listening/m2-presets/`)
     renders the FX presets over a rendered strings phrase, not one held note.
+  - **M3 sub-project 1's eight voice goldens** (§23 #95; spec §4.9), so **68 cases and 116
+    goldens** with the 48 preset goldens; each catches all 16 injected click steps, no table entry:
+    `inst-voice-chord` (a pedaled C-major chord at Mode Voice, the pedal up at 3 s, the release
+    still spawning), `inst-voice-release` (one note, Env 1 Release 2 s, Density 32 Hz),
+    `inst-voice-mpe` (three MPE notes on channels 2 to 4 with bend slides, pressure swells and CC
+    74 moves, as MIDI), `inst-voice-expr` (the same gestures as CLAP note expressions: its event
+    log equals `inst-voice-mpe`'s with `i` dropped, line for line, and its WAV is byte-identical,
+    a test), `inst-voice-steal` (20 notes held at once on one layer, four voice steals, no click),
+    `inst-voice-dup` (two notes on one (channel, key), released one at a time), `fx-voice` (the
+    FX, layer A Voice over a live 330 Hz sine at amplitude 0.1, a three-note chord; at 0.5 the
+    chord saturated, row 411) and `inst-voice-layers` (layers A Voice and B Cloud together, one
+    phrase). Every one of the 108 earlier goldens' WAV SHA-256 was unchanged through every task.
 - **Golden renders compared by metrics:**
   - spectral distance
   - RMS envelope
@@ -3166,7 +3356,7 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
     capture and cap API), `factory_tests.cpp` (the sample strip, the readout and the cap) and
     `editor_frame_tests.cpp`, over the shared `EditorTestUtil.h`.
   - **Every parameter is reachable from the UI,** by two machine checks: a `[ui]` test walks all
-    283 slots (`kParamCount`) through the layout table, each placed
+    290 slots (`kParamCount`) through the layout table, each placed
     exactly once, and a `[plugin]` test walks the built editor's views for each slot's control.
     A parameter a later wave adds fails both, naming it, until it is placed.
   - **`gg-snap`** draws every view as PNGs, headless (two products, four views, two themes, two
@@ -3182,8 +3372,9 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
   each spec against the program design and INTENT, and the director answers each spec's forced
   choices, decides behavior and sound, and hears the gate. A wave's sub-projects merge as each is
   ready, the later one rebasing on, or merging, the merged result and re-verifying (§23 #84,
-  #88). **M3 runs as M1 did** (§23 #87): one session, its sub-projects in series, with parallel
-  tasks inside each.
+  #88). **M3 ran as M1 did** (§23 #87): one session, its sub-projects in series, with parallel
+  tasks inside each. **Since 2026-11-07 its sub-projects run in parallel,** on their own branches,
+  and merge as each is ready (the director's decision, §23 #96; this overrides #87).
 - **CI and release pipeline** (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`;
   §23 #61). One workflow, `ci.yml`: a `v*` tag, the nightly schedule or a dispatch with
   `installers: true` adds a `gg-installer` target per leg, packed from the very products that
@@ -3226,7 +3417,7 @@ input, which every validator accepts, so D2's fallback was not needed; §14, §1
 | **M0 Foundations** (done 2026-10-26) | Repo, CMake, CI matrix (mac/win/linux), `LICENSE` (AGPL-3.0); headless engine skeleton; `gg-render`; test, golden-render, RTSan and benchmark harness; both plugin shells in every format plus standalone; validators in CI. **Spikes:** kernel benchmark (sets §16), JUCE 9 vs 8.0.16, two-descriptor CLAP to AUv2/VST3/standalone, Ableton MIDI routing into an effect, CPU canvas frame budget. | One grain stream renders deterministically. The empty plugins load in the first-class hosts and pass every validator. **Met** (§23 #29). |
 | **M1 Cloud core** (closed 2026-10-29; `docs/m1-carry-over.md` is its frozen record, whose 13 open rows moved to `docs/m2-carry-over.md`, §23 #63) | Six sub-projects, each spec → plan → build → review (§23 #35): 1 FX vertical slice (`docs/superpowers/specs/2026-10-27-m1-fx-slice-design.md`); 2 Cloud engine; 3 Sources; 4 Space; 5 Perform UI; 6 Close. Together they deliver: grain pool and SIMD renderer (Eco/Normal; Eco is engine-only until M2, §23 #43), the §16 lever list (§23 #39); Cloud scheduler; parameter model; Sample and Live sources with freeze; note-triggered freeze/capture in the FX (§23 #32; built in sub-project 3 as hold and play, a note freezing the ring and repitching the grains, §23 #48); 1 layer; diffusion/reverb (built in sub-project 4 as Space: a per-layer diffuser and a patched Reverb 2 with an infinite Decay, §23 #50); state save/load; single-lane canvas plus 8 macros | Both plugins make textures. **Listening gate #1: passed 2026-10-29** on the Sources, Space and Perform packs (`docs/listening/`; §23 #60). CPU baseline recorded; the CPU gate reports without failing through M1 and the 0.x releases, and turns blocking at 1.0.0, after M5 (§23 #44, #60, #61). The §16 headline measured on the reference core and published: **19.5%** at block 256 (§23 #39, #60). **M1 closed 2026-10-29** by sub-project 6 (§23 #60; the carry-over's 13 open rows name what they wait on). clap-validator runs in full: M0 skipped its `param-conversions` test, which panics on a plugin with no parameters (ruling T8-c, free-audio/clap-validator#40); sub-project 1 removed the exclusion (§23 #35). |
 | **M2 Giga** (closed 2026-11-03, PR #31, `docs/superpowers/specs/2026-11-02-m2-close-design.md`, §23 #93; in progress since 2026-10-29; its carry-over: `docs/m2-carry-over.md`, 13 open rows from M1 at its start, 15 open at the close) | **Seven sub-projects in four waves** (`docs/superpowers/specs/2026-10-29-m2-program-design.md`, §23 #64), each spec → plan → build → review, run by one agent session each, in parallel within a wave: wave 1, **1 Layers and structure** (alone; built 2026-10-30, PR #15, merged; §23 #65); wave 2, **3 Engine scale and quality** (built 2026-10-30, PR #16 and its follow-up PR #23, merged; §23 #66), **2 Sources and persistence** (built 2026-10-30, PR #19, merged; §23 #68), **4 Extremes and the FX chain** (built, PR #20, merged; §23 #69; merged in that order); wave 3, **5 Presets and content** (group 1 built 2026-10-31, PR #17; group 2, the 48 factory presets and content v2, built 2026-11-01, PR #25; both merged; §23 #70), **6 Views** (PR 1 built 2026-10-30, PR #18; PR 2 built 2026-11-01, PR #24; both merged; §23 #71); wave 4, **7 Close** (built 2026-11-03, PR #31; §23 #89 to #93). Together they deliver: 4 layers plus morph; budget manager; no CPU regression vs the M1 measured headline (§23 #41); mipmaps and the HQ sinc tier; minutes-long buffers with persistence, and the live buffer's operations (overdub, loop length, splices, record/capture; §4, §5, §23 #64); Smear and Spectral Smear; resample/feedback source; the per-layer filter, grain buses, global delay and limiter (§14); full mod matrix; Mutate; factory presets and CC0 samples, including MIDI-driven FX presets (§23 #32); preset discovery; the Edit, Mod and FX views and the completed Perform view (§17); C++23 and the AVX2 spike (§22); a timeboxed GPU-canvas spike (§17, §23 #26). **Tagged 0.2.0**, a draft release kept unpublished: no beta, nothing public before M5 (§23 #62) | Benchmarks: the report-only gate shows no regressed ratio against the committed baselines (M1's on `mac-universal`; on x86 the entries remade at the AVX2 task, §23 #66), and X within 3% of M1's published headline on the reference core (§23 #41). The 22 M1 goldens keep their WAV hashes unless a commit says why one moved. **Listening gate #2,** one sitting at the close (§23 #64). **Met 2026-11-03** (§23 #92, #93): X is 19.4% at block 256 against M1's 19.5% (ratios +1.4% / +1.6% / +0.6%, inside 3%); the report-only gate was read at the close (`docs/benchmarks/README.md`); the 22 M1 goldens keep their WAV hashes; all 40 gate items are answered and the eight host cells passed. |
-| **M3 Playable** (in progress since 2026-11-07, `docs/superpowers/specs/2026-11-07-m3-program-design.md`, §23 #94) | Six sub-projects in series, each spec → plan → build → review, in one session (§23 #87): 0 carry-over row 405 first; 1 **Voice slice** (a per-layer Mode, Cloud or Voice; voices with their own streams, envelopes and a release that keeps spawning; MPE and CLAP note expressions; the sustain pedal); 2 **Full expression**; 3 **Pitch-sync and formant grains**; 4 **Microtuning**; 5 **Views and presets**; 6 **Close**. Together they deliver: Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning. **Tagged 0.3.0**, unpublished | Listening gate. First-class hosts pass. |
+| **M3 Playable** (in progress since 2026-11-07, `docs/superpowers/specs/2026-11-07-m3-program-design.md`, §23 #94) | Six sub-projects, each spec → plan → build → review; in series in one session by §23 #87, and since 2026-11-07 in parallel on their own branches, merging as each is ready (§23 #96): 0 carry-over row 405 first; 1 **Voice slice** (built 2026-11-07, §23 #95: a per-layer Mode, Cloud or Voice; voices with their own streams, envelopes and a release that keeps spawning; MPE and CLAP note expressions; the sustain pedal); 2 **Full expression**; 3 **Pitch-sync and formant grains**; 4 **Microtuning**; 5 **Views and presets**; 6 **Close**. Together they deliver: Voice scheduler, polyphony, MPE, note expressions, polyphonic modulation, per-voice envelopes, pitch-sync/formant grains, microtuning. **Tagged 0.3.0**, unpublished | Listening gate. First-class hosts pass. |
 | **M4 Rhythmic** | Sync scheduler: grid, swing, probability, patterns, transport-stop/loop policies. **Tagged 0.4.0**, unpublished | Listening gate. Sync tests pass under loops and jumps. |
 | **M5 Synthesis and extremes** | Oscillator sources, synthetic grains, per-grain filters. Full theme support (§23 #72): a System choice that follows the OS, a high-contrast theme, more built-in themes, and user theme files. **Ships as 0.5.0: its betas, `0.5.0-beta.N`, are the first public releases,** and identities and parameter IDs freeze at the first (§18); the public nightly starts here (§19, §23 #61, #62) | Listening gate. Budget weights calibrated. |
 | **→ v1.0.0** | M0 to M5 polished (§23 #61; v1.0 followed M2 until 2026-10-29) | Success criteria (§10) met. Factory preset order frozen; the CPU gate turns blocking (§16, §19). |
@@ -3379,7 +3570,9 @@ director made the call.
 | 91 | The Linux baseline moves to Ubuntu 24.04 | **The director's decision of 2026-11-03** ("can we update the ubuntu image? i think we should update intent 15 to reflect 24.04"), a Part II change made with M2's close (Task 22): **the Linux baseline is Ubuntu 24.04**, and the effect is intended: the Linux products need 24.04's glibc (2.39) and no longer run on 22.04 (glibc 2.35). CI's Linux leg moves from `ubuntu-22.04` to `ubuntu-24.04` and takes gcc-13 from that release's own archive: the `ubuntu-toolchain-r/test` PPA step goes, and `scripts/bootstrap-linux.sh` drops its PPA branch and refuses 22.04 (exit 1, naming the baseline), since its archive has no gcc-13 and a build there would be no baseline's; the fresh-container job runs in `ubuntu:24.04`. The leg's check becomes "Linux products need no libstdc++ or glibc newer than Ubuntu 24.04's": the ceilings are read on the runner, with `strings` on its `libstdc++.so.6` and `libc.so.6`, after both packages are confirmed as Ubuntu's (neither the installed version nor a candidate at or above it from an origin other than ubuntu.com, and an upstream version a noble pocket lists; other PPAs the image carries don't matter), and are not written into the workflow, except that the runner's glibc must be exactly the documented 2.39, so the image drifting from the docs fails; a product needing a `GLIBCXX`, `CXXABI` or (new) `GLIBC` version above them, or exporting a `std::` symbol, fails. With libstdc++ linked statically (kept, §23 #65), glibc is the real floor. GCC 13 stays the compiler, and the `linux-gcc13` preset keeps its name (it names the compiler). The Linux leg's ccache key, which carries the image, misses once; the Linux benchmark baseline's remake (the close's Task 19) uses runs from the 24.04 image. Part II's §15 Linux line and §19's Linux installer line are edited. *Decided 2026-11-03 by the director; written by Task 22's implementer.* |
 | 92 | The director's M2 gate verdicts (2026-11-03) | **The M2 listening gate's 40 items** (`docs/listening/m2-gate/README.md`), the director's words: "1) keep, 2) change, 3) yes for hq, but why does 3 tiers have clicks and pops? 4) keep, 5) accept, 6) keep, 7 keep, 8 keep, 9 keep, 10 keep" and "11 no, 12 keep, 13 bounded, 14 fine" and "15 yes, 16 the pad path has a bunch of static in it", "17 accept", and "i don't understand what you're asking in 18; 19 ok, 20 ok, 21 ok, 22 ok23 ok, 24 ok 25 ok, 26 ok" and "all of 40a-h pass" and "32-39 all passed s1-s10" (the host matrix, 2026-11-03), "18 is fine" (in a host) and "16 sounds fine now" (after the re-render), "27 accept, 28 accept, 29 live-input, 30 none, 31 yes" (on 29 he confirmed "Strike live-input"). **1** keep: the pad shares amplitude (D1). **2** change: the director wants a grain stream that continues through the release, built in M3 with the Voice scheduler (carry-over row 404); grains stop spawning at note-off, so Env's release is heard only in the last grains and the reverb's tail. No code changes in M2. **3** yes: HQ earns its weight. Answer to his question: the clicks in the engine pack's `01-three-tiers` were layer B's material, not the tiers (`loop-48k.wav` is 30 ms noise bursts with an instant attack, and 80 ms grains at Spray 100% and +7 replay the onsets: layer B alone scored clickScore 14.2 at Eco, 14.2 at Normal and 13.7 at HQ, layer A alone 2.5, the mix 6.8 to 7.6); `01` is re-rendered with layer B over `sine-330.wav` and scores 2.51 (RMS −22.9, −22.8 and −23.2 dBFS by tier). **4** keep the steal threshold; **5** accept HQ's weak spot (closes row 308); **6** keep the Peak limiter; **7** keep the Spectral kind's width; **8** accept the switch gap; **9** accept the delay's squash; **10** accept Reverb Modulation's bend. **11** none: no preset to cut or redo; **12** keep INIT at Position 0; **13** bounded: Infinite Regress stays bounded; **14** fine: the Mutate ladder's family behavior is accepted, with no filter-type lock. **15** yes: the snapshots look right. **16** yes, on the re-render ("sounds fine now"): the static was `03-pad-path`'s own layer C (white noise at amplitude 0.5, weighted in everywhere but corners A, B and D; clickScore 3.63 as played, 0.00 with layer C off); the pack's `03` is re-rendered with layer C a 550 Hz sine (clickScore 2.02) and the director found it fine. **17** accept: the pad's double-click as two undo entries. **18** no click: the director didn't follow the question as first written, so it was rewritten in plain steps and moved to the host matrix as item 40i; he tried it in a host and said "18 is fine" (row 352 closed). **19 to 25** ok: row 387's strings stand as written (row 387 closed). **26** ok: the gained content's noise floors are accepted (row 394 closed). **27** accept Shard Storm's ticks; **28** accept 17 and 18 as described (row 395 closed). **29** strike the `live-input` tag, keeping every other word; the strike is a code task (Task 17b), and row 396 closes when it lands. **30** none: no rename. **31** yes: the dark browser's list ground looks right (row 397 closed). **32 to 39** pass: all eight cells (Live 12 VST3 and AU, Bitwig CLAP and VST3, both products) passed every step S1 to S10, S5's frozen ring held across save and reopen, S9's editor without attaching (row 232, already closed) and Live AU's S10 (clap-wrapper `4585bc6`) among them; S7's frame-time numbers and S8's thread-pool notes were not given (asked). No carry-over row names these items. **40** pass: 40a to 40h all pass (40i is item 18). **Every item is answered: the gate is complete, 2026-11-03.** S7's frame-time numbers and S8's thread-pool notes were not given (the idle run measures the canvas). The five non-accepts and their homes: 2, row 404 for M3's Voice scheduler (not built now); 3, `01-three-tiers` re-rendered over a sine; 16, `03-pad-path`'s layer C a 550 Hz sine; 18, rewritten as 40i and answered no click; 29, the `live-input` strike, Task 17b (row 396 closes when it lands). Rows closed by the verdicts: 308, 352, 387, 394, 395 and 397. *Decided 2026-11-03 by the director; written by Task 17a's implementer.* |
 | 93 | M2's close (sub-project 7): the consistency pass, the burn-down, the build setup, the gate and the release commit | **What the close delivered** (2026-11-02 to 2026-11-03, PR #31; spec `docs/superpowers/specs/2026-11-02-m2-close-design.md`, built). **The consistency pass** (`docs/m2-consistency-review.md`): 8 conflicts decided by the director as #78 to #85, 69 drifts and 2 defects fixed (#89). **The carry-over** burned down from 80 open rows to 15, with rows 403 and 404 added; the 15 are upstream-blocked (85, 87, 88, 218, 233), M3's (184, 404), 1.0.0's and M5's (144, 307), the baselines (305), the watch rows (234, 403), and a record, a widget note and an x86 check (382, 330, 356). **A from-scratch build setup:** the bootstrap scripts (`scripts/bootstrap-macos.sh`, `bootstrap-linux.sh`, `bootstrap-windows.ps1`), a README "Building from source" section and the CI checks that run them in a fresh container. **Diagnostics:** the ring reader's (row 403) and the Rosetta slice's (row 234); neither reproduced, so both stay **watch rows**, not fixes. **The dependency upgrades** (#90, #91) and **the gate** (#92: all 40 items and the eight host cells answered). **The idle figures** (§16, Part II edited, `docs/benchmarks/`): X 19.4% at block 256 against the published 19.5%, the canvas 2.85 ms at 8,192 grains, Space 0.138%, the chain 0.056%, the Spectral stage 0.128% (row 372), HQ 6.87 / 7.42 / 7.88 times Normal (row 307, weights unchanged). **The baselines** remade from three full-length runs at `ca60f54` (`linux-gcc13` and `windows-clangcl`: the EPYC 7763 entries replaced, the 9V74 entries new; `engine-layers-full` settled with no regression on Linux 7763 in two runs). **The US-spelling sweep** (the rename of "programme" and the rest). **Part II text** that earlier tasks added without a row of their own: §18's same-name search step (row 401: a content reference found by its name in the last load folder and under the sample folder), and §14's onset fade, Spectral and `LivePeaks` text. **The release commit:** `GG_VERSION_PRERELEASE` emptied (0.2.0), `docs/releases/v0.2.0.md`, §20's M2 row closed, CLAUDE.md's "Where we are"; the program manager tags `v0.2.0`, a draft that stays unpublished (#62). *Decided 2026-11-03 by the director (the brief's items, #78 to #92) and the M2 close worker.* |
-| 94 | M3's program: Voice as a per-layer mode, the LinnStrument and the keyboard, a playable slice first | **The director's decisions of 2026-11-07** (brainstorming; `docs/superpowers/specs/2026-11-07-m3-program-design.md` §2): **(1)** Voice is a scheduler mode per layer beside Cloud (option A of two): a layer's **Mode** is Cloud (today's behavior, the default) or Voice, where every note-on starts a voice with its own stream, pitch, envelopes, expression and a release that keeps spawning (carry-over rows 404 and 184); declined: (B) the instrument always plays voices. **(2)** The players are "a linnstrument or a keyboard": MPE is first-class from the first sub-project, with the sustain pedal and polyphony for pedaled chords (16 voices a layer, stolen with a fade). **(3)** The default expression: pressure to Density and a little Level, timbre (Y, CC 74) to Position, velocity to Level and a little Size ("density shift probably, although you tell me what you think is more musical"; Claude's addition of Level approved). **(4)** Pitch-sync is a per-layer Clock (Free or Pitch) inside Voice mode, the note's frequency the grain rate and Pitch the formant; microtuning is MTS-ESP, then a Scala `.scl`/`.kbm`, then 12-TET; the mod matrix is evaluated per voice on Voice layers ("looks great"). **(5)** A playable slice first (option A of three, "go with recs"): sub-projects 1 Voice slice, 2 Full expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets, 6 Close; declined: engine first, and three big sub-projects. **(6)** Row 405 is fixed first, its own pull request. **Claude's provisional calls P1 to P8** (the program design's §2a, made overnight at the director's request, "please progress this as much as possible while i'm asleep"; each stands until the director overrules it): P1 the instrument's INIT stays at Mode Cloud; P2 MPE, MPE Bend Range and Bend Range are instance parameters a preset load keeps, MPE Off by default; P3 sub-project 1 builds the three input paths (CLAP note expressions, MIDI-MPE, `clap_plugin_as_vst3`), the AU's MPE blocked by clap-wrapper (its wish already in §15); P4 a route's Voice-only flag and factory routes 13 to 17, all Voice only; P5 CLAP per-note parameter modulation in sub-project 2; P6 voice handling in-house, so sst-voicemanager's planned §15 row is removed; P7 a per-voice source on a target that isn't per voice reads the newest sounding voice; P8 the pedal and counted note identity reach Cloud layers and the FX too. *Decided 2026-11-07 by the director (1 to 6) and, provisionally, by Claude (P1 to P8).* |
+| 94 | M3's program: Voice as a per-layer mode, the LinnStrument and the keyboard, a playable slice first | **The director's decisions of 2026-11-07** (brainstorming; `docs/superpowers/specs/2026-11-07-m3-program-design.md` §2): **(1)** Voice is a scheduler mode per layer beside Cloud (option A of two): a layer's **Mode** is Cloud (today's behavior, the default) or Voice, where every note-on starts a voice with its own stream, pitch, envelopes, expression and a release that keeps spawning (carry-over rows 404 and 184); declined: (B) the instrument always plays voices. **(2)** The players are "a linnstrument or a keyboard": MPE is first-class from the first sub-project, with the sustain pedal and polyphony for pedaled chords (16 voices a layer, stolen with a fade). **(3)** The default expression: pressure to Density and a little Level, timbre (Y, CC 74) to Position, velocity to Level and a little Size ("density shift probably, although you tell me what you think is more musical"; Claude's addition of Level approved). **(4)** Pitch-sync is a per-layer Clock (Free or Pitch) inside Voice mode, the note's frequency the grain rate and Pitch the formant; microtuning is MTS-ESP, then a Scala `.scl`/`.kbm`, then 12-TET; the mod matrix is evaluated per voice on Voice layers ("looks great"). **(5)** A playable slice first (option A of three, "go with recs"): sub-projects 1 Voice slice, 2 Full expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets, 6 Close; declined: engine first, and three big sub-projects. **(6)** Row 405 is fixed first, its own pull request. **Claude's calls P1 to P8** (the program design's §2a, made overnight at the director's request, "please progress this as much as possible while i'm asleep", and approved by the director on waking): P1 the instrument's INIT stays at Mode Cloud; P2 MPE, MPE Bend Range and Bend Range are instance parameters a preset load keeps, MPE Off by default; P3 sub-project 1 builds the three input paths (CLAP note expressions, MIDI-MPE, `clap_plugin_as_vst3`), the AU's MPE blocked by clap-wrapper (its wish already in §15); P4 a route's Voice-only flag and factory routes 13 to 17, all Voice only; P5 CLAP per-note parameter modulation in sub-project 2; P6 voice handling in-house, so sst-voicemanager's planned §15 row is removed; P7 a per-voice source on a target that isn't per voice reads the newest sounding voice; P8 the pedal and counted note identity reach Cloud layers and the FX too. *Decided 2026-11-07 by the director (1 to 6); P1 to P8 proposed by Claude overnight and approved by the director the same day ("1) approved, 2) approved": the program design and its calls, P1 and P2 by name).* |
+| 95 | M3 sub-project 1 (the Voice slice): a per-layer Mode, voices, MPE and note expressions, the pedal, per-voice modulation, five Voice-only factory routes | **Built** (2026-11-07; `docs/superpowers/specs/2026-11-07-m3-voice-design.md`; branch `m3-voice`, draft PR #37): **Mode** per layer (Cloud, the default, or Voice; §14, §18); up to 16 voices a layer, each a `CloudScheduler` keyed `stream = 1 + ordinal` and merged by onset; the note table (128 notes, identity by CLAP ID or the oldest on the (channel, key) pair; carry-over row 184 closed), the sustain pedal, and the stream through the release (row 404 closed); per-voice Env 1 amplitude, Env 2, Pressure, Timbre, Note Pitch and Release Velocity as sources, per-voice routes with a **Voice only** flag; bend with **MPE**, **MPE Bend Range** and **Bend Range** (the four new parameters, seven slots (Mode in each of four layers, plus MPE, MPE Bend Range and Bend Range), 290 slots in all, IDs append-only); the input paths (CLAP note IDs and expressions, MIDI-MPE, CC 64 and CC 74, poly aftertouch, `clap_plugin_as_vst3`, `CLAP_EVENT_NOTE_END`; §15); voice headroom (V7, `1 / sqrt(n)` per voice grain; the director: "yes voice lyaers should get automatic headroom", the form Claude's; row 411 closed, `11ba5b5`; seven goldens regenerated); the instrument's tail 132.5 s; Mutate re-keyed by CLAP ID; `gg-render`'s voice spec keys and eight goldens (68 cases, 116 goldens with the presets; every earlier WAV SHA-256 unchanged); `gg-bench`'s report-only `engine-voices`; the Edit and FX placements (§17); `docs/m3-carry-over.md` split from M2's (rows 406 to 422 new). **The director's decisions** are #94. **The director approved V1, V2, V3, V4 and B10 by name** (2026-11-07, on waking: "1) approved, 2) approved, 3) approved, 4) sounds fine, 5 will have to wait"; item 1 approved the program design and its P1 to P8, item 2 P1 and P2 by name, item 3 the calls named here, item 4 deferred gain staging, which he then asked for in this sub-project as V7 ("yes voice lyaers should get automatic headroom"), item 5, hands-on LinnStrument and keyboard play, is later). **The calls V1 to V6** (spec §3; V1 to V4 the director's now, V5 and V6 Claude's, standing until the director overrules them; V7, added later, is the director's request with Claude's form): V1 Env 1 is a voice's amplitude, its value at a grain's peak latched into the grain's gain (declined: four per-layer amp parameters; an implied amplitude); V2 notes don't freeze an FX Voice layer, its Freeze parameter alone does; V3 a voice's pitch is latched per grain; V4 a stolen voice stops spawning and its grains play out (the window is the fade), the cap counting spawning voices, the oldest released then the oldest held stolen; V5 factory routes 44 to 48; V6 Pressure, Timbre and Note Pitch are 0 until a voice has a value. **Rulings B1 to B10** (spec §3a; B1 to B9 Claude's, standing until the director overrules them; B10 the director's): B1 every cell is applied while a Voice layer has a sounding voice; B2 no double counting of a per-voice route; B3 at Voice the layer's Cloud stream doesn't schedule; B4 per-voice sources on targets that aren't per voice read the instance-wide values; B5 a short tap keeps its gate for one cell; B6 grains sum in spawn order across a layer's voices and a stolen voice has no steal fade of its own; B7 the direct bend's center is exact; B8 a voice held at Sustain 0 stops spawning; B9 Note Pitch includes the tuning expression; B10 a switch to Voice starts no voices for held notes (the director's, row 413). **Amendments to the program design:** **P4** (slots 13 to 17) is amended by V5 to slots 44 to 48, because the Mod view adds a user's first route at the first free slot from 13; **P7** (a per-voice source on a non-per-voice target reads the newest sounding voice) is amended by B4, so no Cloud render moves. **Open:** the factory depths (row 418) and Live's VST3 delivery (row 410), for the director's ears and hosts. **Validators** (Linux, Task 7): clap-validator 71 passed, 0 failed, 10 skipped; pluginval strictness 10 SUCCESS; Steinberg's VST3 validator 94 of 94. *Decided 2026-11-07 by the director (V1 to V4, B10 and the answers above) and by Claude, provisionally (V5, V6, B1 to B9), on the director's #94.* |
+| 96 | M3's sub-projects run in parallel, not in series | **The director's decision of 2026-11-07:** "keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input". This overrides §23 #87 (M3 as M1 was run: one session, serial sub-projects, parallel tasks inside each) for the rest of M3: sub-projects 2 (Full expression), 3 (Pitch-sync) and 4 (Microtuning) are specified and planned in parallel, each on its own branch (`m3-sp2-expression`, `m3-sp3-pitchsync`, `m3-sp4-tuning`) beside sub-project 1 on `m3-voice`, and each merges as it is ready, the later one merging the merged result and re-verifying, as M2's waves did (§23 #84, #88); the work goes on without waiting for input, and the director's questions collect in each spec's forced choices and the gate. A Part II change: §19's and §20's description of how M3 runs is amended. *Decided 2026-11-07 by the director.* |
 
 **Key sources** (checked 2026-10-26):
 - clap-wrapper releases (v0.17.0, 2026-10-20): https://github.com/free-audio/clap-wrapper/releases
