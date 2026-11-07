@@ -244,13 +244,15 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
     // elements, 2,047 bytes, to sub-project 2's merge's (13,048, 6e2115f1...; 13,157,
     // 5573ae15...). Retaken once more for M3 sub-project 1's seven parameters (A to D Mode, MPE,
-    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...).
+    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...), and for
+    // M3 sub-project 4's MTS-ESP, one <p> element, 48 bytes (15,495, 5a08f6f4...; 15,604,
+    // 038a7079...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 15447);
-    CHECK(sha256Of(ptch) == "252fd91eccd37cf3fed3ff550e00a6b11feac948914c80b7dee970a986eb11bc");
-    CHECK(session.size() == 15556);
-    CHECK(sha256Of(session) == "79706b53e86d6f2390d709fab76b219dc93e5fab3cdedca751151027d3182f59");
+    CHECK(ptch.size() == 15495);
+    CHECK(sha256Of(ptch) == "5a08f6f4b53204d903aa12d3330f91b89e1cdf5a47eadc3473b1f6e019908d96");
+    CHECK(session.size() == 15604);
+    CHECK(sha256Of(session) == "038a7079e46b281d57cbc82464e244cd9094b26f16295919cf4098de18322e2b");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -514,7 +516,8 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     // 58a43b60...); retaken at M3 Voice's Task 4: the five voice-only factory routes (44 to 48)
     // add 784 bytes, so INIT's are 17,303 7211d643... and 17,304 36b032f0..., and without them the
     // pins above stand), and again for sub-project 1's seven
-    // parameters, 352 bytes more, 17,655 5337a57b... and 17,656 81fb0c52...).
+    // parameters, 352 bytes more, 17,655 5337a57b... and 17,656 81fb0c52...; sub-project 4's
+    // MTS-ESP, 48 more, 17,703 91370a41... and 17,704 3de8673c...).
     const SessionState fx = initState(Mode::Fx);
     CHECK(fx.values[at(ParamSlot::Size)] ==
           gg::core::paramMeta(ParamSlot::Size, Mode::Fx).defaultVal);
@@ -522,12 +525,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 17655);
-    CHECK(sha256Of(fxBytes) == "5337a57bc546f56960c233796bf1c6cef26547c632db1563054ad02fc36e1355");
+    CHECK(fxBytes.size() == 17703);
+    CHECK(sha256Of(fxBytes) == "91370a41e387150f511d5319b19afc1e6f52c65069afcb5c51e1d90a39ade71b");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 17656);
+    CHECK(instBytes.size() == 17704);
     CHECK(sha256Of(instBytes) ==
-          "81fb0c5209bb7ff0fd75b80cfba4aa1164decd13c13cca6f6f01758f9e92df2e");
+          "3de8673c1b7ea7cb0528f18349d7d53872e9fbd7e79f424604c03905dab7ecbb");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());
@@ -739,7 +742,8 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
     }
 
     // The three MIDI settings are kept the same way (M3 sub-project 1's spec §4.1).
-    for (const ParamSlot s : {ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange})
+    for (const ParamSlot s :
+         {ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange, ParamSlot::MtsEsp})
     {
         CHECK(gg::core::isMidiSetting(s));
         CHECK(loaded[static_cast<std::size_t>(s)] == 0.25f);

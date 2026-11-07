@@ -1324,3 +1324,26 @@ TEST_CASE("changing a ring parameter does not mark the loaded preset edited", "[
     plugin.flush(none.list());
     CHECK(impl.presetEdited());
 }
+
+TEST_CASE("preset load and INIT keep MTS-ESP", "[plugin][preset]")
+{
+    // M3 sub-project 4's spec §5.1: MTS-ESP is the instance's, kept by a factory preset load and by
+    // INIT; both stay Off.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    SessionState session = gg::core::initState(mode);
+    session.values[at(ParamSlot::MtsEsp)] = 0.0f;
+    SessionState preset = fixtureState(mode);
+    preset.values[at(ParamSlot::MtsEsp)] = 1.0f;
+    const std::string location =
+        utf8(gg::test::writePresetFile("mts-" + tagOf(mode), infoFor(mode), preset));
+
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.load(gg::core::encodeState(session)));
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    CHECK(plugin.value(paramId(ParamSlot::MtsEsp)) == 0.0);
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
+    CHECK(plugin.value(paramId(ParamSlot::MtsEsp)) == 0.0);
+}

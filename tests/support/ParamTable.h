@@ -174,9 +174,10 @@ inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
 }};
 // The parameters that are neither automatable nor modulatable: every layer's Ring Length, which the
 // main thread resizes (M2 sub-project 2's spec §5, §6.3).
-// The three MIDI globals are fixed too (M3 sub-project 1's spec §4.1).
-inline constexpr std::array<clap_id, 7> kFixedIds{0x010040, 0x020040, 0x030040, 0x040040,
-                                                  0x000022, 0x000023, 0x000024};
+// The three MIDI globals are fixed too (M3 sub-project 1's spec §4.1), and MTS-ESP (sub-project 4's
+// spec §5.1).
+inline constexpr std::array<clap_id, 8> kFixedIds{0x010040, 0x020040, 0x030040, 0x040040,
+                                                  0x000022, 0x000023, 0x000024, 0x000038};
 // The new globals, the last slots but the Extremes' eight: M2 sub-project 1's nine, then
 // sub-project 3's Budget, in its reserved block (its spec §6.4, §6.8), a count of Normal stereo
 // grains.
@@ -213,8 +214,13 @@ inline constexpr std::array<ParamRow, 3> kMidiGlobalRows{{
     {0x000023, "MPE Bend Range", 1.0f, 96.0f, 48.0f, true},
     {0x000024, "Bend Range", 0.0f, 24.0f, 2.0f, true},
 }};
+// M3 sub-project 4's MTS-ESP (its spec §5.1), global 0x38: Off/On, On by default, stepped, neither
+// automatable nor modulatable; the instance's, like the MIDI settings.
+inline constexpr std::array<ParamRow, 1> kTuningGlobalRows{{
+    {0x000038, "MTS-ESP", 0.0f, 1.0f, 1.0f, true},
+}};
 
-// All 290 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 291 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -293,6 +299,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             push(r.id, r.name, r);
         }
         for (const ParamRow &r : kMidiGlobalRows)
+        {
+            push(r.id, r.name, r);
+        }
+        for (const ParamRow &r : kTuningGlobalRows)
         {
             push(r.id, r.name, r);
         }

@@ -287,6 +287,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         ParamSlot::Mpe,
         ParamSlot::MpeBendRange,
         ParamSlot::BendRange,
+        ParamSlot::MtsEsp,
     };
     for (const LayerParam p :
          {LayerParam::Mode, LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
@@ -302,7 +303,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 62 + 4 + 3);
+    REQUIRE(expectedStructural.count() == 62 + 4 + 4);
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -327,7 +328,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 175);
+    CHECK(bOn.count() == 176);
     LockSet unlocked = ~bOn;
     CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
@@ -368,7 +369,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 228);
+    CHECK(bOff.count() == 229);
     CHECK((bOff & ~bOn).count() == 53);
 
     // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".
@@ -450,6 +451,21 @@ TEST_CASE("mutate's jitter is centered and bounded by the amount", "[core][mutat
     }
     CHECK(lo - meta.minVal < 0.01f * range);
     CHECK(meta.maxVal - hi < 0.01f * range);
+}
+
+TEST_CASE("mutate never moves MTS-ESP", "[core][mutate]")
+{
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        ParamValues in = defaults(mode);
+        in[idx(ParamSlot::MtsEsp)] = 0.0f;
+        const LockSet locks = defaultMutateLocks(in, mode);
+        for (uint32_t counter = 0; counter < 100; ++counter)
+        {
+            const ParamValues out = mutated(in, locks, 1.0f, kSeed, counter, mode);
+            REQUIRE(out[idx(ParamSlot::MtsEsp)] == 0.0f);
+        }
+    }
 }
 
 TEST_CASE("mutate is allocation-free", "[core][mutate][rt]")

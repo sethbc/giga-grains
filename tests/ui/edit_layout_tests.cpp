@@ -229,7 +229,8 @@ TEST_CASE("Mode sits beside Source and the MIDI settings are the FX view's", "[u
                                      gg::core::layerSlot(LayerParam::Mode, layer)});
     }
     CHECK(gg::ui::slotsIn(Panel::Midi, 0) ==
-          std::vector<ParamSlot>{ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange});
+          std::vector<ParamSlot>{ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange,
+                                 ParamSlot::MtsEsp});
     CHECK(gg::ui::slotsIn(Panel::Midi, 3) == gg::ui::slotsIn(Panel::Midi, 0));
     CHECK(std::string(gg::ui::panelName(Panel::Midi)) == "MIDI");
     for (const ParamSlot slot : gg::ui::slotsIn(Panel::Midi, 0))
