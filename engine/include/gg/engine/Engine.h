@@ -112,11 +112,12 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// non-decreasing onsets, as its ledger and steal cursor need, and the order depends on neither
 /// the slots nor the block boundaries. Their grains share the layer's one pool, quota and
 /// ladder, and are summed in spawn order like any others. A voice grain's gain is its draw's ×
-/// VoiceParams::gain × amp.valueAt(onsetSample + trunc(durationSamples / 2)), in double, rounded
-/// to float once; GrainSpec::voice carries the ordinal. A finished voice (finishVoice) stops
-/// spawning and its grains play out their windows: no grain is cut. The Spectral Smear keeps
-/// reading the layer's Cloud parameters' Position. With voice mode off (the default) the engine
-/// is the Cloud engine above, bit for bit.
+/// VoiceParams::gain × amp.valueAt(onsetSample + trunc(durationSamples / 2)) × 1 / sqrt(n), in
+/// double, rounded to float once (V7's headroom: n is the layer's spawning voices, counted once a
+/// process() call, so one voice is unchanged and n is block-size invariant); GrainSpec::voice
+/// carries the ordinal. A finished voice (finishVoice) stops spawning and its grains play out their
+/// windows: no grain is cut. The Spectral Smear keeps reading the layer's Cloud parameters'
+/// Position. With voice mode off (the default) the engine is the Cloud engine above, bit for bit.
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
 /// positions), the output and the grain events are bit-identical however the host splits blocks
