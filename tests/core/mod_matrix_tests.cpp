@@ -461,6 +461,14 @@ TEST_CASE("a route reaches the layers it names", "[core][mod]")
     }
 }
 
+TEST_CASE("Clock is no route target", "[core][mod]")
+{
+    // M3 sub-project 3's spec §4.1: Clock is structure, so no route reaches it.
+    CHECK_FALSE(isValidTarget(ParamSlot::Clock));
+    CHECK_FALSE(isValidTarget(ParamSlot::B_Clock));
+    CHECK_FALSE(isValidTarget(ParamSlot::D_Clock));
+}
+
 TEST_CASE("wave-2 layer parameters are valid targets", "[core][mod]")
 {
     // M2 sub-project 4's spec §6.3, §6.7: layer A's slots of the Extremes' layer parameters are
@@ -511,7 +519,8 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         const auto ref = gg::core::layerOf(slot);
         const bool control =
             ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16) ||
-                    ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode);
+                    ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode ||
+                    ref->param == LayerParam::Clock);
         const bool expected = !gg::core::isMacro(slot) && !control &&
                               !gg::core::isMidiSetting(slot) &&
                               (ref ? ref->layer == 0
@@ -521,10 +530,10 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         CHECK(isValidTarget(slot) == expected);
         valid += isValidTarget(slot) ? 1 : 0;
     }
-    // Mode and the three MIDI settings (M3 sub-project 1) are no target: none is counted here.
-    // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length),
-    // sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven but
-    // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
+    // Mode, Clock and the three MIDI settings (M3 sub-projects 1 and 3) are no target: none is
+    // counted here. 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring
+    // Length), sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's
+    // seven but Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
     CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8);
     CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
@@ -572,7 +581,8 @@ TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[
         INFO("index " << index);
         CHECK(isModulatorControl(param) == control);
         CHECK(isValidTarget(layerSlot(param, 0)) ==
-              (!control && param != LayerParam::RingLength && param != LayerParam::Mode));
+              (!control && param != LayerParam::RingLength && param != LayerParam::Mode &&
+               param != LayerParam::Clock));
         for (uint8_t layer = 1; layer < kLayers; ++layer)
         {
             CHECK_FALSE(isValidTarget(layerSlot(param, layer)));

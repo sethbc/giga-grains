@@ -53,6 +53,8 @@ LockSet buildStructuralLocks() noexcept
         lock(layerSlot(LayerParam::Quality, layer));
         // M3 sub-project 1: Mode is structure, as Source is.
         lock(layerSlot(LayerParam::Mode, layer));
+        // M3 sub-project 3: Clock is structure too (what times the grains).
+        lock(layerSlot(LayerParam::Clock, layer));
     }
     // The MIDI settings are the instance's, not the sound's (M3 sub-project 1's spec §4.1).
     lock(ParamSlot::Mpe);

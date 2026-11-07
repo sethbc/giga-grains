@@ -20,6 +20,14 @@
 
 namespace gg
 {
+/// A layer's Clock (M3 sub-project 3's spec §4.1): Free, M2's scheduler, or Pitch, one grain a
+/// period of the note's pitch.
+enum class Clock : uint8_t
+{
+    Free,
+    Pitch,
+};
+
 /// The controls of one Cloud grain stream. CloudScheduler::setParams sanitizes them: a
 /// non-finite value becomes the default, then every value is clamped to the range given here.
 /// Position and spray depend on the scheduler's source mode (ruling M1-k).
@@ -179,6 +187,9 @@ struct GrainDraw
 class CloudScheduler
 {
   public:
+    /// Periods of the note's pitch in one second of Size (Pitch clock; spec S1): 40/3.
+    static constexpr double kPeriodsPerSizeSecond = 40.0 / 3.0;
+
     /// The floor on Δ(k) (ruling M1-g). At d = 1 an interval P × E(k) can be arbitrarily small
     /// (it is 0 when u(k) = 0), so without a floor nothing would bound the number of onsets in
     /// one sample, and schedule() would have no bounded loop. With it, one schedule() call

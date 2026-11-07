@@ -188,6 +188,21 @@ std::string badInputOf(const nlohmann::json &j, const gg::render::RenderOptions 
 }
 } // namespace
 
+TEST_CASE("a preset source packs Clock", "[render]")
+{
+    auto j = fxTestJson();
+    j["params"]["A Clock"] = 1.0;
+    std::string error;
+    const auto source = gg::render::parsePresetSource(j.dump(), error);
+    INFO(error);
+    REQUIRE(source.has_value());
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    REQUIRE(gg::core::readPreset(pack(*source), Mode::Fx, info, state));
+    CHECK(state.values[static_cast<std::size_t>(gg::core::ParamSlot::Clock)] == 1.0f);
+    CHECK(state.values[static_cast<std::size_t>(gg::core::ParamSlot::B_Clock)] == 0.0f);
+}
+
 TEST_CASE("preset sources parse", "[render]")
 {
     const PresetSource fx = parseFixture("fx-test.json");

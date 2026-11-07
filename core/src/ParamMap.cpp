@@ -83,6 +83,18 @@ LayerMode layerModeOf(float value) noexcept
     return value >= 0.5f ? LayerMode::Voice : LayerMode::Cloud;
 }
 
+gg::Clock clockOf(float value) noexcept
+{
+    return value >= 0.5f ? gg::Clock::Pitch : gg::Clock::Free;
+}
+
+double noteFrequencyHz(double notePitch) noexcept { return kC4Hz * exp2Det(notePitch / 12.0); }
+
+double sizePeriods(float sizeLog2Seconds) noexcept
+{
+    return exp2Det(static_cast<double>(sizeLog2Seconds)) * kPeriodsPerSizeSecond;
+}
+
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept
 {
     switch (kind)

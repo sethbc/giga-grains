@@ -152,6 +152,10 @@ inline constexpr std::array<ParamRow, 5> kLayerASourcesRows{{
 inline constexpr std::array<ParamRow, 1> kLayerAModeRows{{
     {0x010031, "A Mode", 0.0f, 1.0f, 0.0f, true},
 }};
+// Layer A's Clock (M3 sub-project 3, pitch-sync; its spec §4.1), at 0x38: 0 Free, 1 Pitch.
+inline constexpr std::array<ParamRow, 1> kLayerAClockRows{{
+    {0x010038, "A Clock", 0.0f, 1.0f, 0.0f, true},
+}};
 // Layer A's Quality (M2 sub-project 3, Engine scale and quality; its spec §6.8), in its reserved
 // block: 0 Eco, 1 Normal, 2 HQ.
 inline constexpr std::array<ParamRow, 1> kLayerAEngineRows{{
@@ -248,6 +252,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         {
             push(r.id, r.name, r);
         }
+        for (const ParamRow &r : kLayerAClockRows)
+        {
+            push(r.id, r.name, r);
+        }
         for (const ParamRow &r : kLayerASourcesRows)
         {
             push(r.id, r.name, r);
@@ -271,6 +279,7 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         }
         layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
         layerA.insert(layerA.end(), kLayerAModeRows.begin(), kLayerAModeRows.end());
+        layerA.insert(layerA.end(), kLayerAClockRows.begin(), kLayerAClockRows.end());
         layerA.insert(layerA.end(), kLayerASourcesRows.begin(), kLayerASourcesRows.end());
         layerA.insert(layerA.end(), kLayerAEngineRows.begin(), kLayerAEngineRows.end());
         layerA.insert(layerA.end(), kLayerAExtremesRows.begin(), kLayerAExtremesRows.end());

@@ -7,7 +7,7 @@
 // §6.9: 48 per layer, A to D, and nine globals; 218 in all), M2 sub-project 2's five ring
 // parameters per layer (its spec §6.3), M2 sub-project 3's Quality, per layer, and Budget (its
 // spec §6.8), and the Extremes' eight per layer and eight globals (M2 sub-project 4's spec §6.7;
-// and M3 sub-project 1's Mode per layer and three MIDI globals; 63 per layer, 290 in all), and
+// and M3 sub-project 1's Mode per layer and three MIDI globals; 64 per layer, 294 in all), and
 // their versioned XML state, through gg-core's public API (gg/core/ParamIds.h,
 // gg/core/PatchState.h) and its tinyxml-free internal core/src/PatchXml.h, for each product's patch
 // XML. This file never includes sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges
@@ -299,8 +299,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 290);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 290>>);
+    STATIC_REQUIRE(kParamCount == 294);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 294>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -367,7 +367,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3);
+        CHECK(steppedCount == 4 * 11 + 1 + 4 + 3 + 4 + 3);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -427,7 +427,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     // 0x40 to 0x4F, 0x51 to 0x5F and 0x60 to 0x7F are free.
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
-    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x32u);
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x39u);
     STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x25u);
     uint32_t maxLayerIndex = 0;
     uint32_t maxGlobalIndex = 0;
@@ -502,13 +502,16 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 63);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 64);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Step16) == 0x30u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Mode) == 0x31u);
     STATIC_REQUIRE(gg::core::slotForId(0x040031) == ParamSlot::D_Mode);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Clock) == 0x38u);
+    STATIC_REQUIRE(gg::core::slotForId(0x010038) == ParamSlot::Clock);
+    STATIC_REQUIRE(gg::core::slotForId(0x040038) == ParamSlot::D_Clock);
     STATIC_REQUIRE(gg::core::slotForId(0x000022) == ParamSlot::Mpe);
     STATIC_REQUIRE(gg::core::slotForId(0x000024) == ParamSlot::BendRange);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::RingLength) == 0x40u);
@@ -714,7 +717,7 @@ TEST_CASE("the next free indices are unchanged", "[core]")
     // none of them. Of the other sub-projects' blocks (0x50 to 0x7F) sub-project 3's 0x50 is in
     // use, in every scope (Quality and Budget), and sub-project 4's 0x60 to 0x67, in every scope
     // too (its eight layer rows, the delay's and the limiter's eight globals).
-    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x32u);
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x39u);
     STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x25u);
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
@@ -808,6 +811,50 @@ TEST_CASE("the state lists every param in slot order", "[core]")
     CHECK(l.seed == 0u);
     CHECK(l.migratedFromVersion == 0u);
     CHECK(sameRoutes(l.routes, kFxRoutes));
+}
+
+TEST_CASE("a state without Clock reads Clock Free", "[core]")
+{
+    // S13: a state saved before M3 sub-project 3 has no Clock; every layer's loads Free, in
+    // either product, and every other value as saved.
+    using gg::core::LayerParam;
+    ParamValues saved = defaults();
+    saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        saved[static_cast<size_t>(gg::core::layerSlot(LayerParam::Clock, layer))] = 1.0f;
+    }
+    std::string state = toStateXml(saved, 3, kFxRoutes);
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        const auto tag =
+            R"(<p id=")" +
+            std::to_string(gg::core::paramId(gg::core::layerSlot(LayerParam::Clock, layer))) +
+            R"(" )";
+        const auto from = state.find(tag);
+        REQUIRE(from != std::string::npos);
+        const auto to = state.find("/>", from);
+        REQUIRE(to != std::string::npos);
+        state.erase(from, to + 2 - from);
+        REQUIRE(state.find(tag) == std::string::npos);
+    }
+    ParamValues expected = saved;
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        expected[static_cast<size_t>(gg::core::layerSlot(LayerParam::Clock, layer))] = 0.0f;
+    }
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "FX" : "instrument"));
+        Loaded l = distinct();
+        REQUIRE(l.load(state, mode));
+        CHECK(l.valueBits() == Loaded{expected, 3, 0}.valueBits());
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(l.values[static_cast<size_t>(gg::core::layerSlot(LayerParam::Clock, layer))] ==
+                  0.0f);
+        }
+    }
 }
 
 TEST_CASE("a param missing from a state takes the product's default", "[core]")

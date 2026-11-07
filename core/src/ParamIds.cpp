@@ -312,6 +312,16 @@ md_t layerMeta(LayerParam p, Mode mode)
             .withUnorderedMapFormatting({{0, "Cloud"}, {1, "Voice"}})
             .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
 
+    // M3 sub-project 3's spec §4.1.
+    case LayerParam::Clock:
+        // what times the grains, stepped 0..1 (gg::Clock): Free, M2's scheduler, by default.
+        return fresh()
+            .asInt()
+            .withRange(0.f, 1.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting({{0, "Free"}, {1, "Pitch"}})
+            .withFlags(kAutomatableModulatable | CLAP_PARAM_IS_STEPPED);
+
     // M2 sub-project 3's spec §6.1, §6.8.
     case LayerParam::Quality:
         // the grains' interpolation tier, stepped 0..2 (gg::Tier): Normal, M1's, by default.
