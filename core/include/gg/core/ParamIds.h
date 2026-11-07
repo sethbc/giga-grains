@@ -362,11 +362,11 @@ constexpr bool isMacro(ParamSlot slot) noexcept
     return slot >= ParamSlot::Macro1 && slot <= ParamSlot::Macro8;
 }
 
-/// (Layer indices 0x32-0x37 are sub-project 2's of M3 and 0x38-0x3B this one's, M3 sub-project 3's;
-/// 0x39 is the first of those left free, so this holds one past the table's largest.)
 /// The next free index below the reserved blocks in every layer scope (1 to 4) and in scope 0 (M2
 /// sub-project 1's spec §6.9): a new parameter outside wave 2's blocks takes it, and a test pins
-/// each as one past the table's largest index below kReservedIndexBegin.
+/// each as one past the table's largest index below kReservedIndexBegin. M3's parallel
+/// sub-projects hold layer indices 0x32-0x37 (expression, sub-project 2) and 0x38-0x3B
+/// (pitch-sync, sub-project 3, which uses 0x38 alone): a merge keeps the larger value.
 inline constexpr uint32_t kNextFreeLayerIndex = 0x39, kNextFreeGlobalIndex = 0x25;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,

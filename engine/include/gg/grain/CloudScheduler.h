@@ -214,7 +214,7 @@ struct GrainDraw
 class CloudScheduler
 {
   public:
-    /// Periods of the note's pitch in one second of Size (Pitch clock; spec S1): 40/3.
+    /// Periods of the note's pitch in one second of Size (Pitch clock; spec S3): 40/3.
     static constexpr double kPeriodsPerSizeSecond = 40.0 / 3.0;
 
     /// The floor on Δ(k) (ruling M1-g). At d = 1 an interval P × E(k) can be arbitrarily small
