@@ -26,7 +26,7 @@ namespace jcmp = sst::jucegui::components;
 
 constexpr int kRowHeight = 22;  // the letter, the toggles, Source and Level
 constexpr int kOnMinWidth = 24; // "On" and its pads, which the Freeze toggle may take the rest of
-constexpr int kLevelMinWidth = 28; // the Level track the Source menu may take the rest of
+constexpr int kLevelMinWidth = 24; // the Level track the Source menu may take the rest of
 
 /// The layer's letter in its color: a filled button, the letter dark on it.
 struct LetterButton final : jcmp::TextPushButton
