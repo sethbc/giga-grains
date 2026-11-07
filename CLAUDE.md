@@ -45,8 +45,10 @@ AGPL-3.0-or-later.
   `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the
   consistency pass, the carry-over burned down to 15 open rows, the from-scratch build setup, the
   gate, the idle figures and the release commit for v0.2.0 (the program manager tags it). **M3 is
-  next**, run as M1 was: one session, serial sub-projects, parallel tasks inside each (INTENT
-  §20, §23 #87). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  in progress** (since 2026-11-07), run as M1 was: one session, serial sub-projects, parallel
+  tasks inside each (INTENT §20, §23 #87, #94; `docs/superpowers/specs/2026-11-07-m3-program-design.md`:
+  0 row 405, 1 Voice slice, 2 Full expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets,
+  6 Close). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
