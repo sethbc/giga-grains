@@ -139,7 +139,8 @@ inline const clap_output_events *discardingOutputEvents() noexcept
 }
 
 /// A clap_output_events that records what the plugin pushes: the parameter value and gesture
-/// events in full, any other event by its header alone. With `capacity`, it accepts that many
+/// events and the note events (NOTE_END, M3 Voice spec §4.5) in full, any other event by its
+/// header alone. With `capacity`, it accepts that many
 /// pushes and refuses (try_push returns false) every one after, as a host's full queue may. The
 /// storage is reserved up front, so a push into it doesn't allocate (the [rt] tests).
 class OutputEvents
@@ -151,10 +152,11 @@ class OutputEvents
         clap_id paramId{CLAP_INVALID_ID}; ///< the value's and the gesture's
         double value{0.0};                ///< CLAP_EVENT_PARAM_VALUE's
         void *cookie{nullptr};            ///< CLAP_EVENT_PARAM_VALUE's
-        int32_t noteId{0};                ///< CLAP_EVENT_PARAM_VALUE's
+        int32_t noteId{0};                ///< CLAP_EVENT_PARAM_VALUE's and the note events'
         int16_t portIndex{0};
         int16_t channel{0};
         int16_t key{0};
+        double velocity{0.0}; ///< the note events'
     };
 
     explicit OutputEvents(std::size_t capacity = 4096) : capacity_(capacity)
@@ -197,6 +199,17 @@ class OutputEvents
                   header->type == CLAP_EVENT_PARAM_GESTURE_END))
         {
             e.paramId = reinterpret_cast<const clap_event_param_gesture *>(header)->param_id;
+        }
+        else if (header->space_id == CLAP_CORE_EVENT_SPACE_ID &&
+                 (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
+                  header->type == CLAP_EVENT_NOTE_CHOKE || header->type == CLAP_EVENT_NOTE_END))
+        {
+            const auto *n = reinterpret_cast<const clap_event_note *>(header);
+            e.noteId = n->note_id;
+            e.portIndex = n->port_index;
+            e.channel = n->channel;
+            e.key = n->key;
+            e.velocity = n->velocity;
         }
         self.events_.push_back(e); // within the reserved capacity: no allocation
         return true;
