@@ -2215,7 +2215,8 @@ TEST_CASE("specs send MIDI controls", "[render]")
         return bad;
     };
     CHECK(rejection(withControl("kind", "cc1")) ==
-          "controls[0].kind must be modWheel, aftertouch or pitchBend");
+          "controls[0].kind must be modWheel, aftertouch, pitchBend, sustain, timbre or "
+          "polyPressure");
     CHECK(rejection(withControl("value", 1.5)) == "controls[0].value must be from 0 to 1");
     CHECK(rejection(withControl("value", -0.1)) == "controls[0].value must be from 0 to 1");
     CHECK(rejection(withControl("value", nullptr)) == "controls[0].value is missing");
@@ -3199,4 +3200,161 @@ TEST_CASE("render spec route takes voiceOnly", "[render]")
     auto bad = j;
     bad["mod"][0]["voiceOnly"] = 1;
     CHECK(rejection(bad) == "mod[0].voiceOnly must be true or false");
+}
+
+TEST_CASE("render spec reads note ids, release velocity and expressions", "[render]")
+{
+    using gg::core::ControlKind;
+    using gg::core::NoteEventType;
+    auto j = instrumentJson();
+    j["notes"] = nlohmann::json::parse(R"([
+        {"time": 0.5, "key": 60, "duration": 1.0, "channel": 2, "id": 7, "releaseVelocity": 127,
+         "expressions": [{"time": 0.5, "kind": "tuning", "value": -1.5},
+                         {"time": 1.0, "kind": "pressure", "value": 0.25},
+                         {"time": 1.0, "kind": "brightness", "value": 0.5},
+                         {"time": 1.25, "kind": "volume", "value": 2.0}]},
+        {"time": 0.5, "key": 64, "duration": 1.0,
+         "expressions": [{"time": 0.75, "kind": "volume", "value": 0.5}]},
+        {"time": 2.0, "key": 67, "duration": 0.5},
+        {"time": 2.0, "key": 71, "duration": 0.5, "id": 7}])");
+    j["controls"] = nlohmann::json::parse(R"([
+        {"time": 1.0, "kind": "sustain", "value": 1.0},
+        {"time": 1.0, "kind": "timbre", "value": 0.75, "channel": 3},
+        {"time": 1.5, "kind": "polyPressure", "value": 0.5, "key": 64}])");
+    const RenderSpec spec = parseJson(j);
+    const auto &notes = spec.instrument.notes;
+    CHECK(notes[0].id == 7);
+    CHECK(notes[0].releaseVelocity == 127);
+    CHECK(notes[0].expressions.size() == 4);
+    CHECK(notes[1].id == -1);
+    CHECK(notes[1].releaseVelocity == 0);
+    CHECK(spec.instrument.controls[2].key == 64);
+    CHECK(spec.instrument.controls[0].key == -1);
+
+    const auto timedN = gg::render::timedNotes(notes, 48000.0, 168000);
+    REQUIRE(timedN.size() == 8);
+    // Frame order, Offs first on a frame: On(7), On(1000001) at 24000; Off(7), Off(1000001)
+    // at 72000; On(-1), On(7 again) at 96000; their Offs at 120000.
+    CHECK(timedN[0].event.noteId == 7);
+    CHECK(timedN[1].event.noteId == 1000001);
+    CHECK(timedN[0].event.type == NoteEventType::On);
+    CHECK(timedN[2].event.type == NoteEventType::Off);
+    CHECK(timedN[2].event.noteId == 7);
+    CHECK(timedN[2].event.releaseVelocity == 1.0f);
+    CHECK(timedN[3].event.releaseVelocity == 0.0f);
+    CHECK(timedN[4].event.noteId == -1);
+    CHECK(timedN[5].event.noteId == 7);
+    CHECK(timedN[6].event.noteId == -1);
+
+    const auto timedC = gg::render::timedControls(spec.instrument.controls, notes, 48000.0);
+    REQUIRE(timedC.size() == 8);
+    // Frames: 24000 tuning(7), 36000 volume(1000001), 48000 sustain, timbre, pressure(7),
+    // brightness(7), 60000 volume(7), 72000 polyPressure... in frame order, controls first.
+    std::vector<std::size_t> frames;
+    for (const auto &c : timedC)
+    {
+        frames.push_back(c.frame);
+    }
+    CHECK(frames ==
+          std::vector<std::size_t>{24000, 36000, 48000, 48000, 48000, 48000, 60000, 72000});
+    CHECK(timedC[0].event.kind == ControlKind::NoteTuning);
+    CHECK(timedC[0].event.noteId == 7);
+    CHECK(timedC[0].event.channel == 2);
+    CHECK(timedC[0].event.key == 60);
+    CHECK(timedC[0].event.value == -1.5f);
+    CHECK(timedC[1].event.kind == ControlKind::NoteVolume);
+    CHECK(timedC[1].event.noteId == 1000001);
+    CHECK(timedC[2].event.kind == ControlKind::Sustain);
+    CHECK(timedC[2].event.noteId == -1);
+    CHECK(timedC[3].event.kind == ControlKind::Timbre);
+    CHECK(timedC[3].event.channel == 3);
+    CHECK(timedC[4].event.kind == ControlKind::NotePressure);
+    CHECK(timedC[5].event.kind == ControlKind::NoteBrightness);
+    CHECK(timedC[6].event.kind == ControlKind::NoteVolume);
+    CHECK(timedC[7].event.kind == ControlKind::PolyPressure);
+    CHECK(timedC[7].event.key == 64);
+
+    // A spec with none of it sends what it always sent.
+    const auto plain =
+        gg::render::timedNotes(parseJson(instrumentJson()).instrument.notes, 48000.0, 168000);
+    for (const auto &n : plain)
+    {
+        CHECK(n.event.noteId == -1);
+        CHECK(n.event.releaseVelocity == 0.0f);
+    }
+}
+
+TEST_CASE("render spec refuses bad voice keys", "[render]")
+{
+    const auto withNotes = [](const std::string &notes) {
+        auto j = instrumentJson();
+        j["notes"] = nlohmann::json::parse(notes);
+        return j;
+    };
+    const auto expr = [](const std::string &time, const std::string &kind,
+                         const std::string &value) {
+        return R"([{"time": 0.5, "key": 60, "duration": 1.0, "expressions": [{"time": )" + time +
+               R"(, "kind": ")" + kind + R"(", "value": )" + value + "}]}]";
+    };
+    // The good one parses.
+    CHECK(parseJson(withNotes(expr("0.75", "volume", "1.0"))).instrument.notes.size() == 1);
+    CHECK(rejection(withNotes(expr("0.75", "vibrato", "1.0"))) ==
+          "notes[0].expressions[0].kind must be tuning, pressure, brightness or volume");
+    CHECK(rejection(withNotes(expr("0.25", "volume", "1.0"))) ==
+          "notes[0].expressions[0].time is outside its note: it must fall from the note's start "
+          "up to its end");
+    CHECK(rejection(withNotes(expr("1.5", "volume", "1.0"))) ==
+          "notes[0].expressions[0].time is outside its note: it must fall from the note's start "
+          "up to its end");
+    CHECK(rejection(withNotes(expr("0.75", "volume", "4.5"))) ==
+          "notes[0].expressions[0].value must be from 0 to 4");
+    CHECK(rejection(withNotes(expr("0.75", "tuning", "121"))) ==
+          "notes[0].expressions[0].value must be from -120 to 120");
+    CHECK(rejection(withNotes(expr("0.75", "pressure", "-0.1"))) ==
+          "notes[0].expressions[0].value must be from 0 to 1");
+    CHECK(rejection(withNotes(
+              R"([{"time": 0.5, "key": 60, "duration": 1.0, "expressions":
+        [{"time": 1.0, "kind": "volume", "value": 1.0}, {"time": 0.75, "kind": "volume",
+          "value": 1.0}]}])")) ==
+          "notes[0].expressions[1].time is before notes[0].expressions[0].time: list the "
+          "expressions in time order");
+    CHECK(rejection(withNotes(
+              R"([{"time": 0.5, "key": 60, "duration": 1.0, "releaseVelocity": 128}])")) ==
+          "notes[0].releaseVelocity must be an integer from 0 to 127");
+    CHECK(rejection(withNotes(R"([{"time": 0.5, "key": 60, "duration": 1.0, "id": -1}])")) ==
+          "notes[0].id must be an integer from 0 to 2147483647");
+
+    // A duplicate ID among overlapping notes; sequential notes may share one.
+    CHECK(rejection(withNotes(
+              R"([{"time": 0.5, "key": 60, "duration": 1.0, "id": 3},
+                  {"time": 1.0, "key": 62, "duration": 1.0, "id": 3}])")) ==
+          "notes[1].id 3 is also notes[0]'s, and the two overlap");
+    CHECK(parseJson(withNotes(R"([{"time": 0.5, "key": 60, "duration": 1.0, "id": 3},
+                                  {"time": 1.5, "key": 62, "duration": 1.0, "id": 3}])"))
+              .instrument.notes.size() == 2);
+    // An explicit ID that clashes with an assigned one.
+    CHECK(rejection(withNotes(
+              R"([{"time": 0.5, "key": 60, "duration": 1.0, "expressions":
+                   [{"time": 0.75, "kind": "volume", "value": 1.0}]},
+                  {"time": 0.5, "key": 62, "duration": 1.0, "id": 1000000}])")) ==
+          "notes[1].id 1000000 is also notes[0]'s, and the two overlap");
+
+    // Controls.
+    const auto withControl = [](const std::string &control) {
+        auto j = instrumentJson();
+        j["controls"] = nlohmann::json::parse("[" + control + "]");
+        return j;
+    };
+    CHECK(rejection(withControl(R"({"time": 1.0, "kind": "polyPressure", "value": 0.5})")) ==
+          "controls[0].key is required for polyPressure");
+    CHECK(rejection(
+              withControl(R"({"time": 1.0, "kind": "polyPressure", "value": 0.5, "key": 128})")) ==
+          "controls[0].key must be an integer from 0 to 127");
+    CHECK(rejection(withControl(R"({"time": 1.0, "kind": "sustain", "value": 1, "key": 60})")) ==
+          "controls[0].key is only for polyPressure");
+    CHECK(rejection(withControl(R"({"time": 1.0, "kind": "sustain", "value": 1.5})")) ==
+          "controls[0].value must be from 0 to 1");
+    CHECK(rejection(withControl(R"({"time": 1.0, "kind": "cc7", "value": 1.0})")) ==
+          "controls[0].kind must be modWheel, aftertouch, pitchBend, sustain, timbre or "
+          "polyPressure");
 }

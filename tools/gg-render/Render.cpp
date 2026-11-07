@@ -42,6 +42,76 @@
 
 namespace gg::render
 {
+std::vector<TimedNote> timedNotes(const std::vector<NoteSpec> &notes, double sampleRate,
+                                  std::size_t frames)
+{
+    using gg::core::NoteEventType;
+    std::vector<TimedNote> timed;
+    timed.reserve(2 * notes.size());
+    for (std::size_t i = 0; i < notes.size(); ++i)
+    {
+        const NoteSpec &n = notes[i];
+        const auto channel = static_cast<int16_t>(n.channel);
+        const auto key = static_cast<int16_t>(n.key);
+        const float velocity = static_cast<float>(n.velocity) / 127.0f;
+        const float release = static_cast<float>(n.releaseVelocity) / 127.0f;
+        const int32_t id = noteIdOf(notes, i);
+        timed.push_back({static_cast<std::size_t>(framesFor(n.timeSeconds, sampleRate)),
+                         {0, NoteEventType::On, channel, key, velocity, id, 0.0f}});
+        const auto off =
+            static_cast<std::size_t>(framesFor(n.timeSeconds + n.durationSeconds, sampleRate));
+        if (off < frames)
+        {
+            timed.push_back({off, {0, NoteEventType::Off, channel, key, velocity, id, release}});
+        }
+    }
+    std::stable_sort(timed.begin(), timed.end(), [](const TimedNote &a, const TimedNote &b) {
+        const bool aOn = a.event.type == NoteEventType::On;
+        const bool bOn = b.event.type == NoteEventType::On;
+        return a.frame < b.frame || (a.frame == b.frame && !aOn && bOn);
+    });
+    return timed;
+}
+
+std::vector<TimedControl> timedControls(const std::vector<ControlSpec> &controls,
+                                        const std::vector<NoteSpec> &notes, double sampleRate)
+{
+    using gg::core::ControlKind;
+    std::vector<TimedControl> timed;
+    timed.reserve(controls.size());
+    for (const ControlSpec &c : controls)
+    {
+        const ControlKind kind = c.kind == "modWheel"       ? ControlKind::ModWheel
+                                 : c.kind == "aftertouch"   ? ControlKind::Aftertouch
+                                 : c.kind == "sustain"      ? ControlKind::Sustain
+                                 : c.kind == "timbre"       ? ControlKind::Timbre
+                                 : c.kind == "polyPressure" ? ControlKind::PolyPressure
+                                                            : ControlKind::PitchBend;
+        timed.push_back(
+            {static_cast<std::size_t>(framesFor(c.timeSeconds, sampleRate)),
+             {0, kind, static_cast<int16_t>(c.channel), static_cast<float>(c.value), c.key, -1}});
+    }
+    for (std::size_t i = 0; i < notes.size(); ++i)
+    {
+        const NoteSpec &n = notes[i];
+        const int32_t id = noteIdOf(notes, i);
+        for (const NoteExpressionSpec &e : n.expressions)
+        {
+            const ControlKind kind = e.kind == "tuning"       ? ControlKind::NoteTuning
+                                     : e.kind == "pressure"   ? ControlKind::NotePressure
+                                     : e.kind == "brightness" ? ControlKind::NoteBrightness
+                                                              : ControlKind::NoteVolume;
+            timed.push_back({static_cast<std::size_t>(framesFor(e.timeSeconds, sampleRate)),
+                             {0, kind, static_cast<int16_t>(n.channel), static_cast<float>(e.value),
+                              static_cast<int16_t>(n.key), id}});
+        }
+    }
+    std::stable_sort(timed.begin(), timed.end(), [](const TimedControl &a, const TimedControl &b) {
+        return a.frame < b.frame;
+    });
+    return timed;
+}
+
 namespace
 {
 /// Collects the grain events of one process() call, the spawns and the steals in one list in the
@@ -258,43 +328,6 @@ gg::core::ParamSlot slotNamed(const std::string &name)
     return *slot;
 }
 
-/// The notes as note events at absolute frames, in frame order: an On at each note's start and
-/// an Off at its end, unless that is at or past `frames`. On one frame the Offs go first, so a
-/// key that ends where it starts again stays held; otherwise the notes' order is kept.
-struct TimedNote
-{
-    std::size_t frame;
-    gg::core::NoteEvent event; ///< Its offset is set per call.
-};
-
-std::vector<TimedNote> timedNotes(const std::vector<NoteSpec> &notes, double sampleRate,
-                                  std::size_t frames)
-{
-    using gg::core::NoteEventType;
-    std::vector<TimedNote> timed;
-    timed.reserve(2 * notes.size());
-    for (const NoteSpec &n : notes)
-    {
-        const auto channel = static_cast<int16_t>(n.channel);
-        const auto key = static_cast<int16_t>(n.key);
-        const float velocity = static_cast<float>(n.velocity) / 127.0f;
-        timed.push_back({static_cast<std::size_t>(framesFor(n.timeSeconds, sampleRate)),
-                         {0, NoteEventType::On, channel, key, velocity}});
-        const auto off =
-            static_cast<std::size_t>(framesFor(n.timeSeconds + n.durationSeconds, sampleRate));
-        if (off < frames)
-        {
-            timed.push_back({off, {0, NoteEventType::Off, channel, key, velocity}});
-        }
-    }
-    std::stable_sort(timed.begin(), timed.end(), [](const TimedNote &a, const TimedNote &b) {
-        const bool aOn = a.event.type == NoteEventType::On;
-        const bool bOn = b.event.type == NoteEventType::On;
-        return a.frame < b.frame || (a.frame == b.frame && !aOn && bOn);
-    });
-    return timed;
-}
-
 /// The layer (0 to 3) a letter "A" to "D" names, or `otherwise` for any other text (the parser has
 /// already checked it: "same" or "all").
 uint8_t layerOrElse(const std::string &letter, uint8_t otherwise)
@@ -384,29 +417,6 @@ gg::core::SessionState readPresetFile(const std::string &path, gg::core::Mode mo
             fmt::format("the preset {} names a ring, which a preset never carries", path));
     }
     return state;
-}
-
-/// The controls as control events at absolute frames, in the spec's (time) order.
-struct TimedControl
-{
-    std::size_t frame;
-    gg::core::ControlEvent event; ///< Its offset is set per call.
-};
-
-std::vector<TimedControl> timedControls(const std::vector<ControlSpec> &controls, double sampleRate)
-{
-    using gg::core::ControlKind;
-    std::vector<TimedControl> timed;
-    timed.reserve(controls.size());
-    for (const ControlSpec &c : controls)
-    {
-        const ControlKind kind = c.kind == "modWheel"     ? ControlKind::ModWheel
-                                 : c.kind == "aftertouch" ? ControlKind::Aftertouch
-                                                          : ControlKind::PitchBend;
-        timed.push_back({static_cast<std::size_t>(framesFor(c.timeSeconds, sampleRate)),
-                         {0, kind, static_cast<int16_t>(c.channel), static_cast<float>(c.value)}});
-    }
-    return timed;
 }
 
 /// The ring operations as events at absolute frames: the commands in the spec's (time) order, and
@@ -1028,7 +1038,8 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     const std::vector<TimedNote> notes =
         timedNotes(fx ? spec.fx.notes : spec.instrument.notes, spec.sampleRate, frames);
     const std::vector<TimedControl> controls =
-        timedControls(fx ? spec.fx.controls : spec.instrument.controls, spec.sampleRate);
+        timedControls(fx ? spec.fx.controls : spec.instrument.controls,
+                      fx ? spec.fx.notes : spec.instrument.notes, spec.sampleRate);
     std::vector<TimedCommand> commands;
     std::vector<TimedCapture> captures;
     for (const OperationSpec &op : operations)
