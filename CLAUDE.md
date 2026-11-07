@@ -52,7 +52,8 @@ AGPL-3.0-or-later.
   draft PR #37; spec `docs/superpowers/specs/2026-11-07-m3-voice-design.md`): a per-layer Mode
   (Cloud or Voice), up to 16 voices a layer, the note table and the sustain pedal, MPE and CLAP
   note expressions, per-voice modulation with the Voice-only routes (factory slots 44 to 48),
-  290 parameters, eight voice goldens, and the carry-over in `docs/m3-carry-over.md`
+  290 parameter slots (four parameters: Mode in each of four layers, plus MPE, MPE Bend Range and
+  Bend Range, seven slots), eight voice goldens, and the carry-over in `docs/m3-carry-over.md`
   (`docs/m2-carry-over.md` is M2's frozen record). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
@@ -687,8 +688,8 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     Since M2 sub-project 3 each layer has `"A Quality"` … `"D Quality"` (0 Eco, 1 Normal, 2 HQ;
     bare `"Quality"` means layer A's) and there is a global `"Budget"` (a count of Normal grains,
     256 to 16,384, default 4,096): 223 parameters in all, 283 with M2 sub-project 2's twenty ring
-    parameters and M2 sub-project 4's forty, 290 with M3 sub-project 1's four (a layer's Mode,
-    MPE, MPE Bend Range and Bend Range).
+    parameters and M2 sub-project 4's forty, 290 with M3 sub-project 1's four parameters,
+    seven slots (Mode in each of four layers, plus MPE, MPE Bend Range and Bend Range).
     Sample mode takes `"quality": "hq"` beside `"eco"` and `"normal"`, and sets no quota.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
