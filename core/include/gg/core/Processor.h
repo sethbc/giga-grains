@@ -689,7 +689,9 @@ class Processor
     /// Moves the notes that ended (the class comment's Voices; EndedNote) into `out`, oldest
     /// first, up to out.size(); returns how many. Those left over wait for the next call. A note
     /// ends at the boundary it is released when no Voice layer has a spawning voice for it, else
-    /// at the boundary its last voice finishes; reset() ends every note it releases. Past
+    /// at the boundary its last voice finishes; a note a full note table replaces (NoteTable's
+    /// full-table rule) ends at the boundary of the note-on that replaces it; reset() ends every
+    /// note it releases. Past
     /// kMaxEndedNotes waiting, a note's end is dropped (endedNotesDropped). Real-time safe; call
     /// it between process() calls.
     size_t takeEndedNotes(std::span<EndedNote> out) noexcept;
