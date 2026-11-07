@@ -236,7 +236,7 @@ bool GrainPool::spawn(const GrainSpec &g, int64_t edge) noexcept
     invDuration_[i] = 1.0 / g.durationSamples;
     gainL_[i] = g.gain * pan.left;
     gainR_[i] = g.gain * pan.right;
-    const EnvelopeShape env = envelopeShape(g.texture, g.durationSamples);
+    const EnvelopeShape env = envelopeShape(g.texture, g.skew, g.durationSamples);
     envAttackEnd_[i] = env.attackEnd;
     envReleaseStart_[i] = env.releaseStart;
     envAttackScale_[i] = env.attackScale;
