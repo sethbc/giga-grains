@@ -232,8 +232,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// they move to that boundary from their own, so past this cap the output is no longer block-
     /// size invariant.
     static constexpr std::size_t kMaxNoteEvents = 1024;
-    /// The most MIDI control events (CC 1, channel pressure, pitch bend) one process() call hands
-    /// to the Processor in one go (its control span). Controls beyond it apply at the block's end,
+    /// The most control events (what isControlEvent admits: MIDI CC 1, CC 64, CC 74, poly
+    /// pressure, channel pressure and pitch bend, and CLAP's TUNING, PRESSURE, BRIGHTNESS and
+    /// VOLUME note expressions) one process() call hands to the Processor in one go (its control
+    /// span). Controls beyond it apply at the block's end,
     /// at the next grid boundary, as notes beyond kMaxNoteEvents do.
     static constexpr std::size_t kMaxControlEvents = 1024;
     /// The CLAP note IDs remembered for note-offs addressed by ID alone (ruling R15). When the
@@ -577,20 +579,23 @@ class GigaGrainsPlugin : public plugHelper_t
     /// choke, MIDI's note-on, note-off and CC 123 (all notes off on its channel, ruling R14).
     /// False for any other event. An On carries its velocity, the mod matrix's Velocity source
     /// (M2 sub-project 1's spec §6.8): CLAP's 0..1 as it comes, MIDI's / 127. The port is
-    /// ignored; out-of-range channels and keys pass through, for the Processor to drop.
+    /// ignored; out-of-range CLAP channels and keys pass through, for the Processor to drop.
+    /// Each MIDI data byte is taken as its 7 bits (a key, a velocity, the controller number of
+    /// CC 123), as isNoteEvent, toControlEvent and the note-on count take them.
     ///
     /// CLAP note IDs (ruling R15; M3 Voice spec §4.2): an On carries its note ID (−1 for none
     /// and for MIDI), and one with an ID ≥ 0 and an in-range channel and key is remembered in
     /// noteIds_. A note-off or choke with a remembered ID releases that note alone, by its ID
     /// (the Processor's note table then tells two notes on one channel and key apart), when its
-    /// channel and key are both −1 or both given; with one of them −1 it keeps that wildcard,
-    /// which releases every note it matches (R15). An unknown ID keeps the off's channel and key,
-    /// so wildcards release everything, safer than a stuck note. An Off carries its release
-    /// velocity: CLAP's 0..1 as it comes, a MIDI note-off's / 127 (a choke's, and a MIDI note-on
-    /// at velocity 0's, are 0). Each off forgets the IDs of the notes it releases: an ID's own,
-    /// the oldest remembered on a (channel, key) it releases by pair (the note table releases
-    /// the oldest held there), or every one a wildcard or CC 123 matches. So call it once per
-    /// event, in the host's order. Audio thread.
+    /// channel and key are both −1 or both given, even when the given pair isn't the one the ID
+    /// was remembered with (the lenient choice: the ID names the note); with one of them −1 it
+    /// keeps that wildcard, which releases every note it matches (R15). An unknown ID keeps the
+    /// off's channel and key, so wildcards release everything, safer than a stuck note. An Off
+    /// carries its release velocity: CLAP's 0..1 as it comes, a MIDI note-off's / 127 (a choke's,
+    /// and a MIDI note-on at velocity 0's, are 0). Each off forgets the IDs of the notes it
+    /// releases: an ID's own, the oldest remembered on a (channel, key) it releases by pair (the
+    /// note table releases the oldest held there), or every one a wildcard or CC 123 matches. So
+    /// call it once per event, in the host's order. Audio thread.
     bool toNoteEvent(const clap_event_header *header,
                      gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Forgets the note IDs remembered for (`channel`, `key`), −1 matching any. Audio thread.

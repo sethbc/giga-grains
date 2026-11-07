@@ -589,3 +589,46 @@ TEST_CASE("plugin_tail_covers_release", "[plugin][voice][space]")
     CHECK(frames < 480000u + 2 * kLong);
     CHECK(frames < 6360000u);
 }
+
+TEST_CASE("plugin_note_end_on_eviction", "[plugin][voice][notes]")
+{
+    // Task 7's fix round: a note the Processor's full note table replaces gets its NOTE_END, so
+    // clap-wrapper's VST3 never keeps an active-note record for it. With the pedal down, 128
+    // CLAP notes on and off stay pedal-held; the 129th note-on replaces the oldest, ID 100.
+    PluginUnderTest plugin(kInstrumentId);
+    GrainLog log;
+    setUpInstrument(plugin, log, "voice-eviction", false);
+    const auto down = gg::test::midiEvent(0xB0, 64, 127);
+    run(plugin, {&down.header});
+    std::vector<clap_event_note> events;
+    events.reserve(2 * 129);
+    for (int i = 0; i < 129; ++i)
+    {
+        const auto key = static_cast<int16_t>(i % 128);
+        events.push_back(note(CLAP_EVENT_NOTE_ON, 0, key, 100 + i));
+        if (i < 128)
+        {
+            events.push_back(note(CLAP_EVENT_NOTE_OFF, 0, key, 100 + i));
+        }
+    }
+    OutputEvents out;
+    std::vector<End> ends;
+    for (std::size_t i = 0; i < events.size();)
+    {
+        // Each on and its off in their own calls, so the off isn't in the on's group.
+        gg::test::InputEvents in;
+        in.add(&events[i].header);
+        Stereo audio(64);
+        out.clear();
+        REQUIRE(plugin.process(64, nullptr, audio.data(), in.list(), 2, out.list()) ==
+                CLAP_PROCESS_CONTINUE);
+        const auto got = endsIn(out);
+        ends.insert(ends.end(), got.begin(), got.end());
+        ++i;
+    }
+    out.clear();
+    run(plugin, {}, &out);
+    const auto last = endsIn(out);
+    ends.insert(ends.end(), last.begin(), last.end());
+    CHECK(ends == std::vector<End>{{100, 0, 0}});
+}

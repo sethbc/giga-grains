@@ -381,15 +381,16 @@ TEST_CASE("only the midi a note event converts counts as one", "[plugin]")
         const auto e = gg::test::midiEvent(status, data1, data2, 0);
         return GigaGrainsPlugin::isNoteEvent(&e.header);
     };
-    CHECK(counts(0x93, 60, 100));      // note-on, channel 4
-    CHECK(counts(0x90, 60, 0));        // note-on at velocity 0: a note-off
-    CHECK(counts(0x8F, 60, 0));        // note-off, channel 16
-    CHECK(counts(0xB2, 123, 0));       // CC 123, all notes off
-    CHECK_FALSE(counts(0xB0, 1, 64));  // CC 1
-    CHECK_FALSE(counts(0xB0, 120, 0)); // CC 120, all sound off: not converted
-    CHECK_FALSE(counts(0xA0, 60, 10)); // polyphonic pressure
-    CHECK_FALSE(counts(0xE0, 0, 64));  // pitch bend
-    CHECK_FALSE(counts(0xF8, 0, 0));   // the clock
+    CHECK(counts(0x93, 60, 100));       // note-on, channel 4
+    CHECK(counts(0x90, 60, 0));         // note-on at velocity 0: a note-off
+    CHECK(counts(0x8F, 60, 0));         // note-off, channel 16
+    CHECK(counts(0xB2, 123, 0));        // CC 123, all notes off
+    CHECK(counts(0xB2, 123 | 0x80, 0)); // a data byte is taken as its 7 bits, as for controls
+    CHECK_FALSE(counts(0xB0, 1, 64));   // CC 1
+    CHECK_FALSE(counts(0xB0, 120, 0));  // CC 120, all sound off: not converted
+    CHECK_FALSE(counts(0xA0, 60, 10));  // polyphonic pressure
+    CHECK_FALSE(counts(0xE0, 0, 64));   // pitch bend
+    CHECK_FALSE(counts(0xF8, 0, 0));    // the clock
     const auto on = noteOn(60, 0);
     CHECK(GigaGrainsPlugin::isNoteEvent(&on.header));
     CHECK_FALSE(GigaGrainsPlugin::isNoteEvent(nullptr));

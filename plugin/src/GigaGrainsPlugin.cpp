@@ -916,7 +916,7 @@ bool GigaGrainsPlugin::isNoteEvent(const clap_event_header *header) noexcept
         // clock, other CCs) doesn't count toward kMaxNoteEvents.
         const auto *e = reinterpret_cast<const clap_event_midi *>(header);
         const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
-        return status == 0x80 || status == 0x90 || (status == 0xB0 && e->data[1] == 123);
+        return status == 0x80 || status == 0x90 || (status == 0xB0 && (e->data[1] & 0x7F) == 123);
     }
     return header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
            header->type == CLAP_EVENT_NOTE_CHOKE;
@@ -1082,17 +1082,19 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
         const auto *e = reinterpret_cast<const clap_event_midi *>(header);
         const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
         const auto channel = static_cast<int16_t>(e->data[0] & 0x0F);
-        const auto key = static_cast<int16_t>(e->data[1]);
+        // Each data byte is taken as its 7 bits, as toControlEvent and isNoteEvent take them.
+        const auto key = static_cast<int16_t>(e->data[1] & 0x7F);
+        const auto velocity = static_cast<uint8_t>(e->data[2] & 0x7F);
         if (status == 0x90)
         {
             // A note-on with velocity 0 is a note-off (MIDI 1.0), with no release velocity.
-            const auto type = e->data[2] > 0 ? NoteEventType::On : NoteEventType::Off;
+            const auto type = velocity > 0 ? NoteEventType::On : NoteEventType::Off;
             if (type == NoteEventType::Off)
             {
                 forgetOldestNoteId(channel, key);
             }
-            event = NoteEvent{header->time, type, channel, key,
-                              static_cast<float>(e->data[2] & 0x7F) / 127.0f};
+            event =
+                NoteEvent{header->time, type, channel, key, static_cast<float>(velocity) / 127.0f};
             return true;
         }
         if (status == 0x80)
@@ -1104,10 +1106,10 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
                               key,
                               0.0f,
                               -1,
-                              static_cast<float>(e->data[2] & 0x7F) / 127.0f};
+                              static_cast<float>(velocity) / 127.0f};
             return true;
         }
-        if (status == 0xB0 && e->data[1] == 123)
+        if (status == 0xB0 && key == 123)
         {
             // CC 123, all notes off: it releases the notes held on its channel (ruling R14).
             forgetNoteIds(channel, -1);
@@ -2283,7 +2285,7 @@ void GigaGrainsPlugin::countNoteOns(const clap_input_events *events) noexcept
         {
             const auto *midi = reinterpret_cast<const clap_event_midi *>(e);
             // A note-on with velocity 0 is a note-off (MIDI 1.0).
-            if ((midi->data[0] & 0xF0) == 0x90 && midi->data[2] > 0)
+            if ((midi->data[0] & 0xF0) == 0x90 && (midi->data[2] & 0x7F) > 0)
             {
                 ++count;
             }

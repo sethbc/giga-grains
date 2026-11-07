@@ -825,6 +825,49 @@ TEST_CASE("processor_voice_no_allocation", "[core][voice][rt]")
     CHECK(endedTotal > 0);
 }
 
+TEST_CASE("processor_note_end_on_eviction", "[core][voice][notes]")
+{
+    // A note a full note table replaces ends there (Task 7's fix round): with the pedal down,
+    // 128 notes on and off stay pedal-held; the 129th note-on replaces the oldest of them, which
+    // is the one note ended, with its ID, channel and key. Voice and Cloud layers alike.
+    for (const bool voice : {true, false})
+    {
+        CAPTURE(voice);
+        auto p = voiceProcessor(Mode::Instrument, voice);
+        Script s;
+        s.control(0, ControlKind::Sustain, 2, 1.0f);
+        constexpr int kNotes = 129;
+        for (int i = 0; i < kNotes; ++i)
+        {
+            const auto key = static_cast<int16_t>(i % 128);
+            s.on(64 * (i + 1), key, 2, 1.0f, 100 + i);
+            if (i < kNotes - 1)
+            {
+                s.off(64 * (i + 1) + 32, key, 2, 100 + i);
+            }
+        }
+        Stereo out;
+        std::array<EndedNote, 8> ended{};
+        render(*p, s, 0, 64 * kNotes, {256}, out);
+        CHECK(p->takeEndedNotes(ended) == 0); // all 128 pedal-held
+        render(*p, s, 64 * kNotes, 64 * kNotes + 512, {256}, out);
+        REQUIRE(p->takeEndedNotes(ended) == 1);
+        CHECK(ended[0].noteId == 100);
+        CHECK(ended[0].channel == 2);
+        CHECK(ended[0].key == 0);
+        // Pedal up: the 127 pedal-held notes left end (Cloud at once, Voice after Env 1), the
+        // held 129th doesn't; the evicted note never ends again.
+        Script up;
+        up.control(64 * kNotes + 512, ControlKind::Sustain, 2, 0.0f);
+        render(*p, up, 64 * kNotes + 512, 64 * kNotes + 512 + 48000, {256}, out);
+        std::array<EndedNote, 256> rest{};
+        const size_t n = p->takeEndedNotes(rest);
+        CHECK(n == 127);
+        CHECK(std::none_of(rest.begin(), rest.begin() + static_cast<std::ptrdiff_t>(n),
+                           [](const EndedNote &e) { return e.noteId == 100 || e.noteId == 228; }));
+    }
+}
+
 TEST_CASE("processor_voice_ended_notes", "[core][voice]")
 {
     SECTION("Voice: a note ends when its voice finishes its release")
