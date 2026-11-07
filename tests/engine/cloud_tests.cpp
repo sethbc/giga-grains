@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +22,7 @@
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
 #include "gg/grain/CloudScheduler.h"
+#include "gg/grain/KeyTuning.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
 #include "gg/spectral/SpectralSource.h"
@@ -2128,5 +2130,118 @@ TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud
                 std::abs(smeared[i].positionDraw - (0.05 * jitter(smeared[i].index) + j)) < 1e-12;
         }
         REQUIRE(added);
+    }
+}
+
+TEST_CASE("the default key table is twelve tet bit for bit", "[cloud]")
+{
+    static_assert(gg::kTwelveTetKeySemitones.size() == 128);
+    for (std::size_t k = 0; k < 128; ++k)
+    {
+        CHECK(gg::kTwelveTetKeySemitones[k] == static_cast<double>(static_cast<int>(k) - 60));
+    }
+    constexpr std::array<uint8_t, 4> chord{36, 60, 64, 91};
+    for (const bool spread : {false, true})
+    {
+        INFO("pitch spread " << spread);
+        gg::CloudParams p = cloudAt(1000.0, 0.5);
+        p.pitchSemitones = 2.5;
+        p.pitchSpreadSemitones = spread ? 3.0 : 0.0;
+        gg::CloudScheduler plain;
+        plain.setParams(p);
+        plain.setHeldKeys(chord);
+        gg::CloudScheduler tabled;
+        tabled.setParams(p);
+        tabled.setHeldKeys(chord);
+        tabled.setKeySemitones(gg::kTwelveTetKeySemitones.data());
+        const auto a = collectGrains(plain, 200, 64);
+        const auto b = collectGrains(tabled, 200, 64);
+        for (std::size_t i = 0; i < 200; ++i)
+        {
+            CHECK(std::bit_cast<uint64_t>(a[i].rate) == std::bit_cast<uint64_t>(b[i].rate));
+        }
+    }
+}
+
+TEST_CASE("a key table replaces note minus 60", "[cloud]")
+{
+    std::array<double, 128> table = gg::kTwelveTetKeySemitones;
+    table[64] = 3.86;
+    constexpr std::array<uint8_t, 1> held{64};
+    for (const bool spread : {false, true})
+    {
+        INFO("pitch spread " << spread);
+        gg::CloudParams p = cloudAt(1000.0, 0.0);
+        p.pitchSemitones = 1.25;
+        p.pitchSpreadSemitones = spread ? 2.0 : 0.0;
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        cloud.setHeldKeys(held);
+        cloud.setKeySemitones(table.data());
+        const auto grains = collectGrains(cloud, 100, 64);
+        gg::CloudScheduler untuned;
+        untuned.setParams(p);
+        untuned.setHeldKeys(held);
+        const auto base = collectGrains(untuned, 100, 64);
+        for (std::size_t i = 0; i < grains.size(); ++i)
+        {
+            if (!spread)
+            {
+                CHECK(grains[i].rate ==
+                      gg::exp2Det(std::clamp(p.pitchSemitones + 3.86, -48.0, 48.0) / 12.0));
+            }
+            else
+            {
+                // The spread draw is the same; only the key term differs from the 12-TET run.
+                CHECK(grains[i].rate != base[i].rate);
+            }
+        }
+    }
+    SECTION("nullptr restores the constant")
+    {
+        gg::CloudParams p = cloudAt(1000.0);
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        cloud.setHeldKeys(held);
+        cloud.setKeySemitones(table.data());
+        cloud.setKeySemitones(nullptr);
+        for (const gg::GrainDraw &g : collectGrains(cloud, 20, 64))
+        {
+            CHECK(g.rate == gg::exp2Det(4.0 / 12.0));
+        }
+    }
+}
+
+TEST_CASE("a key table past 48 clamps", "[cloud]")
+{
+    std::array<double, 128> table = gg::kTwelveTetKeySemitones;
+    table[70] = 1000.0;
+    table[71] = -1000.0;
+    gg::CloudScheduler cloud;
+    cloud.setParams(cloudAt(1000.0));
+    constexpr std::array<uint8_t, 1> held{70};
+    cloud.setHeldKeys(held);
+    cloud.setKeySemitones(table.data());
+    for (const gg::GrainDraw &g : collectGrains(cloud, 20, 64))
+    {
+        CHECK(g.rate == gg::exp2Det(4.0));
+    }
+    constexpr std::array<uint8_t, 1> low{71};
+    cloud.setHeldKeys(low);
+    for (const gg::GrainDraw &g : collectGrains(cloud, 20, 64, 100000))
+    {
+        CHECK(g.rate == gg::exp2Det(-4.0));
+    }
+}
+
+TEST_CASE("a key past 127 reads the table's last entry", "[cloud]")
+{
+    gg::CloudScheduler cloud;
+    cloud.setParams(cloudAt(1000.0));
+    constexpr std::array<uint8_t, 1> held{200};
+    cloud.setHeldKeys(held);
+    for (const gg::GrainDraw &g : collectGrains(cloud, 10, 64))
+    {
+        CHECK(g.rate == gg::exp2Det(4.0)); // entry 127 is +67, clamped to +48
     }
 }

@@ -6,6 +6,7 @@
 // splits the blocks.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1478,4 +1479,51 @@ TEST_CASE("voices are block-size invariant", "[determinism][voice]")
     REQUIRE(r.log.grains == ref.log.grains);
     REQUIRE(sameBits(ref.audio.left, r.audio.left));
     REQUIRE(sameBits(ref.audio.right, r.audio.right));
+}
+
+TEST_CASE("a non twelve key table is block-size invariant", "[determinism]")
+{
+    const auto source = sineSource();
+    std::array<double, 128> table = gg::kTwelveTetKeySemitones;
+    for (std::size_t k = 0; k < table.size(); ++k)
+    {
+        table[k] += 0.37 * std::sin(static_cast<double>(k)); // a different tuning per key
+    }
+    const std::array<uint8_t, 3> chord{52, 60, 67};
+    const auto run = [&](uint32_t blockSize) {
+        gg::EngineConfig cfg = config(42);
+        cfg.keySemitones = table.data();
+        gg::Engine engine(cfg);
+        engine.setSource(source);
+        engine.setCloudParams(kParams);
+        engine.setHeldKeys(chord);
+        Render r{std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f),
+                 std::vector<float>(static_cast<std::size_t>(kFrames), 0.0f)};
+        for (int64_t done = 0; done < kFrames;)
+        {
+            const auto n = static_cast<uint32_t>(std::min<int64_t>(blockSize, kFrames - done));
+            float *out[2] = {r.left.data() + done, r.right.data() + done};
+            engine.process(out, 2, n);
+            done += n;
+        }
+        return r;
+    };
+    const Render ref = run(kMaxBlock);
+    REQUIRE(peak(ref.left) > 0.05f);
+    // It differs from the 12-TET render, so the table is read.
+    gg::Engine plain(config(42));
+    plain.setSource(source);
+    plain.setCloudParams(kParams);
+    plain.setHeldKeys(chord);
+    std::vector<float> pl(static_cast<std::size_t>(kFrames)), pr(pl);
+    float *out[2] = {pl.data(), pr.data()};
+    plain.process(out, 2, static_cast<uint32_t>(kMaxBlock));
+    REQUIRE_FALSE(std::memcmp(pl.data(), ref.left.data(), kMaxBlock * sizeof(float)) == 0);
+    for (const uint32_t blockSize : {1u, 32u, 64u})
+    {
+        INFO("block size = " << blockSize);
+        const Render r = run(blockSize);
+        REQUIRE(sameBits(ref.left, r.left));
+        REQUIRE(sameBits(ref.right, r.right));
+    }
 }

@@ -63,6 +63,7 @@ Engine::Engine(const EngineConfig &config)
     assert(kernels_ == &kernels::sseKernels());
 #endif
     cloud_.prepare(config_.sampleRate);
+    cloud_.setKeySemitones(config_.keySemitones);
     for (Voice &voice : voices_)
     {
         voice.scheduler.prepare(config_.sampleRate);
