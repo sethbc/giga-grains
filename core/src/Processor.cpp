@@ -807,6 +807,13 @@ const NoteTable::Note *Processor::noteOf(const VoiceAllocator::Voice &v) const n
     return n.state != NoteTable::State::Free && n.ordinal == v.noteOrdinal ? &n : nullptr;
 }
 
+uint64_t Processor::layerQuotaAt(int64_t /*t*/) const noexcept
+{
+    const auto renderingCount =
+        static_cast<uint64_t>(std::count(rendering_.begin(), rendering_.end(), true));
+    return renderingCount > 0 ? budgetUnits_ / renderingCount : kUnlimitedQuota;
+}
+
 void Processor::commitVoices(int64_t b) noexcept
 {
     const std::span<const NoteTable::Note> notes = noteTable_.notes();
@@ -837,6 +844,7 @@ void Processor::commitVoices(int64_t b) noexcept
             }
         }
     };
+    bool budgetStolen = false;
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
@@ -861,6 +869,31 @@ void Processor::commitVoices(int64_t b) noexcept
             {
                 continue;
             }
+            // E10: no room in the layer's budget for the new voice's first grain: the layer's
+            // oldest weak voice finishes first, as V4's steal finishes one, so the new voice
+            // takes the slot it freed and the cap steal doesn't also fire. The ledger is the
+            // engine's at b (it can't see voices started in this group), the quota the one the
+            // piece from b renders with (P8). At most one per voice started. P9: the boundary's
+            // voice count then excludes the finished voice and counts the new one.
+            const int weakSlot = l.voices.oldestWeak();
+            if (weakSlot >= 0)
+            {
+                const auto tier = static_cast<Tier>(std::lround(std::clamp(
+                    static_cast<double>(
+                        effective_[static_cast<size_t>(layerSlot(LayerParam::Quality, L))]),
+                    0.0, 2.0)));
+                if (l.engine.soundingWeightAt(b) + l.engine.nextGrainWeight(tier) > layerQuotaAt(b))
+                {
+                    VoiceAllocator::Voice &weak = l.voices.voices()[static_cast<size_t>(weakSlot)];
+                    if (weak.told)
+                    {
+                        l.engine.finishVoice(static_cast<uint32_t>(weakSlot));
+                    }
+                    l.voices.finish(weakSlot);
+                    ++budgetSteals_;
+                    budgetStolen = true;
+                }
+            }
             uint32_t ordinal = 0;
             int stolen = -1;
             const int slot = l.voices.start(index, n.ordinal, b, ordinal, stolen);
@@ -878,6 +911,12 @@ void Processor::commitVoices(int64_t b) noexcept
             }
             follow(v);
         }
+    }
+    if (budgetStolen)
+    {
+        // EB12: a note whose last voice a budget steal finished ends now (after every layer's
+        // starts, so a note this group started and released isn't ended before its voices).
+        collectEndedNotes();
     }
     updateVoicesSounding();
 }
@@ -2690,7 +2729,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             static_cast<uint64_t>(std::count(rendering_.begin(), rendering_.end(), true));
         if (renderingCount > 0)
         {
-            const uint64_t quota = budgetUnits_ / renderingCount;
+            const uint64_t quota = layerQuotaAt(from);
             for (size_t L = 0; L < kLayers; ++L)
             {
                 Layer &l = *layers_[L];
