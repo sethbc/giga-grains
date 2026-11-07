@@ -566,13 +566,21 @@ void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spaw
     // beginRun applies its forced onset, resume and rescale at blockStart).
     uint32_t running[kMaxVoices]{};
     uint32_t count = 0;
+    uint32_t spawning = 0;
     for (uint32_t slot = 0; slot < kMaxVoices; ++slot)
     {
-        if (voices_[slot].spawning && voices_[slot].scheduler.beginRun(blockStart))
+        if (voices_[slot].spawning)
         {
-            running[count++] = slot;
+            ++spawning;
+            if (voices_[slot].scheduler.beginRun(blockStart))
+            {
+                running[count++] = slot;
+            }
         }
     }
+    // V7: headroom 1 / sqrt(n), n the spawning voices. Voices start and finish only between
+    // process() calls, so n is the same for every block of a call and for any host block size.
+    const double headroom = spawning > 0 ? 1.0 / std::sqrt(static_cast<double>(spawning)) : 1.0;
     // The k-way merge (M3 Voice spec §4.3): the pool's ledger and steal cursor need
     // non-decreasing onsets, so each step takes the earliest pending draw in the block by onset
     // sample, ties by ordinal, then by slot (the scan's order and the strict comparisons). Each
@@ -609,7 +617,7 @@ void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spaw
         const int64_t peakSample = d.onsetSample + static_cast<int64_t>(d.durationSamples * 0.5);
         d.gain = static_cast<float>(static_cast<double>(d.gain) *
                                     static_cast<double>(voice.params.gain) *
-                                    voice.params.amp.valueAt(peakSample));
+                                    voice.params.amp.valueAt(peakSample) * headroom);
         spawn(d, voice.ordinal);
     }
 }
