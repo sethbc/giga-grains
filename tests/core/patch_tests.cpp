@@ -7,7 +7,7 @@
 // §6.9: 48 per layer, A to D, and nine globals; 218 in all), M2 sub-project 2's five ring
 // parameters per layer (its spec §6.3), M2 sub-project 3's Quality, per layer, and Budget (its
 // spec §6.8), and the Extremes' eight per layer and eight globals (M2 sub-project 4's spec §6.7;
-// and M3 sub-project 1's Mode per layer and three MIDI globals; 63 per layer, 290 in all), and
+// and M3 sub-project 1's Mode per layer and three MIDI globals; 63 per layer, 291 in all), and
 // their versioned XML state, through gg-core's public API (gg/core/ParamIds.h,
 // gg/core/PatchState.h) and its tinyxml-free internal core/src/PatchXml.h, for each product's patch
 // XML. This file never includes sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges
@@ -299,8 +299,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 290);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 290>>);
+    STATIC_REQUIRE(kParamCount == 291);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 291>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -367,7 +367,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3);
+        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3 + 1);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -428,7 +428,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
     STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x32u);
-    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x25u);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x39u);
     uint32_t maxLayerIndex = 0;
     uint32_t maxGlobalIndex = 0;
     for (size_t i = 0; i < kParamCount; ++i)
@@ -477,9 +477,10 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::C_Quality) == 0x030050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::D_Quality) == 0x040050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::Budget) == 0x000050u);
-    // Budget, the Extremes' eight globals, then the three MIDI settings, the last slots.
-    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::Budget) == kParamCount - 12);
-    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::LimiterRelease) == kParamCount - 4);
+    // Budget, the Extremes' eight globals, then the four instance settings (three MIDI, MTS-ESP),
+    // the last slots.
+    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::Budget) == kParamCount - 13);
+    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::LimiterRelease) == kParamCount - 5);
 
     // M2 sub-project 4's block (its spec §6.7): 0x60 to 0x67 are used in every scope, each the
     // table's parameter, and 0x68 to 0x7F are free in every scope.
@@ -511,6 +512,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(gg::core::slotForId(0x040031) == ParamSlot::D_Mode);
     STATIC_REQUIRE(gg::core::slotForId(0x000022) == ParamSlot::Mpe);
     STATIC_REQUIRE(gg::core::slotForId(0x000024) == ParamSlot::BendRange);
+    STATIC_REQUIRE(gg::core::slotForId(0x000038) == ParamSlot::MtsEsp);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::RingLength) == 0x40u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Splice) == 0x44u);
     STATIC_REQUIRE(gg::core::slotForId(0x040044) == ParamSlot::D_Splice);
@@ -715,7 +717,7 @@ TEST_CASE("the next free indices are unchanged", "[core]")
     // use, in every scope (Quality and Budget), and sub-project 4's 0x60 to 0x67, in every scope
     // too (its eight layer rows, the delay's and the limiter's eight globals).
     STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x32u);
-    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x25u);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x39u);
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
     for (clap_id scope = 0; scope <= 4; ++scope)
@@ -889,6 +891,29 @@ TEST_CASE("a state without Quality or Budget loads with their defaults", "[core]
         CHECK(l.seed == 9u);
         CHECK(l.migratedFromVersion == 0u);
         CHECK(sameRoutes(l.routes, kFxRoutes));
+    }
+}
+
+TEST_CASE("a state without MTS-ESP loads it On", "[core]")
+{
+    // M3 sub-project 4's spec §5.1: a state saved before MTS-ESP loads with it On (its default).
+    ParamValues saved = defaults();
+    saved[static_cast<size_t>(ParamSlot::MtsEsp)] = 0.0f;
+    saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
+    std::string state = toStateXml(saved, 9, kFxRoutes);
+    const auto tag = R"(<p id=")" + std::to_string(gg::core::paramId(ParamSlot::MtsEsp)) + R"(" )";
+    const auto from = state.find(tag);
+    REQUIRE(from != std::string::npos);
+    const auto to = state.find("/>", from);
+    REQUIRE(to != std::string::npos);
+    state = state.substr(0, from) + state.substr(to + 2);
+    REQUIRE(state.find(tag) == std::string::npos);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        Loaded l = distinct();
+        REQUIRE(l.load(state, mode));
+        CHECK(l[ParamSlot::MtsEsp] == 1.0f);
+        CHECK(l[ParamSlot::Size] == -1.0f);
     }
 }
 

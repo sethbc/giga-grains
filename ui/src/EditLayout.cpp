@@ -146,6 +146,7 @@ constexpr std::array kRows{
     fx(ParamSlot::Mpe, Panel::Midi, 0),
     fx(ParamSlot::MpeBendRange, Panel::Midi, 1),
     fx(ParamSlot::BendRange, Panel::Midi, 2),
+    fx(ParamSlot::MtsEsp, Panel::Midi, 3),
     // The Perform view: the strip's On switches (Layer B On to D On through A's), the pad, the
     // macros.
     Row{ParamSlot::LayerAOn, View::Perform, Panel::Strip, 0, kNone},
@@ -162,7 +163,7 @@ constexpr std::array kRows{
 };
 
 // One row per layer parameter, per-layer global (Level, Layer On) and other global: 62 + 2 + 27.
-static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 30);
+static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 31);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer
 /// parameter or a per-layer global; the slot itself and layer 0 for any other.

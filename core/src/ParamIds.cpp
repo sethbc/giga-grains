@@ -538,6 +538,12 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                                    .withDefault(2.0f)
                                    .withLinearScaleFormatting("st")
                                    .withFlags(CLAP_PARAM_IS_STEPPED);
+    // M3 sub-project 4's MTS-ESP (its spec §5.1): Off/On, On by default, as MPE.
+    at(ParamSlot::MtsEsp) = base(ParamSlot::MtsEsp)
+                                .withName("MTS-ESP")
+                                .asOnOffBool()
+                                .withDefault(1.0f)
+                                .withFlags(CLAP_PARAM_IS_STEPPED);
     return t;
 }
 } // namespace

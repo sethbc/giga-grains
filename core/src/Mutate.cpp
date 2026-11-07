@@ -58,6 +58,7 @@ LockSet buildStructuralLocks() noexcept
     lock(ParamSlot::Mpe);
     lock(ParamSlot::MpeBendRange);
     lock(ParamSlot::BendRange);
+    lock(ParamSlot::MtsEsp);
     // Every layer's five ring parameters: capture and memory (sub-project 2), which a preset load
     // keeps too (isRingParam). Ring Length would never move anyway (SP-M8, below).
     for (size_t s = 0; s < kParamCount; ++s)

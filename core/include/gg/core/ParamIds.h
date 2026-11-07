@@ -23,7 +23,7 @@ struct ParamMetaData;
 /// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), M2 sub-project 3's
 /// Quality, per layer, and Budget (its spec §6.8), and the Extremes' eight per layer and eight
 /// globals (M2 sub-project 4's spec §6.7), and M3 sub-project 1's Mode per layer and three MIDI
-/// settings (its spec §4.1): 63 per layer and 290 in all. Their slots, CLAP IDs and
+/// settings (its spec §4.1): 63 per layer and 291 in all. Their slots, CLAP IDs and
 /// metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
@@ -306,6 +306,8 @@ enum class ParamSlot : uint16_t
     Mpe,
     MpeBendRange,
     BendRange,
+    // M3 sub-project 4's MTS-ESP (its spec §5.1): the instance's, like the MIDI settings.
+    MtsEsp,
     Count
 };
 
@@ -358,7 +360,7 @@ constexpr bool isMacro(ParamSlot slot) noexcept
 /// The next free index below the reserved blocks in every layer scope (1 to 4) and in scope 0 (M2
 /// sub-project 1's spec §6.9): a new parameter outside wave 2's blocks takes it, and a test pins
 /// each as one past the table's largest index below kReservedIndexBegin.
-inline constexpr uint32_t kNextFreeLayerIndex = 0x32, kNextFreeGlobalIndex = 0x25;
+inline constexpr uint32_t kNextFreeLayerIndex = 0x32, kNextFreeGlobalIndex = 0x39;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
 /// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
@@ -496,6 +498,8 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x000022, // Mpe
     0x000023, // MpeBendRange
     0x000024, // BendRange
+    // M3 sub-project 4's MTS-ESP (its spec §5.1): 0x38 alone of a reserved block.
+    0x000038, // MtsEsp
 };
 
 /// Scope 0's slots by index, 0x00 to 0x7F, so that wave 2's reserved blocks work as in the layer
@@ -635,13 +639,13 @@ constexpr bool isRingParam(ParamSlot slot) noexcept
                    ref->param == LayerParam::Splice);
 }
 
-/// Whether `slot` is one of the three MIDI settings (M3 sub-project 1's spec §4.1: MPE, MPE Bend
-/// Range, Bend Range): the instance's, which a preset load keeps and Mutate locks, and no mod route
-/// targets. False for ParamSlot::Count.
+/// Whether `slot` is one of the four instance settings (M3 sub-project 1's spec §4.1: MPE, MPE Bend
+/// Range, Bend Range; and sub-project 4's MTS-ESP): the instance's, which a preset load keeps and
+/// Mutate locks, and no mod route targets. False for ParamSlot::Count.
 constexpr bool isMidiSetting(ParamSlot slot) noexcept
 {
     return slot == ParamSlot::Mpe || slot == ParamSlot::MpeBendRange ||
-           slot == ParamSlot::BendRange;
+           slot == ParamSlot::BendRange || slot == ParamSlot::MtsEsp;
 }
 
 /// Layer `layer`'s Level (0 to 3: Level, Level B, Level C, Level D); ParamSlot::Count out of
