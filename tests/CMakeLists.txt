@@ -33,6 +33,7 @@ add_executable(gg-tests
         core/space_reverb_tests.cpp
         core/spectral_processor_tests.cpp
         core/threads_tests.cpp
+        core/tuning_tests.cpp
         core/voice_processor_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
@@ -135,6 +136,10 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
 # as "space/..."), and through them sst-effects and sst-filters, which gg-core links PRIVATE.
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
+# core/tuning_tests.cpp checks the tuning port against tuning-library itself, over its own corpus.
+target_link_libraries(gg-tests PRIVATE gg::tuning-library)
+target_compile_definitions(gg-tests PRIVATE
+        GG_TUNING_LIBRARY_DATA="${CMAKE_SOURCE_DIR}/libs/tuning-library/tests/data")
 # metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, implemented in
 # gg::stb_impl.
 target_link_libraries(gg-tests PRIVATE gg::stb gg::stb_impl)

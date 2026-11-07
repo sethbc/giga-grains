@@ -34,6 +34,7 @@ add_library(gg-core STATIC
         src/SessionState.cpp
         src/SourceExchange.cpp
         src/SpaceReverb.cpp
+        src/Tuning.cpp
         src/XmlText.cpp
         )
 add_library(gg::core ALIAS gg-core)
@@ -49,10 +50,12 @@ target_include_directories(gg-core PUBLIC include PRIVATE src)
 # (ruling M1-l). Linking statically, consumers still link tinyxml.
 #
 # PRIVATE too: sst-effects and sst-filters, header-only, for Space's reverb. Only the internal
-# src/space headers include them.
+# src/space headers include them. And tuning-library (header-only, SYSTEM includes), which only
+# src/Tuning.cpp includes (M3 tuning spec §5.2).
 target_link_libraries(gg-core
         PUBLIC gg::engine sst-basic-blocks fmt::fmt clap
-        PRIVATE sst-plugininfra::patchbase sst-effects sst-filters gg::compiler-options
+        PRIVATE sst-plugininfra::patchbase sst-effects sst-filters gg::tuning-library
+        gg::compiler-options
         )
 # fmt 12.2.0 made <fmt/core.h> <fmt/base.h> alone, without fmt::format. sst-basic-blocks'
 # ParamMetadata.h includes <fmt/core.h> and calls fmt::format (still so at its upstream head on
