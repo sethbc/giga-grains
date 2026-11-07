@@ -221,6 +221,30 @@ constexpr float kLog2Of400Hz = 8.643856189774725f;
 constexpr float kLog2Of5Ms = -7.643856189774724f;
 } // namespace
 
+TEST_CASE("clockOf reads 0.5 and above as Pitch", "[core]")
+{
+    using gg::core::clockOf;
+    CHECK(clockOf(0.0f) == gg::Clock::Free);
+    CHECK(clockOf(0.49f) == gg::Clock::Free);
+    CHECK(clockOf(std::numeric_limits<float>::quiet_NaN()) == gg::Clock::Free);
+    CHECK(clockOf(0.5f) == gg::Clock::Pitch);
+    CHECK(clockOf(1.0f) == gg::Clock::Pitch);
+}
+
+TEST_CASE("noteFrequencyHz gives 440 at A4", "[core]")
+{
+    CHECK_THAT(gg::core::noteFrequencyHz(9.0), WithinRel(440.0, 1e-12));
+    CHECK(gg::core::noteFrequencyHz(0.0) == gg::core::kC4Hz);
+}
+
+TEST_CASE("sizePeriods counts periods", "[core]")
+{
+    using gg::core::sizePeriods;
+    CHECK_THAT(sizePeriods(std::log2(0.15f)), WithinAbs(2.0, 1e-6));
+    CHECK_THAT(sizePeriods(std::log2(0.005f)), WithinAbs(1.0 / 15.0, 1e-6));
+    CHECK_THAT(sizePeriods(1.0f), WithinAbs(80.0 / 3.0, 1e-9));
+}
+
 TEST_CASE("param map follows the taper table", "[core]")
 {
     // The brief's pins.

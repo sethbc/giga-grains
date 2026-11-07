@@ -148,9 +148,9 @@ TEST_CASE("the panel order is the spec's", "[ui]")
         step.push_back(static_cast<ParamSlot>(static_cast<std::size_t>(ParamSlot::Step1) + i));
     }
     CHECK(gg::ui::slotsIn(Panel::Step, 0) == step);
-    CHECK(gg::ui::slotsIn(Panel::Scheduler, 1) == std::vector<ParamSlot>{ParamSlot::B_Density,
-                                                                         ParamSlot::B_Distribution,
-                                                                         ParamSlot::B_Freeze});
+    CHECK(gg::ui::slotsIn(Panel::Scheduler, 1) ==
+          std::vector<ParamSlot>{ParamSlot::B_Density, ParamSlot::B_Distribution,
+                                 ParamSlot::B_Freeze, ParamSlot::B_Clock});
     CHECK(gg::ui::slotsIn(Panel::Space, 1) ==
           std::vector<ParamSlot>{ParamSlot::B_Stereo, ParamSlot::B_Diffusion, ParamSlot::B_Feedback,
                                  ParamSlot::LevelB});

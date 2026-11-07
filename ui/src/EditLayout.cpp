@@ -61,6 +61,8 @@ constexpr std::array kRows{
     edit(ParamSlot::Density, Panel::Scheduler, 0),
     edit(ParamSlot::Distribution, Panel::Scheduler, 1),
     edit(ParamSlot::Freeze, Panel::Scheduler, 2),
+    // Clock (M3 sub-project 3): Free or Pitch, after Freeze.
+    edit(ParamSlot::Clock, Panel::Scheduler, 3),
     // Grain: Size and Size Spread, Position and Spray, Texture, then M2 sub-project 4's Smear
     // beside it (ruling VW-T19b, placed last until PR 2), then Quality (ruling VW-T19a).
     edit(ParamSlot::Size, Panel::Grain, 0, ParamSlot::SizeSpread),
@@ -161,7 +163,7 @@ constexpr std::array kRows{
     Row{ParamSlot::Macro8, View::Perform, Panel::Macros, 7, kNone},
 };
 
-// One row per layer parameter, per-layer global (Level, Layer On) and other global: 62 + 2 + 27.
+// One row per layer parameter, per-layer global (Level, Layer On) and other global: 64 + 2 + 27.
 static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 30);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer

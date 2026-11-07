@@ -71,6 +71,24 @@ enum class LayerMode : uint8_t
 /// The mode a Mode value means: below 0.5 (or NaN) is Cloud, else Voice.
 LayerMode layerModeOf(float value) noexcept;
 
+/// A layer's Clock (M3 sub-project 3's spec §4.1): from the Clock parameter, 0 Free or 1 Pitch.
+/// At or above 0.5 is Pitch; below it, or NaN, is Free.
+gg::Clock clockOf(float value) noexcept;
+
+/// C4's frequency in Hz, MIDI key 60 (A4 = 440 Hz is 9 semitones above).
+inline constexpr double kC4Hz = 261.6255653005986;
+
+/// The frequency in Hz of `notePitch`, in semitones from C4 (a key less 60, tuning and bend
+/// included): kC4Hz * exp2Det(notePitch / 12). Unclamped; plain IEEE arithmetic and exp2Det.
+double noteFrequencyHz(double notePitch) noexcept;
+
+/// Periods of the note's pitch in one second of Size (the Pitch clock; spec S1).
+inline constexpr double kPeriodsPerSizeSecond = gg::CloudScheduler::kPeriodsPerSizeSecond;
+
+/// A grain's length in periods at Size `sizeLog2Seconds` (the parameter's value, log2 seconds):
+/// exp2Det(size) * kPeriodsPerSizeSecond.
+double sizePeriods(float sizeLog2Seconds) noexcept;
+
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
 /// built in wave 1, in both products; Resample, a Live-mode engine whose ring the instance's
 /// output feeds, since M2 sub-project 2 (its spec §6.2), and Spectral since M2 sub-project 4, in

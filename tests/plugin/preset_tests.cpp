@@ -241,6 +241,23 @@ TEST_CASE("a preset file loaded by preset-load sets its values and routes", "[pl
           expected.values[at(ParamSlot::Density)]);
 }
 
+TEST_CASE("a preset load sets the instance's Clock", "[plugin][preset]")
+{
+    // S12: Clock travels with a preset, unlike the ring parameters and the MIDI settings.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const Mode mode = modeOf(id);
+    SessionState preset = fixtureState(mode);
+    preset.values[at(ParamSlot::Clock)] = 1.0f;
+    const fs::path file = gg::test::writePresetFile("clock-" + tagOf(mode), infoFor(mode), preset);
+    const std::string location = utf8(file);
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    CHECK(plugin.value(paramId(ParamSlot::Clock)) == 0.0);
+    REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_FILE, location.c_str(), nullptr));
+    CHECK(plugin.value(paramId(ParamSlot::Clock)) == 1.0);
+}
+
 TEST_CASE("preset-load takes a FILE location in the OS's own form", "[plugin][preset]")
 {
     // The form discovery declares and a host's crawl hands back (discovery_tests.cpp): on Windows

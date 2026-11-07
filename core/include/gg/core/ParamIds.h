@@ -23,7 +23,8 @@ struct ParamMetaData;
 /// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), M2 sub-project 3's
 /// Quality, per layer, and Budget (its spec §6.8), and the Extremes' eight per layer and eight
 /// globals (M2 sub-project 4's spec §6.7), and M3 sub-project 1's Mode per layer and three MIDI
-/// settings (its spec §4.1): 63 per layer and 290 in all. Their slots, CLAP IDs and
+/// settings (its spec §4.1), and M3 sub-project 3's Clock per layer (its spec §4.1): 64 per layer
+/// and 294 in all. Their slots, CLAP IDs and
 /// metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
@@ -37,10 +38,11 @@ enum class Mode
     Fx,         ///< The input feeds the live ring and the dry side of the Mix.
 };
 
-/// The 63 parameters of a layer (M3 sub-project 1's Mode, its spec §4.1; M2 sub-project 1's spec
-/// §6.9, M2 sub-project 2's five ring parameters in its reserved block, its spec §6.3, M2
-/// sub-project 3's Quality in its, its spec §6.8, and sub-project 4's eight in its, its spec §6.7),
-/// one row each, in index order: `X(name, index, "Display Name")`. A layer parameter's CLAP ID is
+/// The 64 parameters of a layer (M3 sub-project 3's Clock and sub-project 1's Mode, their specs
+/// §4.1; M2 sub-project 1's spec §6.9, M2 sub-project 2's five ring parameters in its reserved
+/// block, its spec §6.3, M2 sub-project 3's Quality in its, its spec §6.8, and sub-project 4's
+/// eight in its, its spec §6.7), one row each, in index order: `X(name, index, "Display Name")`. A
+/// layer parameter's CLAP ID is
 /// `(layer + 1) << 16 | index`, the same index in each of the scopes 1 to 4, and it is displayed
 /// with its layer's letter ("A Size" ... "D Size"). The enum LayerParam, layers B to D's ParamSlot
 /// entries and their IDs are generated from it, so no name is typed four times. Append-only, as the
@@ -107,6 +109,9 @@ enum class Mode
 /// M3 sub-project 1's (the Voice slice; its spec §4.1): a layer's Mode, 0 Cloud or 1 Voice, in the
 /// first free index (kNextFreeLayerIndex was 0x31) between M2's rows and the reserved blocks.
 #define GG_LAYER_PARAMS_M3(X) X(Mode, 0x31, "Mode")
+/// M3 sub-project 3's (pitch-sync and formant grains; its spec §4.1): a layer's Clock, 0 Free or 1
+/// Pitch. It takes layer index 0x38 of that sub-project's reserved 0x38-0x3B (0x39 stays free).
+#define GG_LAYER_PARAMS_M3_PITCHSYNC(X) X(Clock, 0x38, "Clock")
 /// M2 sub-project 2's (Sources and persistence; its spec §6.3), in its reserved block 0x40-0x4F;
 /// 0x45-0x4F stay unused.
 #define GG_LAYER_PARAMS_M2_SOURCES(X)                                                              \
@@ -133,11 +138,13 @@ enum class Mode
     GG_LAYER_PARAMS_M1(X)                                                                          \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
+    GG_LAYER_PARAMS_M3_PITCHSYNC(X)                                                                \
     GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
 #define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
+    GG_LAYER_PARAMS_M3_PITCHSYNC(X)                                                                \
     GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
@@ -154,7 +161,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 63;
+inline constexpr size_t kLayerParamCount = 64;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -231,7 +238,7 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// their M1 names), then layer A's 52 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
 /// Mode, sub-project 2's five, sub-project 3's Quality and sub-project 4's eight), then layers B, C
 /// and D in full
-/// (`B_Position` ... `D_Bus2Resonance`, 63 each, in row order), then the nine new globals (M2
+/// (`B_Position` ... `D_Bus2Resonance`, 64 each, in row order), then the nine new globals (M2
 /// sub-project 1's spec §6.9), Budget (M2 sub-project 3's spec §6.8) and the Extremes' eight
 /// globals (M2 sub-project 4's spec §6.7). A layer row appended to GG_LAYER_PARAMS moves the later
 /// layers' slots, never an ID.
@@ -355,10 +362,12 @@ constexpr bool isMacro(ParamSlot slot) noexcept
     return slot >= ParamSlot::Macro1 && slot <= ParamSlot::Macro8;
 }
 
+/// (Layer indices 0x32-0x37 are sub-project 2's of M3 and 0x38-0x3B this one's, M3 sub-project 3's;
+/// 0x39 is the first of those left free, so this holds one past the table's largest.)
 /// The next free index below the reserved blocks in every layer scope (1 to 4) and in scope 0 (M2
 /// sub-project 1's spec §6.9): a new parameter outside wave 2's blocks takes it, and a test pins
 /// each as one past the table's largest index below kReservedIndexBegin.
-inline constexpr uint32_t kNextFreeLayerIndex = 0x32, kNextFreeGlobalIndex = 0x25;
+inline constexpr uint32_t kNextFreeLayerIndex = 0x39, kNextFreeGlobalIndex = 0x25;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
 /// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
@@ -409,7 +418,7 @@ enum class LfoShape : uint8_t
 
 namespace detail
 {
-/// The first slot of layer A's new parameters, and of layer B's 63.
+/// The first slot of layer A's new parameters, and of layer B's 64.
 inline constexpr size_t kLayerANewFirst = static_cast<size_t>(ParamSlot::Source);
 inline constexpr size_t kLayerBFirst = static_cast<size_t>(ParamSlot::B_Position);
 inline constexpr size_t kLayersEnd = static_cast<size_t>(ParamSlot::MorphX);

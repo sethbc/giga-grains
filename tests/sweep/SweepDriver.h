@@ -22,7 +22,9 @@
 // - the input's fade-in, the first 10 ms and the score's ±5 ms beyond;
 // - the pre-delay and kReverbSizeExempt after every Reverb Size move: carry-over row 217,
 //   accepted (S8). A move is exempt only when the Size in effect (its base or its modulation)
-//   changes;
+//   changes. The bursts leave Reverb Size out of their draw (burst(): stacked moves echo for
+//   over 1 s, measured, which would leave them scoring about a tenth of their render); the
+//   parameter and extremes sweeps keep it;
 // - kLimiterDrive (the director's D5b, option 1, 2026-10-31; carry-over row 378): the limiter's
 //   laws stand (zero lookahead, no attack), so a ceiling far under the material is a law
 //   consequence, not a defect. The check looks away over every call in which Peak's gain fell
