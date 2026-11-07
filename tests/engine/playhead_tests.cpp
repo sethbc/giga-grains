@@ -1017,3 +1017,61 @@ TEST_CASE("a voice start restarts the smear's point", "[engine][playhead][spectr
     REQUIRE(sameRing(engine.spectral()->ring(), smear.ring()));
     REQUIRE_FALSE(sameRing(engine.spectral()->ring(), unrestarted.ring()));
 }
+
+TEST_CASE("an edge change at rest never moves the playhead", "[engine][playhead]")
+{
+    // The controller's ruling on the at-rest rule: canon of an offset that is exactly 0 is 0 at
+    // every edge, so a playhead that hasn't moved stays at Position whatever the window, even
+    // under Stop with Position outside it.
+    gg::Playhead p;
+    p.sync(0, 0.0, gg::ScanEdge::Wrap, geometry(1.0, 0.0, 1.0), kSampleRate, 2.0);
+    p.sync(256, 0.0, gg::ScanEdge::Stop, geometry(1.0, 0.0, 1.0), kSampleRate, 2.0);
+    CHECK(p.edge() == gg::ScanEdge::Stop);
+    CHECK_FALSE(p.moving());
+    CHECK(bits(p.offsetAt(256.0)) == bits(0.0));
+    CHECK(bits(p.offsetAt(100000.5)) == bits(0.0));
+    p.sync(512, 0.0, gg::ScanEdge::Bounce, geometry(-1.0, 0.0, 0.5), kSampleRate, 2.0);
+    CHECK_FALSE(p.moving());
+    CHECK(bits(p.offsetAt(1000.0)) == bits(0.0));
+}
+
+TEST_CASE("scan zero with stop reads position outside a short window", "[engine][playhead]")
+{
+    // Live, Position 1 s behind the head with the loop narrowing the window to 0.5 s: at speed 0
+    // a switch from Wrap to Stop must leave every grain and every sample as they were, also once
+    // the window widens past Position.
+    constexpr int64_t kFrames = 72000;
+    const auto input = noiseInput(kFrames, 21);
+    const auto renderOne = [&](bool change, GrainLog &log) {
+        gg::Engine engine(ringConfig(4.0));
+        engine.setSourceMode(gg::SourceMode::Live);
+        engine.live().setLoop(true, 24000);
+        gg::CloudParams p = scanParams(1.0, 0.0, gg::ScanEdge::Wrap);
+        p.spray = 0.1;
+        engine.setCloudParams(p);
+        engine.setEventSink(&GrainLog::record, &log);
+        Stereo out = unwritten(kFrames);
+        run(engine, out, 0, 30000, 256, &input);
+        if (change)
+        {
+            p.scanEdge = gg::ScanEdge::Stop;
+            engine.setCloudParams(p);
+        }
+        run(engine, out, 30000, 48000, 256, &input);
+        // The loop then widens to 2 s: Position is inside the window again, so a Stop canon
+        // taken at the edge change (which would hold the point at the old 0.5 s edge) is heard.
+        engine.live().setLoop(true, 96000);
+        run(engine, out, 48000, kFrames, 256, &input);
+        REQUIRE(bits(engine.cloudParams().position) == bits(1.0));
+        return out;
+    };
+    GrainLog stillLog;
+    GrainLog changedLog;
+    const Stereo still = renderOne(false, stillLog);
+    const Stereo changed = renderOne(true, changedLog);
+    REQUIRE(allFinite(still.left));
+    REQUIRE(stillLog.grains.size() == 96);
+    REQUIRE(changedLog.grains == stillLog.grains);
+    REQUIRE(sameBits(changed.left, still.left));
+    REQUIRE(sameBits(changed.right, still.right));
+}

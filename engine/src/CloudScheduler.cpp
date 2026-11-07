@@ -129,8 +129,11 @@ void CloudScheduler::setHeldKeys(std::span<const uint8_t> keys) noexcept
     }
     else if (keyCount_ == 0)
     {
-        onsetForced_ = true;        // empty to non-empty (spec §6.2–§6.3)
-        playhead_.requestRestart(); // and the playhead with it (M3 playhead spec H4)
+        onsetForced_ = true; // empty to non-empty (spec §6.2–§6.3)
+        // And the playhead with it (M3 playhead spec H4). Emptied again before the next block, the
+        // onset is no longer forced but the restart stays pending (Playhead has no cancel): a
+        // note was played, so the playhead restarts at that block (the controller's ruling).
+        playhead_.requestRestart();
     }
     keyCount_ = n;
 }

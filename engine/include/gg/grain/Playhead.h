@@ -111,6 +111,9 @@ class Playhead
     /// canon (read only here, so the window at the rebase's own sample): Wrap reduces x mod L,
     /// Bounce mod 2L (only to keep the offset small: the fold is periodic), and Stop gives
     /// clamp(position + x, lo, hi) - position, so a reversed speed leaves the edge at once (H3).
+    /// An offset that is exactly 0 stays 0 at every edge: a playhead that hasn't moved is at rest
+    /// (Position, today's read) whatever the window, so a rebase at x = 0 (an edge change at speed
+    /// 0, say, under Stop with Position outside the window) never moves it.
     /// An empty or non-finite window, or a non-finite position under Stop, leaves x as it is.
     /// A non-finite r' (a sample rate of 0, say) is taken as 0, which holds, and r' = -0.0 as
     /// +0.0: speed 0 never rebases on a change of source alone, where Stop's canon would move x0
@@ -164,6 +167,10 @@ class Playhead
     static double canon(double x, ScanEdge edge, const ScanGeometry &g, double position) noexcept
     {
         GG_FP_CONTRACT_OFF
+        if (x == 0.0)
+        {
+            return 0.0; // at rest stays at rest, at every edge (-0.0 too, as +0.0)
+        }
         const double length = g.hi - g.lo;
         if (!(length > 0.0) || !std::isfinite(length))
         {
