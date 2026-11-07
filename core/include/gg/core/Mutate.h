@@ -28,9 +28,9 @@ using LockSet = std::bitset<kParamCount>;
 
 /// The counter RNG's layer and stream for Mutate's draws: a layer no engine uses, so Mutate needs
 /// no rng::Field of its own and its draws are a key apart from every grain's. Each slot's first
-/// draw is keyed (seed, kMutateLayer, kMutateStream, Field::PositionJitter, counter × kParamCount
-/// + slot). A stepped slot's second draw, the step it picks, has the same key but for its stream,
-/// kMutatePickStream.
+/// draw is keyed (seed, kMutateLayer, kMutateStream, Field::PositionJitter, (uint64_t(counter) <<
+/// 32) | the slot's CLAP ID), so an appended parameter moves no other slot's draw. A stepped slot's
+/// second draw, the step it picks, has the same key but for its stream, kMutatePickStream.
 inline constexpr uint32_t kMutateLayer = 0xFFFFFFFFu;
 inline constexpr uint32_t kMutateStream = 0xFFFFFFFFu;
 inline constexpr uint32_t kMutatePickStream = 0xFFFFFFFEu;
