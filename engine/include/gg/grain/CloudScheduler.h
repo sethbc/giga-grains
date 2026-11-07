@@ -15,6 +15,7 @@
 #include "gg/core/FpContract.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
+#include "gg/grain/KeyTuning.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/SourceMode.h"
 
@@ -224,6 +225,16 @@ class CloudScheduler
     /// nothing. The default is none.
     void setHeldKeys(std::span<const uint8_t> keys) noexcept;
 
+    /// The key term of each held key, in semitones from key 60 (M3 Tuning spec §4.1): grain
+    /// rates read table[key] where they read key - 60. `table` holds 128 doubles and must outlive
+    /// its use; it is read on the calling thread, so the owner writes it only between schedule()
+    /// calls. nullptr (the default) restores kTwelveTetKeySemitones. Kept by reset(). A key past
+    /// 127 reads entry 127.
+    void setKeySemitones(const double *table) noexcept
+    {
+        keySemitones_ = table != nullptr ? table : kTwelveTetKeySemitones.data();
+    }
+
     /// true (the instrument): no grain is emitted while no key is held. The default is false
     /// (the FX).
     void setNoteGate(bool gate) noexcept { noteGate_ = gate; }
@@ -337,7 +348,7 @@ class CloudScheduler
         {
             // M2 spec §6.6: the spread is added before the clamp; the extremes spec §6.1:
             // Smear's detune after it. A term whose amplitude is 0 is skipped, with no draw.
-            const double keyTerm = note >= 0 ? static_cast<double>(note - 60) : 0.0;
+            const double keyTerm = note >= 0 ? keySemitones_[keyIndex(note)] : 0.0;
             double semis = params_.pitchSemitones + keyTerm;
             if (params_.pitchSpreadSemitones != 0.0)
             {
@@ -351,7 +362,7 @@ class CloudScheduler
         }
         else if (note >= 0)
         {
-            rate = exp2Det(std::clamp(params_.pitchSemitones + static_cast<double>(note - 60),
+            rate = exp2Det(std::clamp(params_.pitchSemitones + keySemitones_[keyIndex(note)],
                                       -kMaxPitchSemitones, kMaxPitchSemitones) /
                            12.0);
         }
@@ -489,6 +500,11 @@ class CloudScheduler
     // The held keys, ascending: the first keyCount_ entries (spec §6.1).
     std::array<uint8_t, 128> keys_{};
     uint32_t keyCount_{0};
+    const double *keySemitones_{kTwelveTetKeySemitones.data()};
+    static constexpr std::size_t keyIndex(int16_t note) noexcept
+    {
+        return note > 127 ? 127 : static_cast<std::size_t>(note);
+    }
     bool noteGate_{false}; // no grain while no key is held (the instrument)
     // The held set went from empty to non-empty, or forceNextOnset() was called, since the
     // last run.

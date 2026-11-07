@@ -67,6 +67,11 @@ struct EngineConfig
     bool spectral{false};
     /// The kernel table this engine renders with, chosen once, at construction.
     KernelChoice kernels{KernelChoice::Auto};
+    /// The Cloud stream's key term per MIDI key (M3 Tuning spec §4.1): 128 doubles in semitones
+    /// from key 60, which must outlive the engine. nullptr (the default) is 12-TET, k - 60. The
+    /// owner writes it only between process() calls, on the calling thread. Voice streams never
+    /// read it.
+    const double *keySemitones{nullptr};
 };
 
 /// The most voice streams one layer's engine runs beside its Cloud stream (M3 Voice spec §4.3).
