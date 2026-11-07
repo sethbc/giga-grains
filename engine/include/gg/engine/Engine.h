@@ -71,6 +71,8 @@ struct EngineConfig
 
 /// The most voice streams one layer's engine runs beside its Cloud stream (M3 Voice spec §4.3).
 inline constexpr uint32_t kMaxVoices = 16;
+// The pool's stream slots are the voices' and the Cloud stream's (GrainSpec::voiceSlot).
+static_assert(kMaxVoices + 1 == kStreamSlots && kCloudStreamSlot == kMaxVoices);
 
 /// One voice stream's controls (M3 Voice spec §4.3, V1): its stream's parameters (the layer's
 /// effective values with the voice's own pitch and route offsets folded in), its amplitude
@@ -82,6 +84,10 @@ struct VoiceParams
     AmpEnvelope amp;
     /// The voice's Level offset and its volume expression, linear.
     float gain{1.0f};
+    /// The allocator's weak flag (M3 expression spec EB7): the voice's note is released or
+    /// pedal-held (V4), so its grains yield before a held voice's at the overload ladder's third
+    /// rung (E9). Set at every applied boundary.
+    bool weak{false};
 };
 
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
@@ -90,10 +96,12 @@ struct VoiceParams
 using GrainEventSink = void (*)(void *ctx, uint32_t layer, const GrainSpec &);
 
 /// Called on the audio thread, from inside process(), once for every grain the overload ladder
-/// steals (M2 engine spec §6.5), with the engine's EngineConfig::layer, the stolen grain's index
-/// and the onset of the grain it makes room for, immediately before that grain's GrainEventSink
-/// call. It must be real-time safe.
-using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64_t onset);
+/// steals (M2 engine spec §6.5), with the engine's EngineConfig::layer, the stolen grain's index,
+/// its voice's ordinal (GrainSpec::voice: kNoVoice for a Cloud grain; M3 expression spec E14) and
+/// the onset of the grain it makes room for, immediately before that grain's GrainEventSink call.
+/// It must be real-time safe.
+using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, uint32_t voice,
+                                int64_t onset);
 
 /// The grain engine, one layer's (spec §6.2): one Cloud grain stream (layer EngineConfig::layer,
 /// stream 0) whose new grains read one source kind, a sample (SourceMode::Sample, the default),
@@ -206,8 +214,22 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 ///    earlier end); the draw is admitted at the highest such t and the steal counted in
 ///    stolenGrains() and reported to the steal sink. Otherwise the draw is dropped and counted in
 ///    droppedGrains().
-/// At most one grain is stolen per draw, and a stolen grain is never stolen again. The grain
-/// latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
+/// At most one grain is stolen per draw, and a stolen grain is never stolen again.
+///
+/// **Rung 3 in voice mode** (M3 expression spec E9, EB6; the director's D4, INTENT §23 #81,
+/// applied per voice). The victim is the first of these candidates that passes rung 3's two tests
+/// (half its window sounded, then the room test), each the oldest unstolen sounding grain of one
+/// stream slot (GrainSpec::voiceSlot; GrainPool::oldestSoundingOf), at most kStreamSlots of them:
+/// 1. each orphan slot's (kCloudStreamSlot, and every voice slot whose voice isn't spawning),
+///    oldest row first;
+/// 2. each weak spawning voice's (VoiceParams::weak), heaviest first: the largest
+///    GrainPool::slotWeight, fading grains included, a tie to the lower ordinal (then the lower
+///    slot);
+/// 3. each held spawning voice's, the drawing voice included, in the same order.
+/// If none passes, the draw drops. A slot reused by a new voice keeps its old voice's grains,
+/// which count with the new one. With one voice and no orphan the only candidate is the layer's
+/// oldest unstolen grain, so the rung is the Cloud rule; in Cloud mode the rung is unchanged. The
+/// grain latches the tier and weight chosen (GrainSpec::tier, GrainSpec::weight).
 ///
 /// **The level per grain** (M2 engine spec §6.3). A grain admitted at HQ latches the mip level
 /// of its rate, mipLevelFor(rate, the source's levelCount()), its rate in level-0 frames per
@@ -582,9 +604,14 @@ class Engine
     };
     void admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Rung 3's victim in voice mode (the class comment; M3 expression spec E9): the first
+    /// candidate row, in E9's order, for which passes(row) is true, into `row`; false if none.
+    template <class Passes>
+    bool voiceVictim(int64_t onset, const Passes &passes,
+                     uint32_t &row) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Voice mode's schedule for [blockStart, blockStart + numFrames): every spawning voice's
     /// draws, merged by (onset sample, ordinal, slot), each with its voice gain, passed to
-    /// spawn(const GrainDraw &, uint32_t ordinal) in that order.
+    /// spawn(const GrainDraw &, uint32_t ordinal, uint8_t slot) in that order.
     template <class Spawn>
     void scheduleVoices(int64_t blockStart, uint32_t numFrames,
                         Spawn &&spawn) noexcept SST_CPPUTILS_NONBLOCKING;

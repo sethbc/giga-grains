@@ -618,7 +618,7 @@ void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spaw
         d.gain = static_cast<float>(static_cast<double>(d.gain) *
                                     static_cast<double>(voice.params.gain) *
                                     voice.params.amp.valueAt(peakSample) * headroom);
-        spawn(d, voice.ordinal);
+        spawn(d, voice.ordinal, static_cast<uint8_t>(best));
     }
 }
 
@@ -694,8 +694,9 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     // which the pool has already been rendered; admit() moves it forward when it has to
     // retire grains early to make room. Disabled, nothing spawns (and the pool is empty).
     int64_t renderedTo = blockStart;
-    // `voice` is GrainSpec::voice: kNoVoice for the Cloud stream's grains, else the ordinal.
-    const auto spawnAs = [&](const GrainDraw &d, uint32_t voice) {
+    // `voice` is GrainSpec::voice: kNoVoice for the Cloud stream's grains, else the ordinal; and
+    // `slot` GrainSpec::voiceSlot: kCloudStreamSlot, else the voice's slot.
+    const auto spawnAs = [&](const GrainDraw &d, uint32_t voice, uint8_t slot) {
         // Row 234 (gateFaults()): the gate in effect is the request, applied at process()'s first
         // frame, so a grain while it is requested off means enabled_ was read wrong. The grain
         // still goes on: the counter only records it.
@@ -711,6 +712,7 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
             if (liveGrain(d, g, live ? live_ : spectral_->ring(), live ? kLiveSlot : kSpectralSlot))
             {
                 g.voice = voice;
+                g.voiceSlot = slot;
                 admit(g, outputs, blockStart, renderedTo);
             }
             else
@@ -722,6 +724,7 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         {
             GrainSpec g = sampleGrain(d);
             g.voice = voice;
+            g.voiceSlot = slot;
             admit(g, outputs, blockStart, renderedTo);
         }
     };
@@ -729,7 +732,7 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     {
         if (!voiceMode_)
         {
-            const auto spawn = [&](const GrainDraw &d) { spawnAs(d, kNoVoice); };
+            const auto spawn = [&](const GrainDraw &d) { spawnAs(d, kNoVoice, kCloudStreamSlot); };
             cloud_.schedule(blockStart, numFrames, config_.seed, config_.layer, kStream, spawn);
         }
         else
@@ -882,18 +885,26 @@ void Engine::admit(const GrainSpec &draw, const BlockOutputs &outputs, int64_t b
         // ES-T2a), each of which made room for a grain it is yielding to, so under a spent quota
         // every draw may steal one grain and the stream refreshes at its onset rate.
         const GrainRows &rows = pool_.rows();
+        // D4 (half its window sounded), then the room test, for a candidate row: unstolen and
+        // sounding at the onset, so its weight is in the ledger and not in the fading part.
+        const uint64_t unfaded = load - pool_.fadingWeight(onset);
+        const auto passes = [&](uint32_t r) {
+            return static_cast<double>(onset - rows.onsetSample[r]) - rows.onsetFrac[r] >=
+                       kStealThreshold * rows.durationSamples[r] &&
+                   fits(unfaded - rows.weight[r], tier);
+        };
         uint32_t row = 0;
-        if (pool_.oldestSounding(onset, row) &&
-            static_cast<double>(onset - rows.onsetSample[row]) - rows.onsetFrac[row] >=
-                kStealThreshold * rows.durationSamples[row] &&
-            fits(load - pool_.fadingWeight(onset) - rows.weight[row], tier))
+        const bool found = voiceMode_ ? voiceVictim(onset, passes, row)
+                                      : pool_.oldestSounding(onset, row) && passes(row);
+        if (found)
         {
             const uint64_t index = rows.index[row];
+            const uint32_t voice = rows.voice[row];
             pool_.steal(row, onset);
             ++stolen_;
             if (stealSink_ != nullptr)
             {
-                stealSink_(stealCtx_, config_.layer, index, onset);
+                stealSink_(stealCtx_, config_.layer, index, voice, onset);
             }
             admitted = true;
         }
@@ -934,6 +945,85 @@ void Engine::admit(const GrainSpec &draw, const BlockOutputs &outputs, int64_t b
     {
         sink_(sinkCtx_, config_.layer, g);
     }
+}
+
+template <class Passes>
+bool Engine::voiceVictim(int64_t onset, const Passes &passes, uint32_t &row) noexcept
+{
+    // E9's candidates (the class comment), each slot's oldest unstolen sounding grain, in three
+    // groups. Every slot is examined once, so at most kStreamSlots candidates; each
+    // oldestSoundingOf call advances its slot's cursor, amortized over the rows stored.
+    struct Candidate
+    {
+        uint32_t row;
+        uint64_t weight;
+        uint32_t ordinal;
+    };
+    Candidate orphans[kStreamSlots]{};
+    Candidate weak[kMaxVoices]{};
+    Candidate held[kMaxVoices]{};
+    uint32_t orphanCount = 0;
+    uint32_t weakCount = 0;
+    uint32_t heldCount = 0;
+    for (uint8_t slot = 0; slot < kStreamSlots; ++slot)
+    {
+        uint32_t r = 0;
+        if (!pool_.oldestSoundingOf(slot, onset, r))
+        {
+            continue;
+        }
+        const bool spawning = slot < kMaxVoices && voices_[slot].spawning;
+        if (!spawning)
+        {
+            orphans[orphanCount++] = {r, 0, 0};
+            continue;
+        }
+        const Voice &voice = voices_[slot];
+        const Candidate c{r, pool_.slotWeight(slot), voice.ordinal};
+        if (voice.params.weak)
+        {
+            weak[weakCount++] = c;
+        }
+        else
+        {
+            held[heldCount++] = c;
+        }
+    }
+    // Insertion sorts of at most 17: orphans by row (spawn order, so the oldest first); voices
+    // heaviest first, a tie to the lower ordinal, then to the lower slot (the scan's order, kept
+    // by the stable sort).
+    const auto sort = [](Candidate *c, uint32_t n, auto before) {
+        for (uint32_t i = 1; i < n; ++i)
+        {
+            const Candidate x = c[i];
+            uint32_t j = i;
+            while (j > 0 && before(x, c[j - 1]))
+            {
+                c[j] = c[j - 1];
+                --j;
+            }
+            c[j] = x;
+        }
+    };
+    sort(orphans, orphanCount,
+         [](const Candidate &a, const Candidate &b) { return a.row < b.row; });
+    const auto heavier = [](const Candidate &a, const Candidate &b) {
+        return a.weight > b.weight || (a.weight == b.weight && a.ordinal < b.ordinal);
+    };
+    sort(weak, weakCount, heavier);
+    sort(held, heldCount, heavier);
+    const auto first = [&passes, &row](const Candidate *c, uint32_t n) {
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            if (passes(c[i].row))
+            {
+                row = c[i].row;
+                return true;
+            }
+        }
+        return false;
+    };
+    return first(orphans, orphanCount) || first(weak, weakCount) || first(held, heldCount);
 }
 
 void Engine::renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,

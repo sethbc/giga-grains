@@ -1772,7 +1772,7 @@ struct OrderLog
     {
         static_cast<OrderLog *>(ctx)->push({false, g.index, g.onsetSample, g.tier});
     }
-    static void steal(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    static void steal(void *ctx, uint32_t, uint64_t index, uint32_t, int64_t onset)
     {
         static_cast<OrderLog *>(ctx)->push({true, index, onset, gg::Tier::Normal});
     }
@@ -1972,11 +1972,11 @@ TEST_CASE("a steal sink reports each steal before the spawn", "[engine][budget]"
     {
         OrderLog *log;
         bool layerTwo{true};
-        static void steal(void *ctx, uint32_t layer, uint64_t index, int64_t onset)
+        static void steal(void *ctx, uint32_t layer, uint64_t index, uint32_t voice, int64_t onset)
         {
             auto *self = static_cast<Layers *>(ctx);
             self->layerTwo = self->layerTwo && layer == 2;
-            OrderLog::steal(self->log, layer, index, onset);
+            OrderLog::steal(self->log, layer, index, voice, onset);
         }
     } layers{&log};
     engine.setStealSink(&Layers::steal, &layers);
@@ -2207,7 +2207,7 @@ struct StealLog
 
     StealLog() { steals.reserve(4096); }
 
-    static void record(void *ctx, uint32_t, uint64_t index, int64_t onset)
+    static void record(void *ctx, uint32_t, uint64_t index, uint32_t, int64_t onset)
     {
         auto *log = static_cast<StealLog *>(ctx);
         if (log->steals.size() < log->steals.capacity())

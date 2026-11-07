@@ -29,6 +29,12 @@ inline constexpr int64_t kNoEdge = std::numeric_limits<int64_t>::max();
 /// §4.3).
 inline constexpr uint32_t kNoVoice = 0xFFFFFFFFu;
 
+/// The stream slots a pool tells apart (M3 expression spec EB6): the kMaxVoices voice slots, 0 to
+/// 15, and the Cloud stream's, kCloudStreamSlot (Engine.h checks kMaxVoices + 1 == kStreamSlots).
+inline constexpr uint8_t kStreamSlots = 17;
+/// GrainSpec::voiceSlot of a grain the layer's Cloud stream spawned.
+inline constexpr uint8_t kCloudStreamSlot = 16;
+
 /// One grain's parameters, latched at its onset (INTENT §14). Times and positions are 64-bit.
 struct GrainSpec
 {
@@ -60,8 +66,15 @@ struct GrainSpec
     /// the engine sets it.
     uint8_t level{0};
     /// The ordinal of the voice that spawned the grain (M3 Voice spec §4.3), or kNoVoice for a
-    /// Cloud grain. Only the event log reads it: the pool doesn't store it.
+    /// Cloud grain. The pool stores it for the steal sink (M3 expression spec E14), and the
+    /// event log reads it.
     uint32_t voice{kNoVoice};
+    /// The stream slot that spawned the grain (M3 expression spec EB6): the voice's engine slot,
+    /// 0 to kMaxVoices − 1, or kCloudStreamSlot. It never changes: a slot a new voice reuses
+    /// keeps the old voice's grains, which then count with the new one. Voice mode's steal order
+    /// reads it (GrainPool::slotWeight, GrainPool::oldestSoundingOf). The pool stores one not
+    /// below kStreamSlots as kCloudStreamSlot.
+    uint8_t voiceSlot{kCloudStreamSlot};
 
     /// Every member, sourceSlot and bus included (as the plan asked): two grains that differ
     /// only in the slot they read, or their bus, compare unequal. Only tests compare GrainSpecs.
@@ -187,8 +200,10 @@ struct GrainRows
     const double *envReleaseStart;
     const double *envAttackScale;
     const double *envReleaseScale;
-    const uint8_t *weight; ///< GrainSpec::weight
-    const uint8_t *level;  ///< GrainSpec::level
+    const uint8_t *weight;    ///< GrainSpec::weight
+    const uint8_t *level;     ///< GrainSpec::level
+    const uint32_t *voice;    ///< GrainSpec::voice
+    const uint8_t *voiceSlot; ///< GrainSpec::voiceSlot, below kStreamSlots
     /// The first output sample any fade of the grain applies at, where the SIMD runs end: the
     /// earlier of the output sample at which it was stolen (spec §6.5; GrainPool::steal) and,
     /// for a grain cut at its source's edge (carry-over row 300; GrainPool::spawn's `edge`), its
@@ -284,6 +299,26 @@ class GrainPool
     /// (a row it passes has ended or been stolen, so it is never the answer again) and restarts
     /// at each, so the work is bounded by the rows stored.
     bool oldestSounding(int64_t onset, uint32_t &row) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// As oldestSounding, among the rows of one stream slot (GrainSpec::voiceSlot; M3 expression
+    /// spec EB6): the first stored row of `slot` whose end is after the onset and that hasn't
+    /// been stolen. False when there is none, or slot isn't below kStreamSlots. Each slot has its
+    /// own cursor, which advances only past rows that ended, were stolen or belong to another
+    /// slot (a row's slot never changes), and restarts at each retireFinished(), so the work is
+    /// bounded by kStreamSlots × the rows stored between retirements. With oldestSounding's
+    /// requirement on the onsets.
+    bool oldestSoundingOf(uint8_t slot, int64_t onset,
+                          uint32_t &row) noexcept SST_CPPUTILS_NONBLOCKING;
+
+    /// The ledger weight of `slot`'s grains not yet forgotten (M3 expression spec EB6): the sum
+    /// of their weights over the heap's entries, the grains stolen and still fading included.
+    /// After soundingWeight(onset) (or any call that forgets the ends <= onset), it is the
+    /// weight of the slot's grains whose end is after the onset, so the slots' weights sum to
+    /// soundingWeight(onset). 0 for a slot not below kStreamSlots.
+    uint64_t slotWeight(uint8_t slot) const noexcept
+    {
+        return slot < kStreamSlots ? slotWeight_[slot] : 0;
+    }
 
     /// Steals the grain in `row`, which must sound at the onset and not have been stolen; it is
     /// never stolen again. fadeStart becomes min(fadeStart, onset): the onset, or a cut grain's
@@ -382,6 +417,8 @@ class GrainPool
     std::vector<double> envReleaseScale_;
     std::vector<uint8_t> weight_;
     std::vector<uint8_t> level_;
+    std::vector<uint32_t> voice_;
+    std::vector<uint8_t> voiceSlot_;
     std::vector<int64_t> fadeStart_;
     std::vector<float> invFade_;
     std::vector<int64_t> edgeEnd_;
@@ -412,6 +449,11 @@ class GrainPool
     uint64_t fadingWeight_{0};
     // oldestSounding's scan starts here: every row below it has ended or been stolen.
     uint32_t cursor_{0};
+    // Per stream slot (EB6): the summed weight of its heap entries, kept with heapWeight_ (an
+    // entry adds its weight at spawn and takes it away when its end is forgotten), and
+    // oldestSoundingOf's cursor (every row below it has ended, been stolen or is another slot's).
+    uint64_t slotWeight_[kStreamSlots]{};
+    uint32_t slotCursor_[kStreamSlots]{};
 };
 } // namespace gg
 

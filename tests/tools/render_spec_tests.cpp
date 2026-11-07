@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -781,12 +782,14 @@ TEST_CASE("the event line carries tier and lvl", "[render]")
 namespace
 {
 /// Checks that every steal line in `events` is followed at once by the spawn it made room for
-/// (the same layer's, at the steal's onset), that it steals a grain the same layer spawned
-/// earlier, and that no grain is stolen twice; returns how many steal lines there are.
+/// (the same layer's, at the steal's onset), that it steals a grain the same layer and voice
+/// spawned earlier ("v", absent for a Cloud grain), and that no grain is stolen twice; returns
+/// how many steal lines there are.
 std::size_t checkSteals(const std::vector<std::string> &events)
 {
-    std::set<std::pair<uint32_t, uint64_t>> spawned;
-    std::set<std::pair<uint32_t, uint64_t>> stolen;
+    using Grain = std::tuple<uint32_t, uint32_t, uint64_t>; // layer, voice, index
+    std::set<Grain> spawned;
+    std::set<Grain> stolen;
     std::size_t steals = 0;
     for (std::size_t n = 0; n < events.size(); ++n)
     {
@@ -794,17 +797,18 @@ std::size_t checkSteals(const std::vector<std::string> &events)
         const auto line = nlohmann::json::parse(events[n]);
         const auto layer = line["layer"].get<uint32_t>();
         const auto index = line["i"].get<uint64_t>();
+        const auto voice = line.contains("v") ? line["v"].get<uint32_t>() : gg::kNoVoice;
         if (!line.contains("steal"))
         {
-            REQUIRE(spawned.insert({layer, index}).second);
+            REQUIRE(spawned.insert({layer, voice, index}).second);
             continue;
         }
         ++steals;
-        REQUIRE(line.size() == 3);
+        REQUIRE(line.size() == (voice == gg::kNoVoice ? 3u : 4u));
         REQUIRE(events[n] ==
-                gg::render::formatStealLine(layer, index, line["steal"].get<int64_t>()));
-        REQUIRE(spawned.contains({layer, index}));
-        REQUIRE(stolen.insert({layer, index}).second);
+                gg::render::formatStealLine(layer, index, voice, line["steal"].get<int64_t>()));
+        REQUIRE(spawned.contains({layer, voice, index}));
+        REQUIRE(stolen.insert({layer, voice, index}).second);
         REQUIRE(n + 1 < events.size());
         const auto next = nlohmann::json::parse(events[n + 1]);
         REQUIRE_FALSE(next.contains("steal"));
@@ -815,12 +819,24 @@ std::size_t checkSteals(const std::vector<std::string> &events)
 }
 } // namespace
 
+TEST_CASE("the steal line carries v for a voice grain", "[render][voice]")
+{
+    // M3 expression spec E14 (carry-over row 412): a voice grain's steal line names its voice
+    // after "layer", as its spawn line does; a Cloud grain's keeps M2's bytes.
+    CHECK(gg::render::formatStealLine(0, 5, 3, 900) == R"({"i":5,"layer":0,"v":3,"steal":900})");
+    CHECK(gg::render::formatStealLine(0, 5, gg::kNoVoice, 900) ==
+          R"({"i":5,"layer":0,"steal":900})");
+    CHECK(gg::render::formatStealLine(3, uint64_t{1} << 40, 0xFFFFFFFEu, int64_t{1} << 40) ==
+          R"({"i":1099511627776,"layer":3,"v":4294967294,"steal":1099511627776})");
+}
+
 TEST_CASE("a steal is a line of its own in order", "[render]")
 {
     // M2 engine spec §6.7: a steal is {"i":k,"layer":L,"steal":o}, k the stolen grain's index
     // and o the onset of the grain it made room for, right before that grain's line.
-    CHECK(gg::render::formatStealLine(2, 17, 48000) == R"({"i":17,"layer":2,"steal":48000})");
-    CHECK(gg::render::formatStealLine(0, uint64_t{1} << 40, int64_t{1} << 40) ==
+    CHECK(gg::render::formatStealLine(2, 17, gg::kNoVoice, 48000) ==
+          R"({"i":17,"layer":2,"steal":48000})");
+    CHECK(gg::render::formatStealLine(0, uint64_t{1} << 40, gg::kNoVoice, int64_t{1} << 40) ==
           R"({"i":1099511627776,"layer":0,"steal":1099511627776})");
 
     // FX mode: an HQ cloud of 400 Hz and 500 ms grains over Budget 256 (1,024 units, 85 HQ

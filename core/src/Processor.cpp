@@ -1101,6 +1101,7 @@ void Processor::updateVoices() noexcept
             params.cloud = cache.cloud;
             params.amp = v.env[0].envelope(lastStepped_, env1, config_.sampleRate);
             params.gain = cache.gain;
+            params.weak = v.weak; // EB7: the allocator's flag, at every applied boundary
             if (!v.told)
             {
                 l.engine.startVoice(static_cast<uint32_t>(slot), v.ordinal, params);
@@ -1915,7 +1916,8 @@ void Processor::onGrain(void *ctx, uint32_t layer, const GrainSpec &g) noexcept
     }
 }
 
-void Processor::onSteal(void *ctx, uint32_t layer, uint64_t index, int64_t onset) noexcept
+void Processor::onSteal(void *ctx, uint32_t layer, uint64_t index, uint32_t voice,
+                        int64_t onset) noexcept
 {
     auto *self = static_cast<Processor *>(ctx);
     // As onGrain, on the layer's task's thread, into the same buffer: the steal stays before the
@@ -1923,7 +1925,10 @@ void Processor::onSteal(void *ctx, uint32_t layer, uint64_t index, int64_t onset
     Layer &l = *self->layers_[std::min<uint32_t>(layer, kLayers - 1)];
     if (l.events.size() < l.events.capacity())
     {
-        l.events.push_back({LayerEvent::Kind::Steal, {}, index, onset});
+        // The stolen grain's voice rides in the event's grain (M3 expression spec E14).
+        GrainSpec stolen{};
+        stolen.voice = voice;
+        l.events.push_back({LayerEvent::Kind::Steal, stolen, index, onset});
     }
     else
     {
@@ -1942,7 +1947,7 @@ void Processor::drainEvents() noexcept
             {
                 if (externalStealSink_ != nullptr)
                 {
-                    externalStealSink_(externalStealSinkCtx_, L, e.index, e.onset);
+                    externalStealSink_(externalStealSinkCtx_, L, e.index, e.grain.voice, e.onset);
                 }
                 continue;
             }
