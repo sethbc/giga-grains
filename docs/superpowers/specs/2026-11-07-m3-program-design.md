@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft for the director's approval (brainstorming, 2026-11-07). The builder check's eight questions are answered in §2a as **Claude's provisional calls** (the director asked, 2026-11-07, that work continue overnight); each stands until the director overrules it |
+| **Status** | **Approved by the director 2026-11-07** ("1) approved"). The builder check's eight questions were answered in §2a as Claude's provisional calls made overnight; the director approved them the same day ("2) approved": P1 and P2 by name, with the rest of §2a) |
 | **Milestone** | M3 (Playable), tagged 0.3.0 as an unpublished draft release at its close (INTENT §20, §23 #62) |
 | **Depends on** | M2 closed (§23 #93); `main` at 0.3.0-dev (`a3d5f2a`) |
 | **Authority** | INTENT.md. This document places every M3 deliverable in a sub-project and records the director's decisions from brainstorming. Each sub-project then gets its own spec, plan, build and review, as M1's did (§23 #35). M3 runs as M1 did: one session, sub-projects in series, parallel tasks inside each (§23 #87). Part II changes below each add a dated §23 row |
@@ -43,7 +43,7 @@ Voice scheduler is the groundwork for M4's Sync.
 6. **Row 405 is fixed first,** as its own small pull request, before sub-project 1 ("go with
    recs").
 
-## 2a. Claude's provisional calls (2026-11-07, after the builder check)
+## 2a. Claude's calls after the builder check (2026-11-07; approved by the director the same day)
 
 The director, going to sleep: "please progress this as much as possible while i'm asleep." The
 builder check raised eight questions only the director can settle; each is answered here by
