@@ -18,6 +18,7 @@ add_executable(gg-tests
         core/mod_processor_tests.cpp
         core/mod_sources_tests.cpp
         core/mutate_tests.cpp
+        core/notices_text_tests.cpp
         core/note_table_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
@@ -142,6 +143,7 @@ target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/media/src)
 # Scratch files (WAV/PNG round trips) go under the build tree, never a shared temp dir.
 target_compile_definitions(gg-tests PRIVATE GG_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
         GG_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+        GG_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
         GG_FACTORY_PRESET_DIR="${CMAKE_SOURCE_DIR}/content/presets"
         GG_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
         GG_PRESET_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/presets"
@@ -1044,6 +1046,16 @@ foreach (case IN ITEMS allowed other-target-source other-target-include other-ta
             -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/asio-guard/${case}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/asio-guard/run.cmake)
     set_tests_properties(asio_guard_${case} PROPERTIES LABELS "build")
+endforeach ()
+
+# The MTS-ESP vendoring guard (cmake/MtsEspGuard.cmake): the real files pass, a copy with one byte
+# changed or one file removed fails naming it.
+foreach (case IN ITEMS pass modified missing)
+    add_test(NAME mts_esp_guard_${case}
+            COMMAND ${CMAKE_COMMAND} -DGG_GUARD_CASE=${case} -DGG_REPO=${PROJECT_SOURCE_DIR}
+            -DGG_OUT=${CMAKE_CURRENT_BINARY_DIR}/mts-esp-guard/${case}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mts-esp-guard/run.cmake)
+    set_tests_properties(mts_esp_guard_${case} PROPERTIES LABELS "build")
 endforeach ()
 
 # The embed script (cmake/embed-text.cmake, carry-over row 319): its escaping over a fixture of a

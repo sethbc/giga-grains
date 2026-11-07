@@ -125,6 +125,26 @@ target_include_directories(r8brain SYSTEM INTERFACE r8brain)
 target_link_libraries(r8brain INTERFACE gg::fp-contract-off Threads::Threads)
 add_library(gg::r8brain ALIAS r8brain)
 
+# tuning-library (MIT), pinned at d6fcc08 (release_1.1.0-38): header-only Scala .scl/.kbm parsing
+# and tuning tables. Only core/src/Tuning.cpp and the tests include it.
+add_library(tuning-library INTERFACE)
+target_include_directories(tuning-library SYSTEM INTERFACE tuning-library/include)
+add_library(gg::tuning-library ALIAS tuning-library)
+
+# The MTS-ESP client and master (0BSD), vendored byte for byte in mts-esp-client/ and guarded by
+# cmake/MtsEspGuard.cmake (libMTS, ODDSound's closed library, is never vendored). Each is one
+# third-party translation unit, compiled with -ffp-contract=off but without gg::compiler-options.
+# The client dlopens libMTS at run time. The master is for a test executable alone.
+add_library(gg_mts_client STATIC mts-esp-client/Client/libMTSClient.cpp)
+target_include_directories(gg_mts_client SYSTEM PUBLIC mts-esp-client/Client)
+target_link_libraries(gg_mts_client PUBLIC ${CMAKE_DL_LIBS} PRIVATE gg::fp-contract-off)
+add_library(gg::mts-client ALIAS gg_mts_client)
+
+add_library(gg_mts_master STATIC mts-esp-client/Master/libMTSMaster.cpp)
+target_include_directories(gg_mts_master SYSTEM PUBLIC mts-esp-client/Master)
+target_link_libraries(gg_mts_master PUBLIC ${CMAKE_DL_LIBS} PRIVATE gg::fp-contract-off)
+add_library(gg::mts-master ALIAS gg_mts_master)
+
 # utf8proc (MIT; its Unicode data under the Unicode license), pinned at tag v2.12.0 (79cdd5a,
 # Unicode 18): Unicode normalization for gg-media's search for a missing sample, which matches a
 # file name saved in one normal form against the same name stored in the other (NFC and NFD;
