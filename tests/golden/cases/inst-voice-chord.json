@@ -1,0 +1,11 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 5.0, "Size": -4.0, "Level": -18.0, "A Mode": 1, "A Env 1 Release": 0.0},
+  "controls": [{"time": 0.1, "kind": "sustain", "value": 1.0}, {"time": 3.0, "kind": "sustain", "value": 0.0}],
+  "notes": [{"time": 0.25, "key": 48, "duration": 1.5}, {"time": 0.25, "key": 55, "duration": 1.5}, {"time": 0.25, "key": 64, "duration": 1.5}]
+}

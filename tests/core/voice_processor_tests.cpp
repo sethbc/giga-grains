@@ -10,6 +10,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -18,6 +22,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "LayersFixture.h"
+#include "Render.h"
+#include "RenderSpec.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
@@ -1066,4 +1072,39 @@ TEST_CASE("processor_voice_params_recompute_only_on_change", "[core][voice][mod]
     p->setBase(slotA(LayerParam::Size), -3.0f);
     render(*p, {}, 27520, 27520 + 3200, {256}, out);
     CHECK(p->voiceParamRecomputes() == settled + 1);
-}
+
+    TEST_CASE("mpe and note expressions render the same voices", "[core][voice]")
+    {
+        // Spec §3a B7: the goldens' gestures are exactly representable on both paths (a bend of
+        // 3k semitones is the 14-bit value 8192 + 512k at MPE Bend Range 48), so the MPE render and
+        // the note-expression render agree line for line (the grain index "i" dropped) and bit for
+        // bit in the audio, with no tolerance needed.
+        const auto run = [](const char *name, std::vector<std::string> &lines) {
+            const auto path =
+                std::filesystem::path{GG_GOLDEN_DIR} / "cases" / (std::string{name} + ".json");
+            std::ifstream in(path, std::ios::binary);
+            REQUIRE(in.good());
+            const std::string json{std::istreambuf_iterator<char>(in),
+                                   std::istreambuf_iterator<char>()};
+            std::string error;
+            const auto spec = gg::render::parseRenderSpec(json, error);
+            INFO(name << ": " << error);
+            REQUIRE(spec.has_value());
+            auto audio = gg::render::render(*spec, &lines);
+            for (std::string &line : lines)
+            {
+                const auto at = line.find("\"i\":");
+                const auto comma = line.find(',', at);
+                REQUIRE(at != std::string::npos);
+                line.erase(at, comma - at + 1);
+            }
+            return audio;
+        };
+        std::vector<std::string> mpeLines;
+        std::vector<std::string> exprLines;
+        const auto mpe = run("inst-voice-mpe", mpeLines);
+        const auto expr = run("inst-voice-expr", exprLines);
+        REQUIRE(mpeLines.size() > 100);
+        CHECK(mpeLines == exprLines);
+        CHECK(mpe.channels == expr.channels);
+    }
