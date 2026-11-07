@@ -216,15 +216,16 @@ double exactBend(float bend) noexcept
 }
 
 /// The layer parameters a voice can carry (isVoiceTarget), Level aside.
-constexpr std::array<LayerParam, 12> kVoiceTargets{
-    LayerParam::Density, LayerParam::Size,    LayerParam::Position,     LayerParam::Pitch,
-    LayerParam::Spray,   LayerParam::Stereo,  LayerParam::Distribution, LayerParam::Texture,
-    LayerParam::Smear,   LayerParam::Quality, LayerParam::PitchSpread,  LayerParam::SizeSpread,
+constexpr std::array<LayerParam, 13> kVoiceTargets{
+    LayerParam::Density,   LayerParam::Size,    LayerParam::Position,     LayerParam::Pitch,
+    LayerParam::Spray,     LayerParam::Stereo,  LayerParam::Distribution, LayerParam::Texture,
+    LayerParam::Smear,     LayerParam::Quality, LayerParam::PitchSpread,  LayerParam::SizeSpread,
+    LayerParam::ScanSpeed,
 };
 
 /// What a layer's voice-parameter generation is keyed on (updateVoices): the voice targets, the
-/// Source, Bus Split and Level.
-constexpr size_t kVoiceKeySlots = kVoiceTargets.size() + 3;
+/// Source, Bus Split, Level, Scan Edge and Scan Track.
+constexpr size_t kVoiceKeySlots = kVoiceTargets.size() + 5;
 
 /// Whether the note state holds the note (its gate open or the pedal holding it).
 bool heldState(NoteTable::State s) noexcept
@@ -974,6 +975,10 @@ void Processor::updateVoices() noexcept
         keySlots[kVoiceTargets.size() + 1] =
             static_cast<size_t>(layerSlot(LayerParam::BusSplit, L));
         keySlots[kVoiceTargets.size() + 2] = levelIndex;
+        keySlots[kVoiceTargets.size() + 3] =
+            static_cast<size_t>(layerSlot(LayerParam::ScanEdge, L));
+        keySlots[kVoiceTargets.size() + 4] =
+            static_cast<size_t>(layerSlot(LayerParam::ScanTrack, L));
         std::array<float, 3 * kVoiceKeySlots> key{};
         static_assert(sizeof(key) == sizeof(l.voiceKey));
         static_assert(sizeof(std::array<float, kVoiceTargets.size() + 1>) ==
@@ -1082,6 +1087,11 @@ void Processor::updateVoices() noexcept
                 cloud.pitchSemitones = std::isnan(pitch)
                                            ? 0.0
                                            : std::clamp(pitch, -kVoicePitchLimit, kVoicePitchLimit);
+                if (effective_[keySlots[kVoiceTargets.size() + 4]] > 0.5f) // Scan Track (H7)
+                {
+                    cloud.scanSpeed =
+                        std::clamp(cloud.scanSpeed * exp2Det(pitchIn / 12.0), -64.0, 64.0);
+                }
                 // Level and the voice's offset clamped together to Level's range; exact in
                 // double, so an offset that fits is the offset itself.
                 const auto layerDb = static_cast<double>(effective_[levelIndex]);

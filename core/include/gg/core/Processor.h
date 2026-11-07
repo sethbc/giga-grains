@@ -352,9 +352,12 @@ struct RingMeta
 /// engine's slots and Level (applyVoiceRoutes), and only those slots re-clamped. The layer-wide
 /// pass leaves those routes out on a Voice layer (B2). Its CloudParams are recomputed only when
 /// what they are made of changed: its routes' offsets on its slots, its pitch and volume inputs,
-/// or its layer's (those slots' base, modulation and offsets, the Source, Bus Split, Level and
-/// the material). Its pitch is the layer's Pitch + its routes' Pitch offsets + (key − 60) +
-/// its bend + its note's tuning, clamped to ±48: with MPE Off the bend is its channel's × Bend
+/// or its layer's (those slots' base, modulation and offsets, the Source, Bus Split, Level, Scan
+/// Edge, Scan Track and the material). Scan Speed is a voice target (spec §4.5): its voice's
+/// offset adds to the v before the clamp and the law, and with the layer's Scan Track on the
+/// speed is then times 2^(the note's own pitch / 12) (key − 60 + bend + tuning, not the layer's
+/// Pitch), clamped to ±64. Its pitch is the layer's Pitch + its routes' Pitch offsets + (key − 60)
+/// + its bend + its note's tuning, clamped to ±48: with MPE Off the bend is its channel's × Bend
 /// Range; with MPE On a member channel's × MPE Bend Range plus the master channel's (0) × Bend
 /// Range, each bend (v14 − 8192) / 8192 of the 14-bit value (B7: exactly 0 at the center). Its
 /// gain is exp10(Level offset / 20), the layer's Level and the offset clamped to Level's range
@@ -1050,8 +1053,8 @@ class Processor
         LayerMode mode{LayerMode::Cloud};
         VoiceAllocator voices;
         // The layer's inputs to its voices' parameters (updateVoices' key: base, modulation and
-        // offset of 15 slots, and the material) and their generation.
-        std::array<float, 45> voiceKey{};
+        // offset of 18 slots, and the material) and their generation.
+        std::array<float, 54> voiceKey{};
         SourceMode voiceKeyMaterial{SourceMode::Sample};
         bool voiceKeyValid{false};
         uint64_t voiceGeneration{0};
@@ -1059,7 +1062,7 @@ class Processor
         {
             bool valid{false};
             uint64_t generation{0};          // the layer's voiceGeneration
-            std::array<float, 13> offsets{}; // its routes' offsets on its slots and Level
+            std::array<float, 14> offsets{}; // its routes' offsets on its slots and Level
             NoteTable::Note note{};          // as last seen in the table
             double pitchIn{0.0};             // (key − 60) + bend + tuning
             float volume{1.0f};

@@ -22,6 +22,7 @@ add_executable(gg-tests
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
+        core/playhead_processor_tests.cpp
         core/preset_tests.cpp
         core/processor_tests.cpp
         core/publish_tests.cpp

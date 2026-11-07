@@ -239,6 +239,13 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
     const double quality = param(LayerParam::Quality);
     p.quality = std::isnan(quality) ? Tier::Normal
                                     : static_cast<Tier>(std::lround(std::clamp(quality, 0.0, 2.0)));
+    // The playhead (M3 sub-project 3b's spec §4.1): the law on the effective Scan Speed, and the
+    // nearest Scan Edge step (halves up), clamped first so that lround's argument is finite; NaN,
+    // which the Processor never holds, is Wrap.
+    p.scanSpeed = scanSpeedOf(static_cast<float>(param(LayerParam::ScanSpeed)));
+    const double edge = param(LayerParam::ScanEdge);
+    p.scanEdge = std::isnan(edge) ? ScanEdge::Wrap
+                                  : static_cast<ScanEdge>(std::lround(std::clamp(edge, 0.0, 2.0)));
     p.gain = static_cast<float>(1.0 / std::sqrt(std::max(1.0, p.densityHz * p.grainDurationSec)));
     return p;
 }

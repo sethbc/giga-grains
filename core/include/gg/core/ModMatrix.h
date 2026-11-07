@@ -190,8 +190,9 @@ constexpr ParamSlot routeTargetSlot(ParamSlot target, uint8_t layer) noexcept
 
 /// Whether a route to `target` (as isValidTarget names it) can be carried per voice on a Voice
 /// layer (M3 Voice spec §4.4): the engine's own parameters, latched at each grain's onset
-/// (Density, Size, Position, Pitch, Spray, Stereo, Distribution, Texture, Smear, Quality and the
-/// two spreads), and Level, the voice's gain. Every other target reads the instance-wide values.
+/// (Density, Size, Position, Pitch, Spray, Stereo, Distribution, Texture, Smear, Quality, the
+/// two spreads and Scan Speed), and Level, the voice's gain. Every other target reads the
+/// instance-wide values.
 constexpr bool isVoiceTarget(ParamSlot target) noexcept
 {
     if (target == ParamSlot::Level)
@@ -217,6 +218,7 @@ constexpr bool isVoiceTarget(ParamSlot target) noexcept
     case LayerParam::Quality:
     case LayerParam::PitchSpread:
     case LayerParam::SizeSpread:
+    case LayerParam::ScanSpeed:
         return true;
     default:
         return false;

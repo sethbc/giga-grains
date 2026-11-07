@@ -159,6 +159,8 @@ bool ringSaved(const ParamValues &base, Mode mode, uint8_t layer, SourceMode mat
 /// - busSplit = Bus Split (layerBusSplit; the extremes spec §6.3);
 /// - quality = Quality rounded to the nearest step (lround) and clamped to 0..2: Eco, Normal or HQ
 ///   (M2 sub-project 3's spec §6.1); a NaN is Normal;
+/// - scanSpeed = scanSpeedOf(Scan Speed), scanEdge = Scan Edge rounded to the nearest step (lround)
+///   and clamped to 0..2: Wrap, Bounce or Stop (M3 sub-project 3b's spec §4.1); a NaN is Wrap;
 /// - gain = 1/sqrt(max(1, densityHz × grainDurationSec)), the expected overlap's power
 ///   normalization (spec §6.4), which each grain latches at its onset: it follows D_eff, so
 ///   Smear doesn't pump the level.
