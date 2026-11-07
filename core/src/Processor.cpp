@@ -122,8 +122,8 @@ bool validNote(const NoteEvent &n) noexcept
 /// −1, a finite value.
 bool validControl(const ControlEvent &c) noexcept
 {
-    return c.kind <= ControlKind::PitchBend && c.channel >= -1 && c.channel <= 15 &&
-           std::isfinite(c.value);
+    return c.kind <= ControlKind::NoteVolume && c.key >= -1 && c.key <= 127 && c.channel >= -1 &&
+           c.channel <= 15 && std::isfinite(c.value);
 }
 
 /// Whether a command's fields are in range (CommandEvent): a known kind, a layer, for AddSplice a
@@ -701,6 +701,9 @@ void Processor::commitPending() noexcept
         hasPendingNotes_ = false;
         updateKeys();
     }
+    // The table's per-group lists are for the voices (M3 Voice spec §4.2); nothing reads them
+    // yet, so a group's end empties them.
+    noteTable_.beginGroup();
     midi_ = pendingMidi_;
     hasPending_ = false;
 }
@@ -776,54 +779,21 @@ void Processor::stepSources(const Buffers &b, int64_t upTo, int64_t scanTo) noex
 
 void Processor::applyNote(const NoteEvent &n) noexcept
 {
-    switch (n.type)
+    noteTable_.apply(n, noteOrdinal_);
+    if (n.type == NoteEventType::On)
     {
-    case NoteEventType::On:
-        held_[static_cast<size_t>(n.key)] |= static_cast<uint16_t>(1u << n.channel);
+        ++noteOrdinal_;
         // Spec §6.8: the last note-on's velocity and key / 127, from its boundary.
         pendingMidi_.velocity = unitClamped(n.velocity);
         pendingMidi_.key = static_cast<float>(n.key) / 127.0f;
-        break;
-    case NoteEventType::Off:
-    {
-        // The channel bits to keep: none for any channel, all but its own otherwise.
-        const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
-        if (n.key < 0)
-        {
-            for (uint16_t &channels : held_)
-            {
-                channels &= keep;
-            }
-        }
-        else
-        {
-            held_[static_cast<size_t>(n.key)] &= keep;
-        }
-        break;
-    }
-    case NoteEventType::AllOff:
-    {
-        // Ruling R14: MIDI's CC 123 releases its own channel's notes; −1 releases every channel.
-        const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
-        for (uint16_t &channels : held_)
-        {
-            channels &= keep;
-        }
-        break;
-    }
     }
 }
 
 void Processor::updateKeys() noexcept
 {
-    keyCount_ = 0;
-    for (size_t k = 0; k < held_.size(); ++k)
-    {
-        if (held_[k] != 0)
-        {
-            keys_[keyCount_++] = static_cast<uint8_t>(k);
-        }
-    }
+    uint32_t count = 0;
+    noteTable_.heldKeys(keys_, count);
+    keyCount_ = count;
     for (const auto &l : layers_)
     {
         l->engine.setHeldKeys(heldKeys());
@@ -958,7 +928,8 @@ void Processor::reset() noexcept
     // below set its time, which then applies at once; the limiter is reset after them, by jump.
     delay_.reset();
     // Every note released (spec §6.1), and the engines told: Engine::reset keeps their keys.
-    held_.fill(0);
+    noteTable_.reset();
+    noteOrdinal_ = 0;
     updateKeys();
     // The sources restart with the clock (the class comment), the transport as never given: the
     // host's next setTransport() is then a change, as a fresh Processor's first is, and applies
@@ -1775,6 +1746,13 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
                 continue;
             }
             join(c.offset);
+            // The table keeps the per-channel and per-note state; MPE has no parameter yet.
+            noteTable_.applyControl(c, false);
+            if (c.kind == ControlKind::Sustain)
+            {
+                // A pedal change can move the held set.
+                hasPendingNotes_ = true;
+            }
             const float v = unitClamped(c.value);
             switch (c.kind)
             {
@@ -1786,6 +1764,8 @@ void Processor::process(const float *const *in, uint32_t numInChannels, float *c
                 break;
             case ControlKind::PitchBend:
                 pendingMidi_.pitchBend = v;
+                break;
+            default: // the NoteTable's kinds: no mod source
                 break;
             }
         }
