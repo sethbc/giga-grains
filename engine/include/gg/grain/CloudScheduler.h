@@ -538,7 +538,8 @@ class CloudScheduler
 
     /// Δ for the draw e, with the current period and distribution: at Free e is a unit
     /// exponential; at Pitch it is bipolar, and Δ = P × (1 + 0.5 d³ e) is within [0.5 P, 1.5 P]
-    /// with P at least 4 samples (at any rate of 4 Hz or more), so there is no floor (S5).
+    /// with P at least 4 samples (at any rate of 4 Hz or more), so the floor never binds there
+    /// (S5).
     double interval(double e) const noexcept
     {
         GG_FP_CONTRACT_OFF
@@ -546,7 +547,8 @@ class CloudScheduler
         if (params_.clock == Clock::Pitch)
         {
             const double d3 = d * d * d;
-            return period_ * (1.0 + 0.5 * d3 * e);
+            // The floor bounds the schedule loop below a 4 Hz sample rate, where P can be tiny.
+            return std::max(period_ * (1.0 + 0.5 * d3 * e), kMinIntervalSamples);
         }
         return std::max(period_ * ((1.0 - d) + d * e), kMinIntervalSamples);
     }
