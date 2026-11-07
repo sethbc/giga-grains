@@ -10,6 +10,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -18,6 +22,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "LayersFixture.h"
+#include "Render.h"
+#include "RenderSpec.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ModSources.h"
@@ -986,4 +992,120 @@ TEST_CASE("processor_voice_bend_center_exact", "[core][voice]")
     REQUIRE_FALSE(centered.empty());
     CHECK(centered == rates(false));
     CHECK_THAT(centered.front(), WithinRel(std::exp2(7.0 / 12.0), 1e-12));
+}
+
+TEST_CASE("processor_voice_steal_takes_this_groups_release", "[core][voice]")
+{
+    // V4 at the cap, legato: a note-off and the 17th note-on in one group steal the voice the
+    // group released, not the oldest held one.
+    auto p = voiceProcessor();
+    auto log = attachLog(*p);
+    Script s;
+    for (int16_t k = 0; k < 16; ++k)
+    {
+        s.on(640 * k, static_cast<int16_t>(48 + k));
+    }
+    const int64_t at = 640 * 16;
+    s.off(at, 55); // ordinal 7
+    s.on(at, 70);
+    Stereo out;
+    render(*p, s, 0, at + 24000, {256}, out, nullptr, log.get());
+    const auto released = grainsOf(*log, 0, 7);
+    REQUIRE_FALSE(released.empty());
+    CHECK(lastOnset(released) < at);
+    for (uint32_t ordinal = 0; ordinal < 16; ++ordinal)
+    {
+        if (ordinal != 7)
+        {
+            INFO("ordinal " << ordinal);
+            CHECK(countIn(grainsOf(*log, 0, ordinal), at + 1000, at + 24000) > 10);
+        }
+    }
+    const auto newest = grainsOf(*log, 0, 16);
+    REQUIRE_FALSE(newest.empty());
+    CHECK(newest.front().onsetSample == at);
+    CHECK(clickScore(out) < 15.0);
+}
+
+TEST_CASE("processor_voice_params_recompute_only_on_change", "[core][voice][mod]")
+{
+    // Spec §4.4: a voice's CloudParams are recomputed only when what they are made of changes,
+    // not every cell while free-running sources and its own envelopes move.
+    auto p = voiceProcessor();
+    p->setBase(slotA(LayerParam::Env1Attack), -1.0f); // Env 1 moves for 0.5 s
+    gg::core::ModRoutes routes = gg::core::factoryRoutes(Mode::Instrument);
+    // An LFO on Diffusion: every cell applied, the layer's sources moving, no voice input.
+    routes[12] = ModRoute{ModSource::Lfo1,
+                          gg::core::kSameLayer,
+                          ParamSlot::Diffusion,
+                          gg::core::kAllLayers,
+                          0.5f,
+                          gg::core::ModCurve::Unipolar};
+    p->setRoutes(routes);
+    REQUIRE(p->timeVarying());
+    Script s;
+    s.on(0, 60);
+    Stereo out;
+    render(*p, s, 0, 256, {256}, out);
+    const uint64_t started = p->voiceParamRecomputes();
+    CHECK(started == 1);
+    render(*p, {}, 256, 24000, {256}, out);
+    CHECK(p->voiceParamRecomputes() == started);
+    // A per-voice input that moves every cell (Env 2, decaying until 1.5 s, to Pitch)
+    // recomputes every cell.
+    routes[13] = ModRoute{ModSource::Env2,
+                          gg::core::kSameLayer,
+                          ParamSlot::Pitch,
+                          gg::core::kAllLayers,
+                          1.0f,
+                          gg::core::ModCurve::Unipolar};
+    p->setRoutes(routes);
+    const uint64_t before = p->voiceParamRecomputes();
+    render(*p, {}, 24000, 24000 + 32 * 10, {256}, out);
+    CHECK(p->voiceParamRecomputes() >= before + 10);
+    // So does a change of the layer's own values, once.
+    const uint64_t held = p->voiceParamRecomputes();
+    p->setRoutes(gg::core::factoryRoutes(Mode::Instrument));
+    render(*p, {}, 24320, 24320 + 3200, {256}, out);
+    const uint64_t settled = p->voiceParamRecomputes();
+    CHECK(settled > held);
+    p->setBase(slotA(LayerParam::Size), -3.0f);
+    render(*p, {}, 27520, 27520 + 3200, {256}, out);
+    CHECK(p->voiceParamRecomputes() == settled + 1);
+}
+
+TEST_CASE("mpe and note expressions render the same voices", "[core][voice]")
+{
+    // Spec §3a B7: the goldens' gestures are exactly representable on both paths (a bend of
+    // 3k semitones is the 14-bit value 8192 + 512k at MPE Bend Range 48), so the MPE render and
+    // the note-expression render agree line for line (the grain index "i" dropped) and bit for
+    // bit in the audio, with no tolerance needed.
+    const auto run = [](const char *name, std::vector<std::string> &lines) {
+        const auto path =
+            std::filesystem::path{GG_GOLDEN_DIR} / "cases" / (std::string{name} + ".json");
+        std::ifstream in(path, std::ios::binary);
+        REQUIRE(in.good());
+        const std::string json{std::istreambuf_iterator<char>(in),
+                               std::istreambuf_iterator<char>()};
+        std::string error;
+        const auto spec = gg::render::parseRenderSpec(json, error);
+        INFO(name << ": " << error);
+        REQUIRE(spec.has_value());
+        auto audio = gg::render::render(*spec, &lines);
+        for (std::string &line : lines)
+        {
+            const auto at = line.find("\"i\":");
+            const auto comma = line.find(',', at);
+            REQUIRE(at != std::string::npos);
+            line.erase(at, comma - at + 1);
+        }
+        return audio;
+    };
+    std::vector<std::string> mpeLines;
+    std::vector<std::string> exprLines;
+    const auto mpe = run("inst-voice-mpe", mpeLines);
+    const auto expr = run("inst-voice-expr", exprLines);
+    REQUIRE(mpeLines.size() > 100);
+    CHECK(mpeLines == exprLines);
+    CHECK(mpe.channels == expr.channels);
 }

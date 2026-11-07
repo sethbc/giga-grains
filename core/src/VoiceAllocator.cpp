@@ -57,18 +57,6 @@ int VoiceAllocator::start(uint8_t noteIndex, uint64_t noteOrdinal, int64_t at, u
     return slot;
 }
 
-void VoiceAllocator::release(uint8_t noteIndex) noexcept
-{
-    for (Voice &v : voices_)
-    {
-        if (v.spawning && v.note == noteIndex)
-        {
-            v.released = true;
-            v.weak = true;
-        }
-    }
-}
-
 void VoiceAllocator::finish(int slot) noexcept
 {
     if (slot >= 0 && static_cast<uint32_t>(slot) < kVoices)

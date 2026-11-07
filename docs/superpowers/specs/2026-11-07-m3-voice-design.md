@@ -86,6 +86,11 @@ voice tints and new presets (5); per-sample pitch glides inside a grain (later, 
   14-bit value, kept as its own field (the Pitch Bend mod source keeps today's
   `(msb << 7 | lsb) / 16383`). The MPE-against-expression goldens use gestures exactly
   representable on both paths, and their equality test compares only those spans.
+- **B9 (Task 6's review). Note Pitch includes the tuning expression:** `(key + bend + tuning) / 127`
+  clamped, so a CLAP TUNING gesture and the same MIDI-MPE bend give the same source value.
+- **B10 (Task 6; for the director). A layer switched from Cloud to Voice, or turned on, starts no
+  voices for notes already held;** the next note-on starts one. Voice → Cloud resumes Cloud from
+  the held set at once.
 - **B8. A held voice whose Env 1 sits at 0 in Sustain stops spawning,** as if finished (it frees
   its slot), so a Sustain-0 patch doesn't hold silent voices.
 

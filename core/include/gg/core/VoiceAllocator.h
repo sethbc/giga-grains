@@ -28,9 +28,10 @@ namespace gg::core
 ///   free slot; with none free it steals (V4): the oldest voice (smallest ordinal) whose note is
 ///   released or pedal-held (weak), else the oldest held one. The stolen voice stops spawning at
 ///   once and its grains play out their windows, which is the fade: no steal fade of its own (B6).
-/// - **The gate** of a voice is its note held or pedal-held: release() closes it. A voice whose
-///   note starts and ends within one control group (B5) closes its gate one cell later
-///   (releaseLater()), so its Env 1 attacks and it plays its release.
+/// - **The gate** of a voice is its note held or pedal-held; the Processor closes it (`released`)
+///   as the note table moves its note. A voice whose note starts and ends within one control
+///   group (B5) closes its gate one cell later (`releaseLater`), so its Env 1 attacks and it
+///   plays its release.
 class VoiceAllocator
 {
   public:
@@ -56,13 +57,6 @@ class VoiceAllocator
     /// `stolenSlotOut` the slot stolen (the same slot) or −1 when a free one was taken.
     int start(uint8_t noteIndex, uint64_t noteOrdinal, int64_t at, uint32_t &ordinalOut,
               int &stolenSlotOut) noexcept;
-    /// The brief's form: start(noteIndex, 0, 0, …).
-    int start(uint8_t noteIndex, uint32_t &ordinalOut, int &stolenSlotOut) noexcept
-    {
-        return start(noteIndex, 0, 0, ordinalOut, stolenSlotOut);
-    }
-    /// Closes the gate of every spawning voice of note `noteIndex` (and ranks them weak).
-    void release(uint8_t noteIndex) noexcept;
     /// Stops the voice in `slot` spawning: its slot is free. Out of range is ignored.
     void finish(int slot) noexcept;
     /// Finishes every voice; the ordinals go on.

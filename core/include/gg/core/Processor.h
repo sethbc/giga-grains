@@ -351,7 +351,9 @@ struct RingMeta
 /// per voice on its layer (actsPerVoice; Voice only or not) added to the layer's offsets on the
 /// engine's slots and Level (applyVoiceRoutes), and only those slots re-clamped. The layer-wide
 /// pass leaves those routes out on a Voice layer (B2). Its CloudParams are recomputed only when
-/// its inputs changed. Its pitch is the layer's Pitch + its routes' Pitch offsets + (key − 60) +
+/// what they are made of changed: its routes' offsets on its slots, its pitch and volume inputs,
+/// or its layer's (those slots' base, modulation and offsets, the Source, Bus Split, Level and
+/// the material). Its pitch is the layer's Pitch + its routes' Pitch offsets + (key − 60) +
 /// its bend + its note's tuning, clamped to ±48: with MPE Off the bend is its channel's × Bend
 /// Range; with MPE On a member channel's × MPE Bend Range plus the master channel's (0) × Bend
 /// Range, each bend (v14 − 8192) / 8192 of the 14-bit value (B7: exactly 0 at the center). Its
@@ -696,6 +698,9 @@ class Processor
     /// Whether some layer at Mode Voice has a spawning voice (the class comment's B1), as of the
     /// last applied boundary or piece.
     bool voicesSounding() const noexcept { return voicesSounding_; }
+    /// How many times a voice's CloudParams were computed since construction (for tests): once
+    /// at its start and again only when its inputs change (the class comment's Voices).
+    uint64_t voiceParamRecomputes() const noexcept { return voiceRecomputes_; }
 
     /// Not real-time safe: while process() isn't running, for an inactive plugin, gg-render and
     /// tests. Layer `layer`'s sources(layer) holds `s` (SourceExchange::hold), and its engine
@@ -1042,13 +1047,19 @@ class Processor
         // per slot what its parameters were last computed from (updateVoices).
         LayerMode mode{LayerMode::Cloud};
         VoiceAllocator voices;
+        // The layer's inputs to its voices' parameters (updateVoices' key: base, modulation and
+        // offset of 15 slots, and the material) and their generation.
+        std::array<float, 45> voiceKey{};
+        SourceMode voiceKeyMaterial{SourceMode::Sample};
+        bool voiceKeyValid{false};
+        uint64_t voiceGeneration{0};
         struct VoiceCache
         {
             bool valid{false};
-            uint64_t generation{0};
-            ModSourceValues sources{};
-            NoteTable::Note note{}; // as last seen in the table
-            double pitchIn{0.0};    // (key − 60) + bend + tuning
+            uint64_t generation{0};          // the layer's voiceGeneration
+            std::array<float, 13> offsets{}; // its routes' offsets on its slots and Level
+            NoteTable::Note note{};          // as last seen in the table
+            double pitchIn{0.0};             // (key − 60) + bend + tuning
             float volume{1.0f};
             CloudParams cloud{};
             float gain{1.0f};
@@ -1242,7 +1253,7 @@ class Processor
     // has a spawning voice, the ended notes waiting, the instance-wide note sources (B4), and the
     // scratch updateVoices computes a voice's values in: the layer-wide route offsets of the last
     // updateEffective, a copy of the effective values, a voice's route offsets (zero between
-    // voices) and the inputs a voice's parameters depend on, with their generation.
+    // voices), and how many times a voice's CloudParams were computed (voiceParamRecomputes).
     bool mpe_{false};
     bool voicesSounding_{false};
     std::array<EndedNote, kMaxEndedNotes> ended_{};
@@ -1256,10 +1267,7 @@ class Processor
     ParamValues offsets_{};
     ParamValues voiceScratch_{};
     ParamValues voiceOffsets_{};
-    ParamValues inputsBase_{};
-    ParamValues inputsMod_{};
-    ParamValues inputsOffsets_{};
-    uint64_t inputsGeneration_{0};
+    uint64_t voiceRecomputes_{0};
 
     // The mod matrix (the class comment): its routes, whether one moves with time alone, and the
     // sources' values per layer, filled by updateEffective. The global sources: the MIDI ones in

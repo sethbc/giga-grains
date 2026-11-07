@@ -1050,6 +1050,9 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     - `engine-spectral`: `engine-sample` with Spectral grains (Position 0.5, 1 s of Spray) over
       the Spectral Smear's ring, which the engine fills from the same noise as sample material,
       after a 2 s warm-up so the ring holds smear; report-only, with no baseline entry yet;
+    - `engine-voices` (M3 sub-project 1): `engine-sample`'s stream split across the engine's 16
+      voices in voice mode, each held at full level at 1/16 of the grain rate, so the admitted
+      grains total X's; report-only, with no baseline entry yet;
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
@@ -1074,7 +1077,7 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 63 configurations × 5 rounds × 2 s, about 10.5
+- **Run length:** the full default run is 66 configurations × 5 rounds × 2 s, about 11
   minutes of timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined, 48
   before M2 sub-project 2's `engine-live-long` and M2 sub-project 4's four), plus
   `engine-live-long`'s three 300 s warm-ups, a few minutes more of wall time; a CI leg's benchmark
