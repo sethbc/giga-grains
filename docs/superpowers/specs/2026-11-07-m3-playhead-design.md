@@ -178,16 +178,20 @@ and its event log byte for byte.
 - **HB1. Where the playhead lives.** A small value type, `gg::Playhead`
   (`engine/include/gg/grain/Playhead.h`, header-only, `noexcept`, no allocation), held by every
   `CloudScheduler` (so by the Cloud stream and each voice stream). It keeps `x0`, `tau0` (int64),
-  the rate `r`, the edge mode, the stop bound `hiAtRebase`, and a `restartPending` flag.
-  `CloudScheduler::reset()` and `forceNextOnset()` set the restart flag (H4: wherever the Cloud
-  onset is forced; a voice's `startVoice` resets its scheduler). The Engine calls
+  the rate `r`, the edge mode and a `restartPending` flag. Every place that sets the scheduler's
+  `onsetForced_` (`reset()`, `forceNextOnset()`, and `setHeldKeys`' first key after none) sets the
+  restart flag too (H4: wherever the Cloud onset is forced; a voice's `startVoice` resets its
+  scheduler), and `CloudScheduler::restartPlayhead()` sets it alone (HB5). The Engine calls
   `scheduler.syncPlayhead(t, geometry)` for the Cloud stream and every spawning voice at the start
   of every `processBlock` (whether or not the stream schedules), before any grain is drawn:
-  - restart pending: `x0 = 0`, `tau0 = t`, the flag cleared;
-  - else if the new rate `r' = params.scanSpeed × geometry.unitsPerSecond / sampleRate`, the edge
-    mode or (Stop only) the window bound differs bit for bit from what the last rebase used:
-    `x0 = canon(x0 + r × (t − tau0))`, `tau0 = t`, `r = r'`;
-  - else nothing.
+  - restart pending: `x0 = 0`, `tau0 = t`, `r = r'`, the edge mode taken, the flag cleared;
+  - else if the new rate `r' = params.scanSpeed × geometry.unitsPerSecond / sampleRate` or the edge
+    mode differs bit for bit from what the last rebase used: `x0 = canon(x0 + r × (t − tau0))`,
+    `tau0 = t`, `r = r'`, the edge mode taken;
+  - else nothing. **The window is never a rebase trigger:** a ring's window can grow sample by
+    sample (the last splice, selected while the head advances), so a window trigger would rebase at
+    every sub-block start, which depends on the host's blocks. Canon reads the window at the
+    rebase's own sample, which is an event's.
   `canon` is: Wrap, `x − L × floor(x / L)` over the window length L; Bounce, the same over 2L; Stop,
   `clamp(P + x, lo, hi) − P` with P the stream's Position at t. (Wrap and Bounce reduce only to keep
   the offset small; the fold is periodic, so the point is the same up to rounding, which is
@@ -195,10 +199,12 @@ and its event log byte for byte.
 - **HB2. The geometry** the Engine hands each stream at a piece start, from the source in effect:
   - **Sample** (the current slot holds a source of F frames at rate R): `unitsPerSecond = R / (F −
     1)` (a fraction of the source per source second, against `sampleGrain`'s span F − 1),
-    `lo = 0`, `hi = 1`; no source or F < 2: 0 (the playhead holds);
+    `lo = 0`, `hi = 1`; no source or F < 2: 0 (the playhead holds). A new sample changes it, and
+    the next piece rebases (HB8);
   - **Live or Resample ring:** `unitsPerSecond = −1` (seconds of lag per second; forward is toward
     the head), `lo = 0`, `hi = W / sampleRate` with W `LiveSource::windowFramesAt` at the piece
-    start (used for Stop's rebase alone; HB3);
+    start (read by Stop's canon at a rebase alone; the grains fold with the window at their onset,
+    HB3);
   - **Spectral:** the material's (the current sample's, else the live ring's), for the layer
     playhead's smear point (HB5); a Spectral grain's own draw ignores the playhead.
 - **HB3. Where the fold happens.** `gg::scanFold(y, lo, hi, edge)` (in `Playhead.h`): Wrap `lo +
@@ -208,14 +214,16 @@ and its event log byte for byte.
   - **Sample mode:** in `CloudScheduler::takeNext`, when `x(t) != 0`, `point = scanFold(position +
     x(t), 0, 1, edge)` replaces `params_.position` in the draw; otherwise the draw is today's,
     untouched.
-  - **Ring modes:** the window can grow within a block (the last splice, selected while the head
+  - **Spectral mode:** a Spectral grain's draw reads no Position (its lag is the spray's alone), so
+    `takeNext` ignores the playhead there; the smear's point is HB5's.
+  - **Ring modes (Live, Resample):** the window can grow within a block (the last splice, selected while the head
     advances: `LiveSource::windowFramesAt`'s note), so the fold uses the window **at the grain's
     onset**, which only the Engine knows. When `x(t) != 0`, `takeNext` sets `GrainDraw::scanning`,
     `GrainDraw::scanPoint = position + x(t)` (unfolded) and `GrainDraw::scanEdge`, and positionDraw
     carries the spread alone (the spray and Smear's jitter; Position replaced by 0). `liveGrain`
     then starts from `ρ − (scanFold(scanPoint, 0, W(onset) / sampleRate, scanEdge) + positionDraw) ×
     sampleRate`, under today's admission clamp. With `scanning` false every byte of the path is
-    today's.
+    today's. `scanning` is set in ring modes only (Sample mode folds in the scheduler).
   - `GrainDraw` gains `bool scanning{false}`, `uint8_t scanEdge{0}`, `double scanPoint{0.0}`; its
     defaulted `operator==` covers them.
 - **HB4. The time base.** `t` in `x(t)` is the grain's exact onset, `onsetSample + onsetFrac` as the
@@ -227,14 +235,15 @@ and its event log byte for byte.
   `x(t)`, and when it is not 0 the point `scanFold(P + x(t), 0, hi(t), edge)`, hi(t) the material's
   bound at the hop (1 for a sample, the live ring's `windowFramesAt(t) / sampleRate`); otherwise P,
   as today. The Engine fills it from the Cloud scheduler. In Voice mode the Engine restarts the Cloud
-  playhead at every `startVoice` (H9).
+  playhead at every `startVoice` (H9) with `cloud_.restartPlayhead()`, which forces no onset.
 - **HB6. The Processor.** `toCloudParams` sets `CloudParams::scanSpeed = 8 v³` (double, from the
   effective float v) and `CloudParams::scanEdge` from Scan Edge; for a voice, `updateVoices` folds
   in its Scan Speed route offsets (Scan Speed joins `kVoiceTargets` and `isVoiceTarget`) and, with
   Scan Track On on a Voice layer, multiplies by `exp2Det(notePitch / 12)`, clamped to ±64.
   `notePitch` comes from the same terms as the voice's pitch (sub-project 3's `Processor::notePitch`
   seam where it has landed; the key term sub-project 4's tuning owns). Scan Speed, Scan Edge and
-  Scan Track join the voice cache key (`kVoiceKeySlots`), so a voice's CloudParams follow them.
+  Scan Track join the voice cache key (`kVoiceKeySlots` = `kVoiceTargets.size() + 5`: the Source,
+  Bus Split, Level, Scan Edge and Scan Track), so a voice's CloudParams follow them.
   `CloudScheduler::setParams` sanitizes `scanSpeed` (non-finite to 0, clamped to ±64) and the edge
   (out of range to Wrap).
 - **HB7. A density or distribution rescale doesn't touch the playhead,** and the playhead never
@@ -242,17 +251,14 @@ and its event log byte for byte.
 - **HB8. Sample replacement.** A new sample (`adoptSource`, `setSource`, a capture into the layer)
   changes the geometry's `unitsPerSecond`, so the next piece rebases: the point keeps its fraction
   and moves at the new length's rate.
-- **HB9. A source-mode change** (Sample to Live and back) restarts nothing: the offset is in the
-  old mode's units, so the switch rebases with the new geometry and the next `x(t)` is read in the
-  new units. Since an offset in a fraction and in seconds don't correspond, the source-mode change
-  also restarts the playhead (x0 = 0): a switch starts reading at Position, as a switch does today.
-- **HB10. The FX's notes and D4.** In the FX the Cloud stream's onset is forced when the held set
-  goes non-empty (as in the instrument), so the playhead's restart there needs nothing new; the
-  restart is invisible at Scan 0 (x0 is already 0 or the offset restarts to 0 from a hold).
-
-  The one at-rest subtlety: with Scan Speed 0 and the playhead never moved, a restart sets x0 = 0
-  again, so nothing changes. With Scan Speed back at 0 after moving, x0 holds the point where it
-  stopped (Scan 0 holds), and a restart returns it to Position.
+- **HB9. A source-mode change** (Sample to Live and back, `applySourceMode`) restarts every
+  stream's playhead: an offset in a fraction of a file and one in seconds of lag don't correspond,
+  so a switch starts reading at Position, as a switch does today.
+- **HB10. Restarts at rest.** In the FX the Cloud stream's onset is forced when the held set goes
+  non-empty, as in the instrument, so the FX's restart (H4) needs nothing new. With Scan Speed 0 and
+  the playhead never moved, a restart sets x0 = 0 again, so no golden sees it. With Scan Speed
+  returned to 0 after moving, x0 holds the point where it stopped (Scan 0 holds), and the next
+  restart returns it to Position.
 - **HB11. Real-time safety.** `syncPlayhead` and the fold are a few double operations with no loop
   but the fixed 17 streams; nothing allocates or locks. RTSan and the tripwire tests cover 16
   scanning voices and a scanning Cloud stream in both products.
@@ -283,7 +289,7 @@ and its event log byte for byte.
   ParamTable.h`, `patch_tests`, `identity_tests`, `params_tests`, `rt_tests`, `EditLayout` and its
   tests, the sweep floors with their reasons), and the comments in `ParamIds.h` that state counts.
 - **Scan Speed's display:** the speed `8v³` in × real time, three significant digits, a sign for
-  negative values and `0x` at 0 (e.g. `1.00x`, `-0.125x`, `0.00195x`); text entry parses a speed
+  negative values and `0.00x` at 0 (e.g. `1.00x`, `-0.125x`, `0.00195x`); text entry parses a speed
   (with or without the `x`) back to `v = cbrt(speed / 8)`, clamped. ASCII `x`, as the other
   displays use ASCII. Scan Edge shows "Wrap", "Bounce", "Stop"; Scan Track "Off", "On".
 - No patch-version bump (H11); `PatchState` reads absent values as defaults (the builder confirms,
@@ -362,7 +368,7 @@ and the voice goldens compared, in the final report.
   on its own (the log's `pos` rises per `v`).
 - `inst-scan-stretch`: one held note over `loop-48k.wav`, Scan Speed 0.0625 (1/512×), then −0.25
   (−1/8×) from 3 s.
-- `inst-scan-edges`: one note over a 2 s sample, Scan Speed 0.75 (3.375×), Scan Edge Wrap, then
+- `inst-scan-edges`: one note over a 2 s built-in sweep sample, Scan Speed 0.75 (3.375×), Scan Edge Wrap, then
   Bounce at 2 s, then Stop at 4 s.
 - `inst-scan-track`: Scan Track On, Scan Speed 0.5, notes C3, C4, C5 staggered (0.5×, 1×, 2×).
 - `inst-scan-cloud`: the instrument at Mode Cloud, Scan Speed 0.5, two phrases with a gap of
