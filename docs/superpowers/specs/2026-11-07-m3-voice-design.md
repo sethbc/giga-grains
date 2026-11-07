@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft (2026-11-07), written overnight at the director's request ("keep pushing as much progress as possible while i'm asleep"). Its forced choices (§3) are **Claude's provisional calls**, each standing until the director overrules it |
+| **Status** | Built on `m3-voice` (draft PR #37), 2026-11-07, written overnight at the director's request. **The director approved** (2026-11-07, "3) approved") the calls put to him by name: V1, V2, V3, V4 and B10; V5, V6 and the rulings B1 to B9 stand as Claude's. Gain staging (voices sum without headroom) waits for sub-project 2 ("4) sounds fine"; carry-over) |
 | **Program** | `docs/superpowers/specs/2026-11-07-m3-program-design.md` (§4, §5, §8 row 1; its §2a P1 to P8) |
 | **Branch** | `m3-voice` (from `m3-program`) |
 | **Research** | the note path (`Processor`, `Engine`, `CloudScheduler`, `GrainPool`, `ModMatrix`, the plugin's events), clap-wrapper's MPE paths, sst-voicemanager (not used, P6); the notes are summarized where used |
