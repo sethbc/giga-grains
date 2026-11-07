@@ -537,3 +537,94 @@
 - After them, 5 → 6 → 7 run in a line, as do 9 → 10.
 - Task 8 needs 3 and 4. Task 11 needs 6 and 7, Task 12 needs 8, and Task 13 needs 6 to 8. Task 14 needs 3 alone.
 - Task 15 needs everything before it but 14 and 16.
+
+---
+
+## Scope addition (2026-11-07): note routing per layer and envelope curves (spec §8, E16 to E18)
+
+The top controller's ruling, provisional for the director. Task 1 also adds the five new layer
+parameters (Task 1's addendum below), so the parameter list changes once; Tasks 19 and 20 give them
+their behavior. Task 17's records cover them too (INTENT §14 Layers' note routing built, §14 the
+envelope curves, §17 their Edit-view homes, §23 E16 to E18; CLAUDE.md 318 parameters and 8 goldens,
+124 in all).
+
+### Task 1 addendum: the five routing and curve parameters
+
+- `GG_LAYER_PARAMS_M3_EXPRESSION` becomes, in index order: `X(Pan, 0x32, "Pan")`,
+  `X(NoteChannel, 0x33, "Note Channel")`, `X(KeyLow, 0x34, "Key Low")`, `X(KeyHigh, 0x35, "Key High")`,
+  `X(Env1Curve, 0x36, "Env 1 Curve")`, `X(Env2Curve, 0x37, "Env 2 Curve")`.
+- Metadata: Note Channel 0 to 18 stepped, default 0, value texts "All", "1" … "16", "Lower zone",
+  "Upper zone"; Key Low 0 to 127 stepped, default 0; Key High 0 to 127 stepped, default 127 (the three
+  automatable, not modulatable); Env 1 Curve and Env 2 Curve −1 to 1, default 0, shown ×100 with "%",
+  flags as Env 1 Attack's.
+- None is a route target (`isValidTarget` false); all five join Mutate's default locks
+  (`buildStructuralLocks`), with Pan.
+- 318 slots, `kLayerParamCount` 69, `kNextFreeLayerIndex` 0x38. `ParamTable.h` gains their 20 rows.
+- Edit view: the three routing parameters in `Panel::Source` after Mode; Env 1 Curve in `Panel::Env1`
+  after Env 1 Release, Env 2 Curve in `Panel::Env2` after Env 2 Release. Short labels only if the
+  elision check needs them.
+- Tests (added to Step 1): `no route targets the routing and curve parameters`;
+  `a default mutate press leaves the routing and curves` (every layer's five in `defaultMutateLocks`);
+  `note channel shows its choices` (value texts for 0, 1, 16, 17, 18).
+- At rest: none has behavior yet, so 108/0/0 and the voice goldens unchanged.
+
+### Task 19: Note routing per layer (E16)
+
+**Files:**
+- Create: `core/include/gg/core/NoteRouting.h` (`struct LayerNoteFilter { uint8_t channel; uint8_t low, high; }`, `bool passes(const LayerNoteFilter &, int channel, int key, const MpeLayout &) noexcept`, `LayerNoteFilter noteFilterOf(const ParamValues &effective, uint8_t layer) noexcept`)
+- Modify: `core/include/gg/core/Processor.h`, `core/src/Processor.cpp` (per-layer held keys in place of the shared `keys_` where a layer reads them; `commitVoices` starts a voice only for a passing note; the per-layer gates, Freeze-by-note and the instance-wide note sources from the layer's filtered set)
+- Test: `tests/core/routing_tests.cpp` (`[core][routing]`; add to `tests/CMakeLists.txt`), `tests/core/voice_processor_tests.cpp`, `tests/core/notes_tests.cpp` or the held-set tests' file
+
+**Interfaces:**
+- Consumes: Task 1's slots, Task 5's `MpeLayout` and `roleOf`, Task 3's `computeVoice`/`commitVoices`, Task 7's sources.
+- Produces:
+  - `passes` per spec §8.2: key in `[low, high]` (none when low > high); channel 0 All, 1 to 16 the 0-based channel + 1, 17 a Lower role (LowerMaster or LowerMember), 18 an Upper role; with MPE Off a zone choice passes nothing.
+  - `heldKeys()` keeps its meaning (the table's distinct held keys, for the editor and existing tests); a new `heldKeys(uint8_t layer)` gives layer L's filtered distinct keys.
+  - At the defaults every layer's filtered set is the table's held set, and every code path computes exactly today's values (at rest bit-identical).
+
+- [ ] **Step 1:** Tests:
+  - `note filter passes by channel key and zone`: a table over (filter, channel, key, layout) covering All, channel 1 and 16, both zones under L 7 / U 7, a zone with MPE Off, the range edges and low > high.
+  - `a voice layer starts voices only for passing notes`: A Voice keys 0 to 59, B Voice keys 60 to 127; notes 48 and 72. A's voices hold key 48 only, B's key 72 only; both notes end with `NOTE_END` when released.
+  - `a cloud layer holds only passing keys`: A Cloud keys 60 to 127; notes 48 and 72. `heldKeys(0)` is {72}; A's grains all carry key 72's rate; with only 48 held A spawns nothing in the instrument (its note gate is closed).
+  - `a cloud layer's envelope gate follows its filtered set`: Env 1 of A rises only when a passing note is held.
+  - `fx freeze by note freezes only the layers a key passes`.
+  - `a layer's note sources read its filtered newest note`: Key → Size on a Cloud layer keys 0 to 59 with 48 then 72 held reads key 48.
+  - `a note channel filter separates channels`: A channel 1, B channel 2; notes on channels 0 and 1 reach A and B respectively.
+  - `a zone filter follows the layout`: A Lower zone, B Upper zone, L 7 / U 7; member notes reach their zone's layer.
+  - `a filter change applies at its boundary`: Key High lowered with a voice sounding: the voice continues; a new note outside the new range starts none; a Cloud layer's held keys re-derive at that boundary.
+  - `routing at the defaults changes nothing`: event lines and output equal to a render without touching the parameters, Voice and Cloud.
+  - `routing is block size invariant`: blocks 1, 32, 64 and 4096.
+- [ ] **Step 2:** Run `ctest --preset dev -L 'routing|voice|notes'`. Expected: FAIL.
+- [ ] **Step 3:** Implement. Fixed arrays only (four layers × 128 keys at most).
+- [ ] **Step 4:** Add the golden `inst-layer-split` (spec §8.4) to `tests/golden/cases/` with its expected files (`scripts/update-goldens.sh build/dev`, then restore every other expected file). It catches the 16 injected steps or joins the click-injection table with its reason. Look at its spectrogram. Run `ctest --preset dev -LE slow`. Expected: PASS. Run the at-rest check. Expected: 108/0/0 and the voice goldens unchanged.
+- [ ] **Step 5:** Commit `feat(core): note routing per layer, a channel or zone and a key range (E16)`, listing the new golden's WAV hash.
+
+### Task 20: Envelope curves (E17)
+
+**Files:**
+- Modify: `core/include/gg/core/ModSources.h`, `core/src/ModSources.cpp` (`AdsrParams::curve`; `Adsr::step` and `Adsr::envelope`), `engine/include/gg/grain/AmpEnvelope.h` (the linear state, `k`, `valueAt` mapping), `core/src/Processor.cpp` only where `envParams` reads a layer's slots (the curve from Env 1 Curve / Env 2 Curve)
+- Test: `tests/core/mod_sources_tests.cpp` (or the file holding the Adsr tests), `tests/engine/amp_envelope_tests.cpp` (or the AmpEnvelope tests' file), `tests/core/voice_processor_tests.cpp`
+
+**Interfaces:**
+- Consumes: Task 1's slots; Task 3's `Voice::envParams`.
+- Produces:
+  - `AdsrParams::curve` (float, −1 to 1, default 0) and the helpers `double curveK(double c) noexcept`, `double curveMap(double x, double k) noexcept` (`x / (1 + k(1 − x))`), `double curveUnmap(double y, double k) noexcept` (`y(1 + k) / (1 + k y)`), in a header both `ModSources` and `AmpEnvelope` include (e.g. `engine/include/gg/grain/EnvelopeCurve.h`), with `GG_FP_CONTRACT_OFF`.
+  - The Adsr's state stays linear; its output is `curveMap(ℓ, k)`; its sustain target is `curveUnmap(Sustain, k)`. At `curve == 0` both maps are skipped (bit-identical).
+  - `AmpEnvelope` gains `double k{0.0}`; `level` and `sustain` become the linear state's; `valueAt` maps its linear result through `curveMap` when `k != 0`.
+
+- [ ] **Step 1:** Tests:
+  - `curve 0 is the linear adsr bit for bit`: 2,000 cells of random gates and parameters drawn with `gg::rng`, outputs bit-equal to a reference copy of today's step (in the test).
+  - `the curve maps the ends and is monotonic`: w(0) = 0, w(1) = 1, increasing on a grid, for c in {−1, −0.5, 0.5, 1}.
+  - `a positive curve mirrors the negative`: `curveMap(curveMap(x, k(−c)), k(c)) == x` within 1e-12.
+  - `sustain holds its level under a curve`: the output settles at Sustain exactly (1e-12) for each c.
+  - `a retrigger under a curve does not jump`: the output after a gate rise in the release continues from the level before it (one cell's slope at most).
+  - `amp envelope valueAt equals the stepped adsr under a curve`: at every cell boundary over attack, decay, sustain and release, for c in {−1, −0.5, 0.5, 1}, `valueAt` equals the stepped output (within 1e-9).
+  - `env 1 curve shapes a voice's release`: one Voice note released at Env 1 Curve −1; its grains' gains after the release follow the curved law (computed in the test), and at Curve 0 equal today's.
+  - `env 2 curve shapes a cloud layer's modulation`: Env 2 → Size, Curve +1, Cloud layer.
+  - `curves are block size invariant`: blocks 1, 32, 64 and 4096.
+- [ ] **Step 2:** Run `ctest --preset dev -L 'mod|voice|engine'`. Expected: FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Add the golden `inst-env-curve` (spec §8.4) with its expected files, as Task 19's Step 4 does. Run `ctest --preset dev -LE slow`. Expected: PASS. Run the at-rest check. Expected: 108/0/0 and the voice goldens unchanged.
+- [ ] **Step 5:** Commit `feat(core,engine): envelope curves, one per envelope, in the stepped ADSR and the voice's closed form (E17)`, listing the new golden's WAV hash.
+
+**Order for the addition:** Task 1's addendum rides with Task 1. Task 20 needs 1 and 3. Task 19 needs 1, 3, 5 and 7, and runs after 10 (both edit `commitVoices`). Task 15's goldens and Task 17's records follow both.

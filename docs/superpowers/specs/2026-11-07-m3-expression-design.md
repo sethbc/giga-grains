@@ -491,3 +491,86 @@ at most); sub-project 3 takes globals from 0x30 and layer 0x38; sub-project 4 gl
 - **All:** `ModSource` appends (saved by name: the merge appends after whichever landed first);
   `kParamCount` and the tables merge by addition; §23 rows and CLAUDE.md's counts (labels `mpe`, the
   six goldens) are settled at merge.
+
+## 8. Scope addition: note routing per layer and envelope curves (2026-11-07)
+
+Added by the top controller's ruling (provisional for the director), from the competitor
+comparison (the Torso S-4 and Tasty Chips' GR-1, GR-MEGA and GR-2 all have both). Note routing
+closes a silent divergence: INTENT §14 says "per-layer or per-channel note routing is M3's, with the
+Voice scheduler", and no M3 spec built it. Each choice below is Claude's provisional call.
+
+### 8.1 Parameters (the rest of this sub-project's layer range)
+
+| Slot | CLAP ID | Display name | Range, default | Kind |
+|---|---|---|---|---|
+| `NoteChannel`, `B_…` | `0x010033` … `0x040033` | Note Channel | 0 to 18 stepped, 0: 0 All, 1 to 16 a MIDI channel, 17 Lower zone, 18 Upper zone | layer, automatable, not modulatable, not a route target |
+| `KeyLow` | `0x010034` … | Key Low | 0 to 127 stepped, 0 | as Note Channel |
+| `KeyHigh` | `0x010035` … | Key High | 0 to 127 stepped, 127 | as Note Channel |
+| `Env1Curve` | `0x010036` … | Env 1 Curve | −1 to 1, 0 (shown −100% exponential … +100% logarithmic) | layer, automatable and modulatable as Env 1 Attack is; not a route target |
+| `Env2Curve` | `0x010037` … | Env 2 Curve | −1 to 1, 0 | as Env 1 Curve |
+
+- All five join `GG_LAYER_PARAMS_M3_EXPRESSION` after Pan, in index order: 318 slots,
+  `kLayerParamCount` 69, `kNextFreeLayerIndex` 0x38 (sub-project 3's 0x38 then follows; a merge keeps
+  the larger next-free index). No patch-version bump: a state without them reads the defaults.
+- **E18. All five are locked out of Mutate's defaults** (a press must not silence a layer by moving
+  its range, nor move what it moved before) and are no route target (they configure the modulators
+  and the note input, as Mode does; §14's "no route targets the modulators" holds). They are not
+  per-note slots: E7's 92 stay 92. A preset saves them (they are the sound's split, not the
+  instance's MIDI settings).
+- The Edit view: the three routing parameters in the Source panel beside Mode, the curves in the
+  Env 1 and Env 2 panels after Release.
+
+### 8.2 E16. Note routing per layer
+
+- A note **passes** layer L's filter when `KeyLow ≤ key ≤ KeyHigh` (a low above the high passes
+  nothing) and its channel passes Note Channel: All passes every channel; 1 to 16 passes that MIDI
+  channel (0-based channel + 1); Lower zone passes a channel whose role in the layout in effect
+  (§4.2) is LowerMaster or LowerMember, Upper zone UpperMaster or UpperMember (with MPE Off no channel
+  has a zone role, so a zone choice passes nothing). The key is the note's key, never its tuning.
+- **The note table is unchanged** (determinism, ordinals, `NOTE_END`): the filter is a per-layer view
+  of it. A **Voice** layer starts a voice only for a note that passes its filter at the boundary the
+  note starts (a filter change never starts or ends a sounding voice). A **Cloud** layer's held set
+  is the notes that pass its filter as of the boundary: its held keys (`setHeldKeys`), its note
+  gate, its Env 1 and Env 2 gates, FX's Freeze-by-note (a held key freezes only the layers it
+  passes) and the instance-wide note sources the layer reads (B4's newest held note: Velocity, Key,
+  Pressure, Timbre, Note Pitch and E4's Vibrato and Expression) are each the filtered set's; a
+  filter change re-derives them at its boundary, as a held-set change does.
+- A note that passes no layer still sits in the table and ends (`NOTE_END`) as soon as it is
+  released, as a note on a layer set that starts no voice does today.
+- At the defaults (All, 0, 127) every layer's view is the whole table, so every render is bit-for-bit
+  today's: the at-rest rule holds.
+- *Declined:* filtering in the note table (one table per layer would quadruple the ordinals and the
+  `NOTE_END` bookkeeping); a filter on CLAP note ports (one note port).
+
+### 8.3 E17. Envelope curves
+
+- One curve per envelope (Env 1 Curve, Env 2 Curve per layer), shaping the attack, the decay and
+  the release alike. *Declined:* a curve per stage (six more parameters the layer range can't hold
+  beside the routing; a per-envelope curve is what the GR-MEGA offers).
+- **The law, no libm** (the event log is cross-platform): the envelope's state stays the linear
+  level ℓ in [0, 1] it is today; its output is `w(ℓ)`, with `w(x) = x / (1 + k(1 − x))`, `k = −8c` for
+  c ≤ 0 and `k = −8c / (1 + 8c)` for c > 0 (so +c is the mirror of −c about y = x, and c = −1 is the
+  exponential: slow rise, fast fall then a long tail; c = +1 the logarithmic). The sustain target in
+  the linear state is `w⁻¹(Sustain) = s(1 + k) / (1 + k s)`, so Sustain keeps its meaning; a retrigger
+  continues from the linear state, so no stage jumps. At c = 0 exactly the map is skipped, so the
+  arithmetic is today's bit for bit.
+- Applied in the stepped `Adsr` (every layer, both modes, Env 1 and Env 2 as modulators) and in
+  `AmpEnvelope`'s closed form (a voice's amplitude, V1): `AmpEnvelope` carries the linear state, the
+  slopes and k, and `valueAt` continues the linear state then maps it, so V1's grain-peak latching
+  reads the same curve the stepping does. A voice's curve is its layer's (no per-voice target).
+- *Declined:* `exp`/`pow` curves (libm differs across platforms); a curve in the output domain only
+  (Sustain would change meaning with the curve).
+
+### 8.4 Goldens and tests
+
+- `inst-layer-split`: layer A Voice over a 220 Hz sine keys 0 to 59, layer B Cloud over noise keys
+  60 to 127; notes on both sides, then a chord across the split, then Key Low/High moved at a
+  boundary with notes held (a sounding voice continues; B's held set re-derives).
+- `inst-env-curve`: one Voice layer, Env 1 Release long, notes released at Env 1 Curve −1, 0 and +1
+  (the curve automated between notes), and Env 2 → Size at Curve +1 on a Cloud layer beside it.
+- Tests: the filter's table (channel, zones by layout, key range, low > high), a Voice layer
+  starting only passing notes, a Cloud layer's held keys, gate and sources from its filtered set,
+  FX Freeze per layer, a filter change at a boundary, the at-rest defaults; the curve's law (c = 0
+  bit-identical to the linear ADSR over random gates, the mirror symmetry, w(0) = 0, w(1) = 1,
+  Sustain held exactly, monotonic, no jump at a retrigger), `AmpEnvelope.valueAt` equal to the
+  stepped `Adsr` at every cell for c in {−1, −0.5, 0.5, 1}, block-size invariance (1, 32, 64, 4096).
