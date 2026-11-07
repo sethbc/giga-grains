@@ -7,13 +7,13 @@
 // §6.9: 48 per layer, A to D, and nine globals; 218 in all), M2 sub-project 2's five ring
 // parameters per layer (its spec §6.3), M2 sub-project 3's Quality, per layer, and Budget (its
 // spec §6.8), and the Extremes' eight per layer and eight globals (M2 sub-project 4's spec §6.7;
-// and M3 sub-project 1's Mode per layer and three MIDI globals; 63 per layer, 290 in all), and
-// their versioned XML state, through gg-core's public API (gg/core/ParamIds.h,
-// gg/core/PatchState.h) and its tinyxml-free internal core/src/PatchXml.h, for each product's patch
-// XML. This file never includes sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges
-// and defaults are spelled out literally, from Global Constraints' parameter table, so a change to
-// gg/core/ParamIds.h or ParamIds.cpp fails these tests. CLAP parameter IDs are frozen at the first
-// public release and append-only (INTENT §18).
+// and M3 sub-project 1's Mode per layer and three MIDI globals; 69 per layer, 318 in all, with M3
+// sub-project 2's six per layer and four MIDI globals), and their versioned XML state, through
+// gg-core's public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
+// core/src/PatchXml.h, for each product's patch XML. This file never includes sst-plugininfra or
+// tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out literally, from Global
+// Constraints' parameter table, so a change to gg/core/ParamIds.h or ParamIds.cpp fails these
+// tests. CLAP parameter IDs are frozen at the first public release and append-only (INTENT §18).
 
 #include <algorithm>
 #include <array>
@@ -91,7 +91,8 @@ std::array<Expected, kParamCount> buildExpected()
     for (size_t i = 0; i < kParamCount; ++i)
     {
         const auto &r = rows[i];
-        const uint32_t autoMod = r.automatable ? kAutoMod : 0u;
+        const uint32_t autoMod =
+            r.automatable ? (r.modulatable ? kAutoMod : uint32_t{CLAP_PARAM_IS_AUTOMATABLE}) : 0u;
         t[i] = {static_cast<ParamSlot>(i),
                 r.id,
                 r.name,
@@ -299,8 +300,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 290);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 290>>);
+    STATIC_REQUIRE(kParamCount == 318);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 318>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -367,7 +368,7 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3);
+        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3 + 4 * 3 + 4);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -407,8 +408,8 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
     // and indices one past the table, the reserved blocks' unused indices (all but 0x40-0x44 in
     // the layer scopes, 0x50 and 0x60 to 0x67), and the "unknown id" of the bad-state test.
     for (clap_id unknown :
-         {0x000000u, 0x00000Au, 0x000010u, 0x000025u,      0x010000u, 0x010032u, 0x020000u,
-          0x020032u, 0x040032u, 0x050001u, 0x000040u,      0x01004Fu, 0x010045u, 0x040045u,
+         {0x000000u, 0x00000Au, 0x000010u, 0x000029u,      0x010000u, 0x010038u, 0x020000u,
+          0x020038u, 0x040038u, 0x050001u, 0x000040u,      0x01004Fu, 0x010045u, 0x040045u,
           0x000041u, 0x000051u, 0x010051u, 0x04005Fu,      0x030068u, 0x04007Fu, 0x000068u,
           0x050050u, 0x050060u, 0x777777u, CLAP_INVALID_ID})
     {
@@ -427,8 +428,8 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     // 0x40 to 0x4F, 0x51 to 0x5F and 0x60 to 0x7F are free.
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
-    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x32u);
-    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x25u);
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x38u);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x29u);
     uint32_t maxLayerIndex = 0;
     uint32_t maxGlobalIndex = 0;
     for (size_t i = 0; i < kParamCount; ++i)
@@ -477,9 +478,9 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::C_Quality) == 0x030050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::D_Quality) == 0x040050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::Budget) == 0x000050u);
-    // Budget, the Extremes' eight globals, then the three MIDI settings, the last slots.
-    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::Budget) == kParamCount - 12);
-    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::LimiterRelease) == kParamCount - 4);
+    // Budget, the Extremes' eight globals, then the seven MIDI settings, the last slots.
+    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::Budget) == kParamCount - 16);
+    STATIC_REQUIRE(static_cast<size_t>(ParamSlot::LimiterRelease) == kParamCount - 8);
 
     // M2 sub-project 4's block (its spec §6.7): 0x60 to 0x67 are used in every scope, each the
     // table's parameter, and 0x68 to 0x7F are free in every scope.
@@ -502,7 +503,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 63);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 69);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
@@ -511,6 +512,11 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(gg::core::slotForId(0x040031) == ParamSlot::D_Mode);
     STATIC_REQUIRE(gg::core::slotForId(0x000022) == ParamSlot::Mpe);
     STATIC_REQUIRE(gg::core::slotForId(0x000024) == ParamSlot::BendRange);
+    STATIC_REQUIRE(gg::core::slotForId(0x000025) == ParamSlot::MpeLowerZone);
+    STATIC_REQUIRE(gg::core::slotForId(0x000028) == ParamSlot::UpperBendRange);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Pan) == 0x32u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Env2Curve) == 0x37u);
+    STATIC_REQUIRE(gg::core::slotForId(0x040032) == ParamSlot::D_Pan);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::RingLength) == 0x40u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Splice) == 0x44u);
     STATIC_REQUIRE(gg::core::slotForId(0x040044) == ParamSlot::D_Splice);
@@ -714,8 +720,8 @@ TEST_CASE("the next free indices are unchanged", "[core]")
     // none of them. Of the other sub-projects' blocks (0x50 to 0x7F) sub-project 3's 0x50 is in
     // use, in every scope (Quality and Budget), and sub-project 4's 0x60 to 0x67, in every scope
     // too (its eight layer rows, the delay's and the limiter's eight globals).
-    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x32u);
-    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x25u);
+    STATIC_REQUIRE(gg::core::kNextFreeLayerIndex == 0x38u);
+    STATIC_REQUIRE(gg::core::kNextFreeGlobalIndex == 0x29u);
     STATIC_REQUIRE(gg::core::kReservedIndexBegin == 0x40u);
     STATIC_REQUIRE(gg::core::kReservedIndexEnd == 0x7Fu);
     for (clap_id scope = 0; scope <= 4; ++scope)
@@ -2171,4 +2177,19 @@ TEST_CASE(
     REQUIRE(o.load(old, Mode::Fx));
     CHECK_FALSE(o.routes[20].voiceOnly);
     CHECK(o.routes[20].source == ModSource::Pressure);
+}
+
+TEST_CASE("note channel shows its choices", "[core][params]")
+{
+    // M3 sub-project 2's addendum (E18): 0 All, 1 to 16 the channels, 17 and 18 the zones.
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        const auto &m = gg::core::paramMeta(ParamSlot::NoteChannel, mode);
+        const auto text = [&m](float v) { return m.valueToString(v).value_or("<none>"); };
+        CHECK(text(0.0f) == "All");
+        CHECK(text(1.0f) == "1");
+        CHECK(text(16.0f) == "16");
+        CHECK(text(17.0f) == "Lower zone");
+        CHECK(text(18.0f) == "Upper zone");
+    }
 }

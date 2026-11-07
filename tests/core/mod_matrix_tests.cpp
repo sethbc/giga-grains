@@ -511,7 +511,8 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
         const auto ref = gg::core::layerOf(slot);
         const bool control =
             ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16) ||
-                    ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode);
+                    ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode ||
+                    gg::core::isRoutingOrCurve(ref->param));
         const bool expected = !gg::core::isMacro(slot) && !control &&
                               !gg::core::isMidiSetting(slot) &&
                               (ref ? ref->layer == 0
@@ -524,8 +525,9 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     // Mode and the three MIDI settings (M3 sub-project 1) are no target: none is counted here.
     // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length),
     // sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven but
-    // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
-    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8);
+    // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals. M3 sub-project 2 adds Pan (the
+    // first of the six; Note Channel, the keys and the curves are no target, nor the zones).
+    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8 + 1);
     CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
     CHECK(isLayerTarget(ParamSlot::Position));
@@ -572,7 +574,8 @@ TEST_CASE("a route to Quality is accepted and a route to LFO 1 Rate refused", "[
         INFO("index " << index);
         CHECK(isModulatorControl(param) == control);
         CHECK(isValidTarget(layerSlot(param, 0)) ==
-              (!control && param != LayerParam::RingLength && param != LayerParam::Mode));
+              (!control && param != LayerParam::RingLength && param != LayerParam::Mode &&
+               !gg::core::isRoutingOrCurve(param)));
         for (uint8_t layer = 1; layer < kLayers; ++layer)
         {
             CHECK_FALSE(isValidTarget(layerSlot(param, layer)));
@@ -763,5 +766,27 @@ TEST_CASE("factory routes 44 to 48 are voice only and slots 1 to 12 are unchange
         {
             CHECK(bits(got[s]) == bits(expected[s]));
         }
+    }
+}
+
+TEST_CASE("no route targets the zone settings", "[core][mod]")
+{
+    // M3 sub-project 2's spec §4.1, E15: the four MIDI settings added with the zones are no
+    // targets; Pan is.
+    CHECK_FALSE(isValidTarget(ParamSlot::MpeLowerZone));
+    CHECK_FALSE(isValidTarget(ParamSlot::MpeUpperZone));
+    CHECK_FALSE(isValidTarget(ParamSlot::MpeUpperBendRange));
+    CHECK_FALSE(isValidTarget(ParamSlot::UpperBendRange));
+    CHECK(isValidTarget(ParamSlot::Pan));
+    CHECK_FALSE(isValidTarget(ParamSlot::B_Pan)); // reached through targetLayer
+}
+
+TEST_CASE("no route targets the routing and curve parameters", "[core][mod]")
+{
+    // M3 sub-project 2's addendum (E18).
+    for (const LayerParam p : {LayerParam::NoteChannel, LayerParam::KeyLow, LayerParam::KeyHigh,
+                               LayerParam::Env1Curve, LayerParam::Env2Curve})
+    {
+        CHECK_FALSE(isValidTarget(layerSlot(p, 0)));
     }
 }

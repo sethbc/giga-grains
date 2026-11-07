@@ -107,6 +107,16 @@ enum class Mode
 /// M3 sub-project 1's (the Voice slice; its spec §4.1): a layer's Mode, 0 Cloud or 1 Voice, in the
 /// first free index (kNextFreeLayerIndex was 0x31) between M2's rows and the reserved blocks.
 #define GG_LAYER_PARAMS_M3(X) X(Mode, 0x31, "Mode")
+/// M3 sub-project 2's (full expression; its spec §4.1, §8.1), in the next free indices after Mode:
+/// a layer's Pan, its note routing (Note Channel, Key Low, Key High) and its two envelopes' curves.
+/// 0x38 and up are sub-project 3's.
+#define GG_LAYER_PARAMS_M3_EXPRESSION(X)                                                           \
+    X(Pan, 0x32, "Pan")                                                                            \
+    X(NoteChannel, 0x33, "Note Channel")                                                           \
+    X(KeyLow, 0x34, "Key Low")                                                                     \
+    X(KeyHigh, 0x35, "Key High")                                                                   \
+    X(Env1Curve, 0x36, "Env 1 Curve")                                                              \
+    X(Env2Curve, 0x37, "Env 2 Curve")
 /// M2 sub-project 2's (Sources and persistence; its spec §6.3), in its reserved block 0x40-0x4F;
 /// 0x45-0x4F stay unused.
 #define GG_LAYER_PARAMS_M2_SOURCES(X)                                                              \
@@ -133,11 +143,13 @@ enum class Mode
     GG_LAYER_PARAMS_M1(X)                                                                          \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
+    GG_LAYER_PARAMS_M3_EXPRESSION(X)                                                               \
     GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
 #define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
+    GG_LAYER_PARAMS_M3_EXPRESSION(X)                                                               \
     GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
@@ -154,7 +166,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 63;
+inline constexpr size_t kLayerParamCount = 69;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -306,6 +318,12 @@ enum class ParamSlot : uint16_t
     Mpe,
     MpeBendRange,
     BendRange,
+    // M3 sub-project 2's (its spec §4.1): the MPE zones' member-channel counts and the upper
+    // zone's and the upper conventional channels' bend ranges; MIDI settings too.
+    MpeLowerZone,
+    MpeUpperZone,
+    MpeUpperBendRange,
+    UpperBendRange,
     Count
 };
 
@@ -358,7 +376,7 @@ constexpr bool isMacro(ParamSlot slot) noexcept
 /// The next free index below the reserved blocks in every layer scope (1 to 4) and in scope 0 (M2
 /// sub-project 1's spec §6.9): a new parameter outside wave 2's blocks takes it, and a test pins
 /// each as one past the table's largest index below kReservedIndexBegin.
-inline constexpr uint32_t kNextFreeLayerIndex = 0x32, kNextFreeGlobalIndex = 0x25;
+inline constexpr uint32_t kNextFreeLayerIndex = 0x38, kNextFreeGlobalIndex = 0x29;
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
 /// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
@@ -496,6 +514,11 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x000022, // Mpe
     0x000023, // MpeBendRange
     0x000024, // BendRange
+    // M3 sub-project 2's MIDI settings (its spec §4.1), scope 0's next free indices.
+    0x000025, // MpeLowerZone
+    0x000026, // MpeUpperZone
+    0x000027, // MpeUpperBendRange
+    0x000028, // UpperBendRange
 };
 
 /// Scope 0's slots by index, 0x00 to 0x7F, so that wave 2's reserved blocks work as in the layer
@@ -635,13 +658,30 @@ constexpr bool isRingParam(ParamSlot slot) noexcept
                    ref->param == LayerParam::Splice);
 }
 
-/// Whether `slot` is one of the three MIDI settings (M3 sub-project 1's spec §4.1: MPE, MPE Bend
-/// Range, Bend Range): the instance's, which a preset load keeps and Mutate locks, and no mod route
-/// targets. False for ParamSlot::Count.
+/// The MIDI settings, the instance's rather than the sound's (M3 sub-project 1's spec §4.1: MPE,
+/// MPE Bend Range, Bend Range; sub-project 2's: the zones and the upper bend ranges).
+inline constexpr std::array<ParamSlot, 7> kMidiSettingSlots{
+    ParamSlot::Mpe,
+    ParamSlot::MpeBendRange,
+    ParamSlot::BendRange,
+    ParamSlot::MpeLowerZone,
+    ParamSlot::MpeUpperZone,
+    ParamSlot::MpeUpperBendRange,
+    ParamSlot::UpperBendRange,
+};
+
+/// Whether `slot` is one of kMidiSettingSlots: the instance's, which a preset load keeps and Mutate
+/// locks, and no mod route targets. False for ParamSlot::Count.
 constexpr bool isMidiSetting(ParamSlot slot) noexcept
 {
-    return slot == ParamSlot::Mpe || slot == ParamSlot::MpeBendRange ||
-           slot == ParamSlot::BendRange;
+    for (const ParamSlot s : kMidiSettingSlots)
+    {
+        if (s == slot)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Layer `layer`'s Level (0 to 3: Level, Level B, Level C, Level D); ParamSlot::Count out of

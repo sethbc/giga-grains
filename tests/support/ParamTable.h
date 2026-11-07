@@ -52,6 +52,9 @@ struct ExpectedParamRow
     float def;
     bool stepped;
     bool automatable;
+    /// MODULATABLE too: false for the routing parameters (kAutomatableOnlyIds), which are
+    /// automatable alone.
+    bool modulatable = true;
 };
 
 /// The top of every layer's Position (M2 sub-project 2's spec §6.3): log2(300 × 255 / 16 + 1) / 8,
@@ -152,6 +155,17 @@ inline constexpr std::array<ParamRow, 5> kLayerASourcesRows{{
 inline constexpr std::array<ParamRow, 1> kLayerAModeRows{{
     {0x010031, "A Mode", 0.0f, 1.0f, 0.0f, true},
 }};
+// Layer A's six expression rows (M3 sub-project 2's spec §4.1, §8.1), at 0x32 to 0x37 after Mode:
+// Pan (-1 to 1), Note Channel (0 All, 1 to 16, 17 Lower zone, 18 Upper zone), Key Low and Key High
+// (MIDI keys), and the two envelopes' curves (-1 to 1).
+inline constexpr std::array<ParamRow, 6> kLayerAExpressionRows{{
+    {0x010032, "A Pan", -1.0f, 1.0f, 0.0f, false},
+    {0x010033, "A Note Channel", 0.0f, 18.0f, 0.0f, true},
+    {0x010034, "A Key Low", 0.0f, 127.0f, 0.0f, true},
+    {0x010035, "A Key High", 0.0f, 127.0f, 127.0f, true},
+    {0x010036, "A Env 1 Curve", -1.0f, 1.0f, 0.0f, false},
+    {0x010037, "A Env 2 Curve", -1.0f, 1.0f, 0.0f, false},
+}};
 // Layer A's Quality (M2 sub-project 3, Engine scale and quality; its spec §6.8), in its reserved
 // block: 0 Eco, 1 Normal, 2 HQ.
 inline constexpr std::array<ParamRow, 1> kLayerAEngineRows{{
@@ -174,9 +188,15 @@ inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
 }};
 // The parameters that are neither automatable nor modulatable: every layer's Ring Length, which the
 // main thread resizes (M2 sub-project 2's spec §5, §6.3).
-// The three MIDI globals are fixed too (M3 sub-project 1's spec §4.1).
-inline constexpr std::array<clap_id, 7> kFixedIds{0x010040, 0x020040, 0x030040, 0x040040,
-                                                  0x000022, 0x000023, 0x000024};
+// The seven MIDI globals are fixed too (M3 sub-projects 1 and 2's spec §4.1).
+inline constexpr std::array<clap_id, 11> kFixedIds{0x010040, 0x020040, 0x030040, 0x040040,
+                                                   0x000022, 0x000023, 0x000024, 0x000025,
+                                                   0x000026, 0x000027, 0x000028};
+// Automatable but not modulatable (M3 sub-project 2's addendum, E18): every layer's Note Channel,
+// Key Low and Key High, which choose which notes a layer plays and so are no modulation targets.
+inline constexpr std::array<clap_id, 12> kAutomatableOnlyIds{
+    0x010033, 0x020033, 0x030033, 0x040033, 0x010034, 0x020034,
+    0x030034, 0x040034, 0x010035, 0x020035, 0x030035, 0x040035};
 // The new globals, the last slots but the Extremes' eight: M2 sub-project 1's nine, then
 // sub-project 3's Budget, in its reserved block (its spec §6.4, §6.8), a count of Normal stereo
 // grains.
@@ -205,16 +225,20 @@ inline constexpr std::array<ParamRow, 8> kExtremesGlobalRows{{
     {0x000066, "Limiter Ceiling", -24.0f, 0.0f, -1.0f, false},
     {0x000067, "Limiter Release", -6.643856189774724f, 0.0f, -3.321928094887362f, false},
 }};
-// The three MIDI globals (M3 sub-project 1's spec §4.1), the last slots, at 0x22 to 0x24: neither
-// automatable nor modulatable (kMidiGlobalIds). MPE Bend Range and Bend Range are stepped integers
-// in semitones.
-inline constexpr std::array<ParamRow, 3> kMidiGlobalRows{{
+// The seven MIDI globals (M3 sub-project 1's spec §4.1 at 0x22 to 0x24; sub-project 2's §4.1 at
+// 0x25 to 0x28), the last slots: neither automatable nor modulatable (kMidiGlobalIds). The bend
+// ranges are stepped integers in semitones; the zones count member channels.
+inline constexpr std::array<ParamRow, 7> kMidiGlobalRows{{
     {0x000022, "MPE", 0.0f, 1.0f, 0.0f, true},
     {0x000023, "MPE Bend Range", 1.0f, 96.0f, 48.0f, true},
     {0x000024, "Bend Range", 0.0f, 24.0f, 2.0f, true},
+    {0x000025, "MPE Lower Zone", 0.0f, 15.0f, 15.0f, true},
+    {0x000026, "MPE Upper Zone", 0.0f, 15.0f, 0.0f, true},
+    {0x000027, "MPE Upper Bend Range", 1.0f, 96.0f, 48.0f, true},
+    {0x000028, "Upper Bend Range", 0.0f, 24.0f, 2.0f, true},
 }};
 
-// All 290 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 318 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -234,7 +258,11 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             expect(slot < gg::core::kParamCount);
             const bool automatable =
                 std::find(kFixedIds.begin(), kFixedIds.end(), id) == kFixedIds.end();
-            t[slot++] = {id, std::move(name), r.min, r.max, r.def, r.stepped, automatable};
+            const bool modulatable =
+                std::find(kAutomatableOnlyIds.begin(), kAutomatableOnlyIds.end(), id) ==
+                kAutomatableOnlyIds.end();
+            t[slot++] = {id,    std::move(name), r.min,       r.max,
+                         r.def, r.stepped,       automatable, modulatable};
         };
         for (const ParamRow &r : kM1Rows)
         {
@@ -245,6 +273,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             push(r.id, r.name, r);
         }
         for (const ParamRow &r : kLayerAModeRows)
+        {
+            push(r.id, r.name, r);
+        }
+        for (const ParamRow &r : kLayerAExpressionRows)
         {
             push(r.id, r.name, r);
         }
@@ -271,6 +303,7 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         }
         layerA.insert(layerA.end(), kLayerANewRows.begin(), kLayerANewRows.end());
         layerA.insert(layerA.end(), kLayerAModeRows.begin(), kLayerAModeRows.end());
+        layerA.insert(layerA.end(), kLayerAExpressionRows.begin(), kLayerAExpressionRows.end());
         layerA.insert(layerA.end(), kLayerASourcesRows.begin(), kLayerASourcesRows.end());
         layerA.insert(layerA.end(), kLayerAEngineRows.begin(), kLayerAEngineRows.end());
         layerA.insert(layerA.end(), kLayerAExtremesRows.begin(), kLayerAExtremesRows.end());

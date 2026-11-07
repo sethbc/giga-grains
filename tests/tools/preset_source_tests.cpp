@@ -437,6 +437,22 @@ TEST_CASE("a preset source may not set a MIDI setting", "[render]")
     }
 }
 
+TEST_CASE("pack preset refuses MPE Lower Zone", "[render]")
+{
+    // M3 sub-project 2's spec §4.1, E15: the four settings added with the zones are the
+    // instance's too.
+    for (const char *name :
+         {"MPE Lower Zone", "MPE Upper Zone", "MPE Upper Bend Range", "Upper Bend Range"})
+    {
+        INFO(name);
+        auto j = fxTestJson();
+        j["params"][name] = 1;
+        const std::string error = rejection(j);
+        CHECK_THAT(error, ContainsSubstring(std::string("params.") + name));
+        CHECK_THAT(error, ContainsSubstring("MIDI setting"));
+    }
+}
+
 TEST_CASE("a render through a preset loads its samples from --content-dir", "[render]")
 {
     // Spec §6.10: the preset's samples are resolved against --content-dir alone, loaded and

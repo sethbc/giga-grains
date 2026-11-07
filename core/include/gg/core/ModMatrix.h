@@ -141,6 +141,15 @@ constexpr bool isModulatorControl(LayerParam p) noexcept
     return p >= LayerParam::Lfo1Rate && p <= LayerParam::Step16;
 }
 
+/// M3 sub-project 2's addendum (E18): a layer's Note Channel, Key Low, Key High and the two
+/// envelopes' curves choose which notes a layer plays and how its envelopes bend, so no route
+/// targets them.
+constexpr bool isRoutingOrCurve(LayerParam p) noexcept
+{
+    return p == LayerParam::NoteChannel || p == LayerParam::KeyLow || p == LayerParam::KeyHigh ||
+           p == LayerParam::Env1Curve || p == LayerParam::Env2Curve;
+}
+
 /// Whether `target` may be a route's target (spec §6.8): any parameter but the macros, the
 /// modulators' own controls (isModulatorControl, in every layer) and Ring Length, which is
 /// neither automatable nor modulatable (M2 sub-project 2's spec §6.3: the main thread resizes the
@@ -159,7 +168,8 @@ constexpr bool isValidTarget(ParamSlot target) noexcept
     if (const auto ref = layerOf(target))
     {
         return ref->layer == 0 && !isModulatorControl(ref->param) &&
-               ref->param != LayerParam::RingLength && ref->param != LayerParam::Mode;
+               ref->param != LayerParam::RingLength && ref->param != LayerParam::Mode &&
+               !isRoutingOrCurve(ref->param);
     }
     if (isMidiSetting(target))
     {
