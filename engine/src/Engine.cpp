@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "gg/core/DenormalGuard.h"
+#include "gg/core/FpContract.h"
 #include "gg/grain/GrainKernels.h"
 #include "gg/grain/KernelDispatch.h"
 
@@ -45,7 +46,8 @@ const EngineConfig &validated(const EngineConfig &config)
     return config;
 }
 
-// A layer has one stream (spec §6.2): stream 0. M3's Voice scheduler adds streams.
+// A layer's Cloud stream is stream 0 (spec §6.2); a voice's is 1 + its ordinal (M3 Voice spec
+// §4.3), so no voice draw shares a Cloud draw's key.
 constexpr uint32_t kStream = 0;
 } // namespace
 
@@ -61,6 +63,10 @@ Engine::Engine(const EngineConfig &config)
     assert(kernels_ == &kernels::sseKernels());
 #endif
     cloud_.prepare(config_.sampleRate);
+    for (Voice &voice : voices_)
+    {
+        voice.scheduler.prepare(config_.sampleRate);
+    }
     // process() writes into the ring in blocks of at most maxBlockSize frames (ruling M1-o).
     live_.prepare(config_.sampleRate, config_.liveSeconds, config_.maxBlockSize);
     if (config_.spectral)
@@ -215,6 +221,81 @@ void Engine::setHeldKeys(std::span<const uint8_t> keys) noexcept { cloud_.setHel
 
 void Engine::setNoteGate(bool gate) noexcept { cloud_.setNoteGate(gate); }
 
+void Engine::setVoiceMode(bool on) noexcept
+{
+    if (on == voiceMode_)
+    {
+        return;
+    }
+    voiceMode_ = on;
+    if (!on)
+    {
+        // A switch to Cloud finishes the voices at once (M3 Voice spec §4.3); the Cloud stream
+        // starts again at the next call's first frame, as a layer switched on does.
+        clearVoices();
+        cloud_.forceNextOnset();
+    }
+}
+
+void Engine::startVoice(uint32_t slot, uint32_t ordinal, const VoiceParams &params) noexcept
+{
+    if (slot >= kMaxVoices || ordinal == kNoVoice)
+    {
+        return;
+    }
+    Voice &voice = voices_[slot];
+    // A fresh stream: grain index 0, the source mode in effect (a request process() applies
+    // later reaches it there too), the voice's controls, and its first onset at the next call's
+    // first frame, which also drops any rescale setParams asks for.
+    voice.scheduler.reset();
+    voice.scheduler.setSourceMode(mode_, config_.liveSeconds);
+    voice.scheduler.setParams(params.cloud);
+    voice.scheduler.forceNextOnset();
+    voice.params = params;
+    voice.ordinal = ordinal;
+    voice.spawning = true;
+}
+
+void Engine::setVoiceParams(uint32_t slot, const VoiceParams &params) noexcept
+{
+    if (slot >= kMaxVoices || !voices_[slot].spawning)
+    {
+        return;
+    }
+    voices_[slot].scheduler.setParams(params.cloud);
+    voices_[slot].params = params;
+}
+
+void Engine::finishVoice(uint32_t slot) noexcept
+{
+    if (slot < kMaxVoices)
+    {
+        voices_[slot].spawning = false;
+    }
+}
+
+bool Engine::voiceSpawning(uint32_t slot) const noexcept
+{
+    return slot < kMaxVoices && voices_[slot].spawning;
+}
+
+void Engine::clearVoices() noexcept
+{
+    for (Voice &voice : voices_)
+    {
+        voice.spawning = false;
+    }
+}
+
+void Engine::applySourceMode() noexcept
+{
+    cloud_.setSourceMode(mode_, config_.liveSeconds);
+    for (Voice &voice : voices_)
+    {
+        voice.scheduler.setSourceMode(mode_, config_.liveSeconds);
+    }
+}
+
 void Engine::setSourceMode(SourceMode mode) noexcept
 {
     if ((mode == SourceMode::Live && !live_.enabled()) ||
@@ -239,7 +320,7 @@ void Engine::updateLiveBound() noexcept
     // is the limit's, before and after the shorter ring lands (ruling SP-T12ad).
     const int64_t frames = capFrames_ != 0 ? std::min(capFrames_, live_.frames()) : live_.frames();
     config_.liveSeconds = static_cast<double>(frames) / config_.sampleRate;
-    cloud_.setSourceMode(mode_, config_.liveSeconds);
+    applySourceMode();
 }
 
 void Engine::applyLimits() noexcept
@@ -372,6 +453,7 @@ void Engine::setStealSink(GrainStealSink sink, void *ctx) noexcept
 void Engine::reset() noexcept
 {
     clearGrains();
+    clearVoices();
     cloud_.reset();
     live_.reset();
     if (spectral_ != nullptr)
@@ -421,7 +503,7 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         // Spec §6.4: the scheduler draws for the new kind from here, and the pool keeps its
         // grains, each finishing on the source it started on (its row's sourceSlot).
         mode_ = requestedMode_;
-        cloud_.setSourceMode(mode_, config_.liveSeconds);
+        applySourceMode();
     }
     if (requestedEnabled_ != enabled_)
     {
@@ -433,6 +515,7 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         else
         {
             clearGrains();     // off: the grains still sounding end here
+            clearVoices();     // with the voices (M3 Voice spec §4.3)
             bus2Used_ = false; // and bus 2 is empty until its next admission (extremes §6.3)
         }
     }
@@ -472,6 +555,71 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         }
         processBlock(in, numInChannels, out, numChannels, bus2, done, n, overdubGain);
         done += n;
+    }
+}
+
+template <class Spawn>
+void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spawn) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    // The voices that run this block, each a stream schedule() would run (CloudScheduler's
+    // beginRun applies its forced onset, resume and rescale at blockStart).
+    uint32_t running[kMaxVoices]{};
+    uint32_t count = 0;
+    uint32_t spawning = 0;
+    for (uint32_t slot = 0; slot < kMaxVoices; ++slot)
+    {
+        if (voices_[slot].spawning)
+        {
+            ++spawning;
+            if (voices_[slot].scheduler.beginRun(blockStart))
+            {
+                running[count++] = slot;
+            }
+        }
+    }
+    // V7: headroom 1 / sqrt(n), n the spawning voices. Voices start and finish only between
+    // process() calls, so n is the same for every block of a call and for any host block size.
+    // With none spawning nothing runs and headroom is unused; the guard only spares 1 / sqrt(0).
+    const double headroom = spawning > 0 ? 1.0 / std::sqrt(static_cast<double>(spawning)) : 1.0;
+    // The k-way merge (M3 Voice spec §4.3): the pool's ledger and steal cursor need
+    // non-decreasing onsets, so each step takes the earliest pending draw in the block by onset
+    // sample, ties by ordinal, then by slot (the scan's order and the strict comparisons). Each
+    // take advances its stream by at least kMinIntervalSamples, so the loop is bounded.
+    const auto end = static_cast<double>(blockStart + static_cast<int64_t>(numFrames));
+    for (;;)
+    {
+        uint32_t best = kMaxVoices;
+        int64_t bestOnset = 0;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const Voice &voice = voices_[running[i]];
+            const double t = voice.scheduler.pendingOnset();
+            if (!(t < end))
+            {
+                continue;
+            }
+            const auto onset = static_cast<int64_t>(std::floor(t));
+            if (best == kMaxVoices || onset < bestOnset ||
+                (onset == bestOnset && voice.ordinal < voices_[best].ordinal))
+            {
+                best = running[i];
+                bestOnset = onset;
+            }
+        }
+        if (best == kMaxVoices)
+        {
+            return;
+        }
+        const Voice &voice = voices_[best];
+        GrainDraw d =
+            voices_[best].scheduler.takeNext(config_.seed, config_.layer, 1u + voice.ordinal);
+        // V1: the voice's amplitude at the grain's peak, latched into its gain at the onset.
+        const int64_t peakSample = d.onsetSample + static_cast<int64_t>(d.durationSamples * 0.5);
+        d.gain = static_cast<float>(static_cast<double>(d.gain) *
+                                    static_cast<double>(voice.params.gain) *
+                                    voice.params.amp.valueAt(peakSample) * headroom);
+        spawn(d, voice.ordinal);
     }
 }
 
@@ -547,7 +695,8 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     // which the pool has already been rendered; admit() moves it forward when it has to
     // retire grains early to make room. Disabled, nothing spawns (and the pool is empty).
     int64_t renderedTo = blockStart;
-    const auto spawn = [&](const GrainDraw &d) {
+    // `voice` is GrainSpec::voice: kNoVoice for the Cloud stream's grains, else the ordinal.
+    const auto spawnAs = [&](const GrainDraw &d, uint32_t voice) {
         // Row 234 (gateFaults()): the gate in effect is the request, applied at process()'s first
         // frame, so a grain while it is requested off means enabled_ was read wrong. The grain
         // still goes on: the counter only records it.
@@ -562,6 +711,7 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
             GrainSpec g;
             if (liveGrain(d, g, live ? live_ : spectral_->ring(), live ? kLiveSlot : kSpectralSlot))
             {
+                g.voice = voice;
                 admit(g, outputs, blockStart, renderedTo);
             }
             else
@@ -571,12 +721,23 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         }
         else if (currentSlot().source != nullptr)
         {
-            admit(sampleGrain(d), outputs, blockStart, renderedTo);
+            GrainSpec g = sampleGrain(d);
+            g.voice = voice;
+            admit(g, outputs, blockStart, renderedTo);
         }
     };
     if (enabled_)
     {
-        cloud_.schedule(blockStart, numFrames, config_.seed, config_.layer, kStream, spawn);
+        if (!voiceMode_)
+        {
+            const auto spawn = [&](const GrainDraw &d) { spawnAs(d, kNoVoice); };
+            cloud_.schedule(blockStart, numFrames, config_.seed, config_.layer, kStream, spawn);
+        }
+        else
+        {
+            // M3 Voice spec B3: at Mode Voice the Cloud stream doesn't schedule.
+            scheduleVoices(blockStart, numFrames, spawnAs);
+        }
     }
     renderPool(outputs, blockStart, renderedTo, blockEnd);
     clock_ = blockEnd;

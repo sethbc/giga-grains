@@ -18,7 +18,8 @@ namespace
 constexpr int kPanelMargin = 2;
 /// The panels in the signal chain's order (core/src/Processor.cpp): the delay after the layers'
 /// sum, then the reverb, then the limiter on the wet side, then the output's Mix (ruling VW-P2e).
-constexpr Panel kPanels[] = {Panel::Delay, Panel::Reverb, Panel::Limiter, Panel::Output};
+constexpr Panel kPanels[] = {Panel::Delay, Panel::Reverb, Panel::Limiter, Panel::Output,
+                             Panel::Midi};
 } // namespace
 
 struct FxView::Impl

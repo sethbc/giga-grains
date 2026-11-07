@@ -1143,3 +1143,25 @@ TEST_CASE("a modulator control's base change is in effect for the cell it starts
     CHECK(p.sourceValue(ModSource::Lfo1, 0) == v);
     CHECK(p.effective(ParamSlot::Pitch) == routed(ParamSlot::Pitch, 0.0f, 12.0f * v, Mode::Fx));
 }
+
+TEST_CASE("a voiceOnly route leaves a Cloud patch not time varying", "[core][mod]")
+{
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        Processor p({kRate, 512, 3, mode});
+        REQUIRE_FALSE(p.timeVarying()); // the factory routes, slots 44 to 48 included
+        auto routes = gg::core::factoryRoutes(mode);
+        routes[20] = {ModSource::Env1,
+                      gg::core::kSameLayer,
+                      ParamSlot::Size,
+                      gg::core::kAllLayers,
+                      1.0f,
+                      gg::core::ModCurve::Unipolar,
+                      true};
+        p.setRoutes(routes);
+        CHECK_FALSE(p.timeVarying()); // Env 1 is per layer, but the route is voice only
+        routes[20].voiceOnly = false;
+        p.setRoutes(routes);
+        CHECK(p.timeVarying());
+    }
+}
