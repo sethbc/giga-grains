@@ -72,6 +72,10 @@ struct Script
     {
         notes.push_back({t, {0, NoteEventType::Off, channel, key, 0.0f, id}});
     }
+    void choke(int64_t t, int16_t key, int16_t channel = 0, int32_t id = -1)
+    {
+        notes.push_back({t, {0, NoteEventType::Choke, channel, key, 0.0f, id}});
+    }
     void control(int64_t t, ControlKind kind, int16_t channel, float value, int16_t key = -1,
                  int32_t id = -1)
     {
@@ -1151,4 +1155,125 @@ TEST_CASE("mpe and note expressions render the same voices", "[core][voice]")
     REQUIRE(mpeLines.size() > 100);
     CHECK(mpeLines == exprLines);
     CHECK(mpe.channels == expr.channels);
+}
+
+TEST_CASE("processor_voice_mpe_release_keeps_bend", "[core][voice]")
+{
+    // An MPE sender reuses member channel 2 for a new note, resetting its bend, pressure and
+    // CC 74 first: with MPE On the voice still releasing on channel 2 keeps its pitch (its
+    // grains' rate unchanged); with MPE Off the channel's bend still moves it, as before.
+    const float half = 12288.0f / 16383.0f;  // +0.5 of the 14-bit range
+    const float center = 8192.0f / 16383.0f; // exactly 0 (B7)
+    const auto rates = [&](bool mpe) {
+        auto p = voiceProcessor();
+        p->setBase(ParamSlot::Mpe, mpe ? 1.0f : 0.0f);
+        p->setBase(slotA(LayerParam::Env1Release), 1.0f); // 2 s
+        auto log = attachLog(*p);
+        Script s;
+        s.control(0, ControlKind::PitchBend, 2, half);
+        s.control(0, ControlKind::Aftertouch, 2, 0.8f);
+        s.control(0, ControlKind::Timbre, 2, 0.7f);
+        s.on(32, 60, 2, 1.0f, 1);
+        s.off(4800, 60, 2, 1);
+        s.control(9600, ControlKind::PitchBend, 2, center);
+        s.control(9600, ControlKind::Aftertouch, 2, 0.0f);
+        s.control(9600, ControlKind::Timbre, 2, 0.0f);
+        s.on(9632, 64, 2, 1.0f, 2);
+        Stereo out;
+        render(*p, s, 0, 24000, {256}, out, nullptr, log.get());
+        const auto grains = grainsOf(*log, 0, 0);
+        REQUIRE(countIn(grains, 0, 4800) > 3);
+        REQUIRE(countIn(grains, 9600 + kGrid, 24000) > 10);
+        std::pair<double, double> r{grains.front().rate, grains.back().rate};
+        return r;
+    };
+    SECTION("MPE On: the releasing voice keeps its bend")
+    {
+        const auto [before, after] = rates(true);
+        CHECK_THAT(before, WithinRel(std::exp2(0.5 * 48.0 / 12.0), 1e-9));
+        CHECK(after == before);
+    }
+    SECTION("MPE Off: the channel's bend moves a release")
+    {
+        const auto [before, after] = rates(false);
+        CHECK_THAT(before, WithinRel(std::exp2(0.5 * 2.0 / 12.0), 1e-9));
+        CHECK_THAT(after, WithinRel(1.0, 1e-9));
+    }
+}
+
+TEST_CASE("processor_voice_choke", "[core][voice][notes]")
+{
+    // A choke (CLAP NOTE_CHOKE) silences: the choked note's voice stops spawning at the choke's
+    // boundary (its grains play out their windows, as a steal) and the note ends there, with no
+    // Env 1 release. A pedal doesn't hold it. A Cloud layer treats it as a note-off.
+    SECTION("Voice: no grain from the choke's boundary, and the note ends there")
+    {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Release), 1.0f); // 2 s: an off would keep spawning
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f, 42);
+        s.choke(4800, 60, 0, 42);
+        Stereo out;
+        render(*p, s, 0, 4800, {256}, out, nullptr, log.get());
+        std::array<EndedNote, 4> ended{};
+        CHECK(p->takeEndedNotes(ended) == 0);
+        render(*p, s, 4800, 4801, {256}, out, nullptr, log.get());
+        REQUIRE(p->takeEndedNotes(ended) == 1);
+        CHECK(ended[0].noteId == 42);
+        CHECK_FALSE(p->voicesSounding());
+        render(*p, s, 4801, 24000, {256}, out, nullptr, log.get());
+        const auto grains = grainsOf(*log, 0, 0);
+        REQUIRE(countIn(grains, 0, 4800) > 3);
+        CHECK(countIn(grains, 4800, 24000) == 0);
+        CHECK(p->takeEndedNotes(ended) == 0);
+    }
+    SECTION("Voice: a pedal-held note, and a note choked in its own group")
+    {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Release), 1.0f);
+        auto log = attachLog(*p);
+        Script s;
+        s.control(0, ControlKind::Sustain, 0, 1.0f);
+        s.on(0, 60, 0, 1.0f, 42);
+        s.off(2400, 60, 0, 42); // pedal-held
+        s.choke(4800, 60, 0, 42);
+        s.on(9601, 62, 0, 1.0f, 43);
+        s.choke(9608, 62, 0, 43); // the same group as its on (boundary 9632): no voice at all
+        Stereo out;
+        render(*p, s, 0, 24000, {256}, out, nullptr, log.get());
+        CHECK(countIn(grainsOf(*log, 0, 0), 4800, 24000) == 0);
+        CHECK(grainsOf(*log, 0, 1).empty());
+        std::array<EndedNote, 4> ended{};
+        REQUIRE(p->takeEndedNotes(ended) == 2);
+        CHECK(ended[0].noteId == 42);
+        CHECK(ended[1].noteId == 43);
+        CHECK_FALSE(p->voicesSounding());
+    }
+    SECTION("Cloud: a choke renders as a note-off does")
+    {
+        const auto play = [](bool choke) {
+            auto p = voiceProcessor(Mode::Instrument, false);
+            Script s;
+            s.on(0, 60, 0, 1.0f, 42);
+            if (choke)
+            {
+                s.choke(4800, 60, 0, 42);
+            }
+            else
+            {
+                s.off(4800, 60, 0, 42);
+            }
+            Stereo out;
+            render(*p, s, 0, 4801, {256}, out);
+            std::array<EndedNote, 4> ended{};
+            CHECK(p->takeEndedNotes(ended) == 1);
+            render(*p, s, 4801, 24000, {256}, out);
+            return out;
+        };
+        const Stereo choked = play(true);
+        const Stereo off = play(false);
+        CHECK(choked.left == off.left);
+        CHECK(choked.right == off.right);
+    }
 }

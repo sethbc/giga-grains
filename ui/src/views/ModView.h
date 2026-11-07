@@ -19,9 +19,10 @@
 namespace gg::ui
 {
 /// Routes `source` onto the control of `controlSlot` (spec §6.6), for any view's drop target:
-/// addRouteForDrop on the context's routes, then, for a new route, one setRoutes and one undo
-/// entry ("route <slot>"); a refusal's notice is posted from `target` (postNotice). Nothing, and
-/// slot 0, without the context's routes.
+/// addRouteForDrop on the context's routes, then, for a change (a new route, or a Voice-only
+/// route made to apply everywhere), one setRoutes and one undo entry ("route <slot>"); a
+/// refusal's notice is posted from `target` (postNotice). Nothing, and slot 0, without the
+/// context's routes.
 DropResult dropSourceOn(juce::Component &target, const EditorContext &context,
                         gg::core::ParamSlot controlSlot, gg::core::ModSource source);
 
