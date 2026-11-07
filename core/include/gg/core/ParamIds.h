@@ -120,7 +120,7 @@ enum class Mode
 /// layer's interpolation tier, stepped 0 Eco, 1 Normal, 2 HQ (gg::Tier).
 #define GG_LAYER_PARAMS_M2_ENGINE(X) X(Quality, 0x50, "Quality")
 /// M2 sub-project 4's (its spec §6.7), in its reserved block: Smear, the bus split and the two
-/// buses' filters. 0x68 to 0x7F stay unused.
+/// buses' filters. 0x6B to 0x7F stay unused.
 #define GG_LAYER_PARAMS_M2_EXTREMES(X)                                                             \
     X(Smear, 0x60, "Smear")                                                                        \
     X(BusSplit, 0x61, "Bus Split")                                                                 \
@@ -237,9 +237,9 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// appended with new IDs.
 ///
 /// The 28 M1 slots come first, in their order (layer A's eleven M1 parameters among them, under
-/// their M1 names), then layer A's 52 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
-/// Mode, sub-project 2's five, sub-project 3's Quality and sub-project 4's eight), then layers B, C
-/// and D in full
+/// their M1 names), then layer A's 55 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
+/// Mode, sub-project 2's five, sub-project 3's Quality and sub-project 4's eight and 3b's Scan
+/// three), then layers B, C and D in full
 /// (`B_Position` ... `D_Bus2Resonance`, 66 each, in row order), then the nine new globals (M2
 /// sub-project 1's spec §6.9), Budget (M2 sub-project 3's spec §6.8) and the Extremes' eight
 /// globals (M2 sub-project 4's spec §6.7). A layer row appended to GG_LAYER_PARAMS moves the later

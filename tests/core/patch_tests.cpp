@@ -482,7 +482,8 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     STATIC_REQUIRE(static_cast<size_t>(ParamSlot::LimiterRelease) == kParamCount - 4);
 
     // M2 sub-project 4's block (its spec §6.7): 0x60 to 0x67 are used in every scope, each the
-    // table's parameter, and 0x68 to 0x7F are free in every scope.
+    // table's parameter, and 0x68 to 0x6A are the playhead's in the layer scopes (M3 sub-project
+    // 3b), and the rest to 0x7F are free.
     for (clap_id scope = 0; scope <= 4; ++scope)
     {
         for (clap_id index = 0x60; index <= 0x7F; ++index)

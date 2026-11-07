@@ -1818,6 +1818,16 @@ TEST_CASE("scan speed text round trips", "[core]")
     CHECK_FALSE(gg::core::scanSpeedFromText("1.0xx").has_value());
     CHECK(*gg::core::scanSpeedFromText("100") == 1.0f);
     CHECK(*gg::core::scanSpeedFromText("-100") == -1.0f);
+    // Out of range: a huge magnitude clamps, an underflow is 0.
+    CHECK(*gg::core::scanSpeedFromText("1e999") == 1.0f);
+    CHECK(*gg::core::scanSpeedFromText("-1e999") == -1.0f);
+    CHECK(*gg::core::scanSpeedFromText("1e-400") == 0.0f);
+    CHECK(*gg::core::scanSpeedFromText("-1e-400") == 0.0f);
+    // Three significant digits after rounding, and nothing that rounds to zero shows a sign.
+    CHECK(gg::core::scanSpeedText(0.49999f) == "1.00x");
+    CHECK(gg::core::scanSpeedText(0.99999f) == "8.00x");
+    CHECK(gg::core::scanSpeedText(-1e-9f) == "0.00x");
+    CHECK(gg::core::scanSpeedText(1e-9f) == "0.00x");
 
     // The text of a value reads back to it, to the three digits shown.
     for (const float v : {-1.0f, -0.7f, -0.1f, 0.0f, 0.1f, 0.33f, 0.5f, 0.9f, 1.0f})

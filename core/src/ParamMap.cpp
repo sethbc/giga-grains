@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -104,14 +106,16 @@ std::string scanSpeedText(float v)
     {
         return "0.00x";
     }
-    // Three significant digits: the decimals follow the magnitude.
-    const double mag = std::fabs(speed);
-    int decimals = 2;
-    for (double m = 1.0; mag < m && decimals < 24; m *= 0.1)
-    {
-        ++decimals;
-    }
+    // Three significant digits: the decimals follow the magnitude, read from the value rounded
+    // to three digits ("%.2e") so that 0.99996 shows "1.00x", not "1.000x".
     char buf[64];
+    std::snprintf(buf, sizeof buf, "%.2e", std::fabs(speed));
+    const int exponent = std::atoi(std::strchr(buf, 'e') + 1);
+    const int decimals = std::max(2, 2 - exponent);
+    if (decimals > 24)
+    {
+        return "0.00x"; // too small to show: no "-0.000...0x"
+    }
     std::snprintf(buf, sizeof buf, "%.*fx", decimals, speed);
     return buf;
 }
@@ -149,7 +153,20 @@ std::optional<float> scanSpeedFromText(std::string_view text)
     }
     if (r.ec == std::errc::result_out_of_range)
     {
-        return text.front() == '-' ? -1.0f : 1.0f;
+        // Out of range is an overflow or an underflow: a huge magnitude clamps, a tiny one is 0.
+        const std::size_t e = text.find_first_of("eE");
+        bool overflow = false;
+        if (e != std::string_view::npos)
+        {
+            overflow = e + 1 < text.size() && text[e + 1] != '-';
+        }
+        else
+        {
+            const std::size_t point = text.find('.');
+            const std::string_view whole = text.substr(0, point);
+            overflow = whole.find_first_of("123456789") != std::string_view::npos;
+        }
+        return overflow ? (text.front() == '-' ? -1.0f : 1.0f) : 0.0f;
     }
     return std::clamp(static_cast<float>(std::cbrt(speed / 8.0)), -1.0f, 1.0f);
 }
