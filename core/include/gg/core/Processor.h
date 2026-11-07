@@ -33,6 +33,7 @@
 #include "gg/core/ParamMap.h"
 #include "gg/core/SourceExchange.h"
 #include "gg/core/SpaceReverb.h"
+#include "gg/core/Tuning.h"
 #include "gg/core/UiSnapshot.h"
 #include "gg/core/VoiceAllocator.h"
 #include "gg/engine/Engine.h"
@@ -580,6 +581,12 @@ class Processor
     /// It reads every slot's metadata (paramMeta), whose first call allocates, so process()
     /// never makes that first call. Freeze starts disengaged, as the class comment describes.
     explicit Processor(const ProcessorConfig &config);
+    /// Neither copyable nor movable: each engine holds the address of the Processor's key-term
+    /// table (EngineConfig::keySemitones; M3 tuning spec §4.2).
+    Processor(const Processor &) = delete;
+    Processor(Processor &&) = delete;
+    Processor &operator=(const Processor &) = delete;
+    Processor &operator=(Processor &&) = delete;
 
     /// Sets a base value at once, outside the control grid: for params.flush outside process()
     /// and for a state load. The value is clamped to the slot's range; NaN is ignored. A pending
@@ -609,6 +616,20 @@ class Processor
     /// For a state loaded while active (sub-project 5's spec §7). Real-time safe; call it between
     /// process() calls.
     void setSeed(uint64_t seed) noexcept;
+    /// The tuning (M3 tuning spec §4.3): the local table (the Scala tuning, or twelveTet(), the
+    /// default) and the MTS-ESP poller's snapshot. Each copies its table and marks the tuning for
+    /// the next process() call's start, where the effective table is resolved: the master's, when
+    /// it is connected and MTS-ESP's base value is On, else the local one. A change of the
+    /// effective key terms lands at that call's first sample, before its events: the Cloud grains
+    /// and the voices from there read the new terms (the grains already sounding keep theirs),
+    /// and its unmapped keys' note-ons are dropped at the intake from there (T7). Real-time safe
+    /// (a bounded copy); call them between process() calls.
+    void setTuning(const TuningTable &table) noexcept;
+    void setMtsTuning(const MtsTuning &mts) noexcept;
+    /// The table in effect, as the last process() call's start resolved it (twelveTet() before
+    /// any).
+    const TuningTable &effectiveTuning() const noexcept { return effectiveTuning_; }
+
     /// The engine seed in effect: ProcessorConfig::seed, or the last setSeed().
     uint64_t seed() const noexcept { return config_.seed; }
 
@@ -1176,6 +1197,24 @@ class Processor
     const NoteTable::Note *noteOf(const VoiceAllocator::Voice &v) const noexcept;
     /// Note n's bend in semitones (the class comment's Voices): MPE and the bend ranges.
     double bendSemitones(const NoteTable::Note &n) const noexcept;
+
+  public:
+    /// Note n's tuned pitch in semitones from key 60 (M3 tuning spec §5.3, plan call A2): its
+    /// key's term in the effective table, plus its bend, plus its tuning expression, in that
+    /// order. A voice's pitch input; sub-project 3 (pitch-sync) computes a voice's frequency
+    /// from it (spec §9). Note Pitch adds 60 to the key term before the bend instead (A2).
+    double notePitch(const NoteTable::Note &n) const noexcept;
+
+  private:
+    /// Key k's term in the effective table (k clamped to 0..127).
+    double keyTerm(int key) const noexcept
+    {
+        return engineKeys_[static_cast<size_t>(std::clamp(key, 0, 127))];
+    }
+    /// Resolves the effective tuning at a call's start (spec §4.3), when a table was set or the
+    /// MTS-ESP base value moved since the last resolve: copies changed key terms into the engines'
+    /// table and recomputes the voices' parameters.
+    void resolveTuning() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Ends every released note no spawning voice plays (EndedNote) and frees it in the table.
     void collectEndedNotes() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Queues n's end.
@@ -1199,6 +1238,16 @@ class Processor
     float clampToRange(size_t slot, float value) const noexcept;
 
     ProcessorConfig config_;
+    // The tuning (M3 tuning spec §4.3): setTuning's and setMtsTuning's tables, whether either was
+    // set since the last resolve, MTS-ESP's base value at the last resolve, the table in effect
+    // (its unmapped bits for the intake) and its key terms, which every engine's Cloud stream
+    // reads through EngineConfig::keySemitones.
+    TuningTable localTuning_{TuningTable::twelveTet()};
+    MtsTuning mtsTuning_{};
+    bool tuningDirty_{false};
+    bool mtsOn_{true};
+    TuningTable effectiveTuning_{TuningTable::twelveTet()};
+    std::array<double, 128> engineKeys_{TuningTable::twelveTet().keySemitones};
     int64_t rampSamples_;
     // The longest piece: min(maxBlockSize, kFeedbackDelay), in both products.
     uint32_t pieceMax_;

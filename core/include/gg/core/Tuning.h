@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -72,6 +73,13 @@ inline constexpr size_t kMaxTuningTextBytes = 65536;
 /// (T4), so no libm value reaches an entry. An empty `scl` is 12-EDO; an empty `kbm` is the
 /// standard mapping with key 60 at kC4Hz. Never throws: a refusal is the error's message.
 std::expected<TuningTable, std::string> tuningFromScala(std::string_view scl, std::string_view kbm);
+
+/// The MTS-ESP poller's conversion (spec §5.6): entry k is 12·log2(hz[k] / kC4Hz) by logDet,
+/// snapped and clamped as a Scala table's; a frequency that isn't finite and positive keeps
+/// 12-TET's k − 60. `filtered[k]` sets key k's unmapped bit. Every entry is finite and within
+/// ±1024. Allocates nothing.
+TuningTable tuningFromFrequencies(std::span<const double, 128> hz,
+                                  std::span<const bool, 128> filtered) noexcept;
 
 /// The scale's description: the first line not starting with `!`, after a leading UTF-8 BOM,
 /// trimmed of spaces, tabs and CR. The bytes are returned as they are (never transcoded); empty

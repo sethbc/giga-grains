@@ -870,6 +870,35 @@ std::expected<TuningTable, std::string> tuningFromScala(std::string_view scl, st
     }
 }
 
+TuningTable tuningFromFrequencies(std::span<const double, 128> hz,
+                                  std::span<const bool, 128> filtered) noexcept
+{
+    GG_FP_CONTRACT_OFF
+    const double log2e = logDet(2.0);
+    TuningTable t;
+    for (size_t k = 0; k < t.keySemitones.size(); ++k)
+    {
+        double v = static_cast<double>(k) - 60.0;
+        const double f = hz[k];
+        if (std::isfinite(f) && f > 0.0)
+        {
+            // A tiny frequency's quotient can underflow to 0: its −∞ clamps to −1024.
+            const double semitones =
+                snapAndClampSemitones(12.0 * logDet(f / TuningTable::kC4Hz) / log2e);
+            if (std::isfinite(semitones))
+            {
+                v = semitones;
+            }
+        }
+        t.keySemitones[k] = v;
+        if (filtered[k])
+        {
+            t.unmapped[k >> 6u] |= uint64_t{1} << (k & 63u);
+        }
+    }
+    return t;
+}
+
 std::string scalaDescription(std::string_view scl)
 {
     for (const auto line : splitLines(withoutBom(scl)))
