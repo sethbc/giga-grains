@@ -32,7 +32,8 @@ std::pair<gg::core::ParamSlot, uint8_t> routeTargetOf(gg::core::ParamSlot contro
 ///
 /// - A route of the same source to the same target (and, for a layer target, layer) already
 ///   there (a layer target's route to every layer counts for each layer): nothing is added, `slot`
-///   is its slot and the notice is empty.
+///   is its slot and the notice is empty. A Voice-only route (M3 Voice's factory slots 44 to 48)
+///   doesn't count: the drop adds a normal route beside it.
 /// - A full matrix: nothing changes, notice "the matrix is full: 48 routes".
 /// - A macro or other invalid target (isValidTarget) or no source: nothing changes, with the
 ///   reason as the notice.

@@ -161,3 +161,40 @@ TEST_CASE("a route target is layer A's slot for a layer parameter", "[ui]")
           std::pair{ParamSlot::LayerAOn, uint8_t{3}});
     CHECK(gg::ui::routeTargetOf(ParamSlot::Mix) == std::pair{ParamSlot::Mix, uint8_t{0}});
 }
+
+TEST_CASE("a drop beside a Voice-only factory route adds a normal route", "[ui][voice]")
+{
+    // M3 Voice: slots 44 to 48 hold Voice-only routes, which a Cloud layer never applies, so a
+    // drop of the same source and target adds a normal route beside them instead of selecting
+    // the Voice-only one (Velocity to Level and Size are everyday M2 routes).
+    const auto mode = gg::core::Mode::Instrument;
+    ModRoutes routes = gg::core::factoryRoutes(mode);
+    REQUIRE(routes[46].voiceOnly);
+    REQUIRE(routes[46].source == ModSource::Velocity);
+    REQUIRE(routes[46].target == ParamSlot::Level);
+    const auto &level = gg::core::paramMeta(ParamSlot::Level, mode);
+    const auto result =
+        gg::ui::addRouteForDrop(routes, ModSource::Velocity, ParamSlot::Level, 0, level);
+    CHECK(result.added);
+    CHECK(result.slot == 13);
+    CHECK(routes[12].source == ModSource::Velocity);
+    CHECK(routes[12].target == ParamSlot::Level);
+    CHECK_FALSE(routes[12].voiceOnly);
+    CHECK(routes[46].voiceOnly);
+    // The others too: Velocity to Size, Pressure to Density and Level, Timbre to Position.
+    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Velocity, ParamSlot::Size, 0,
+                                  gg::core::paramMeta(ParamSlot::Size, mode))
+              .added);
+    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Pressure, ParamSlot::Density, 0,
+                                  gg::core::paramMeta(ParamSlot::Density, mode))
+              .added);
+    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Pressure, ParamSlot::Level, 0, level).added);
+    CHECK(gg::ui::addRouteForDrop(routes, ModSource::Timbre, ParamSlot::Position, 0,
+                                  gg::core::paramMeta(ParamSlot::Position, mode))
+              .added);
+    // A second drop selects the normal route it added.
+    const auto again =
+        gg::ui::addRouteForDrop(routes, ModSource::Velocity, ParamSlot::Level, 0, level);
+    CHECK_FALSE(again.added);
+    CHECK(again.slot == 13);
+}

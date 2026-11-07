@@ -61,7 +61,9 @@ DropResult addRouteForDrop(gg::core::ModRoutes &routes, ModSource source, ParamS
                 firstEmpty = static_cast<uint8_t>(i + 1);
             }
         }
-        else if (r.source == source && r.target == target &&
+        // A Voice-only route (M3 Voice's factory slots 44 to 48) never reaches a Cloud layer, so
+        // it doesn't count: a drop adds a normal route beside it.
+        else if (!r.voiceOnly && r.source == source && r.target == target &&
                  (!layered || r.targetLayer == targetLayer ||
                   r.targetLayer == gg::core::kAllLayers))
         {
@@ -81,6 +83,7 @@ DropResult addRouteForDrop(gg::core::ModRoutes &routes, ModSource source, ParamS
     route.targetLayer = layered ? targetLayer : gg::core::kAllLayers;
     route.depth = 0.25f * (meta.maxVal - meta.minVal);
     route.curve = stepped ? gg::core::ModCurve::Unipolar : gg::core::ModCurve::Bipolar;
+    route.voiceOnly = false;
     return {true, firstEmpty, {}};
 }
 
