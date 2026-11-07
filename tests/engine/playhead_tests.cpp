@@ -1075,3 +1075,118 @@ TEST_CASE("scan zero with stop reads position outside a short window", "[engine]
     REQUIRE(sameBits(changed.left, still.left));
     REQUIRE(sameBits(changed.right, still.right));
 }
+
+TEST_CASE("a forced cloud onset restarts a moving playhead", "[engine][playhead]")
+{
+    // Spec H4, HB1: every forced Cloud onset restarts the playhead. Scan for 1 s, then force the
+    // onset by (a) switching the layer off and on, (b) going to Voice mode and back to Cloud: the
+    // next Cloud grain starts at Position exactly, and moves on from there.
+    constexpr int64_t kF = 4 * 48000;
+    constexpr int64_t kAway = 48000;
+    constexpr int64_t kBack = 60000;
+    for (const bool voice : {false, true})
+    {
+        INFO((voice ? "voice mode and back" : "off and on"));
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setSource(noiseBuffer(1, kF, 3));
+        engine.setCloudParams(scanParams(0.1, 1.0));
+        GrainLog log;
+        engine.setEventSink(&GrainLog::record, &log);
+        Stereo out = unwritten(72000);
+        run(engine, out, 0, kAway, 256);
+        if (voice)
+        {
+            engine.setVoiceMode(true); // no voice started: nothing spawns
+        }
+        else
+        {
+            engine.setEnabled(false);
+        }
+        run(engine, out, kAway, kBack, 256);
+        if (voice)
+        {
+            engine.setVoiceMode(false);
+        }
+        else
+        {
+            engine.setEnabled(true);
+        }
+        run(engine, out, kBack, 72000, 256);
+        const double span = static_cast<double>(kF - 1);
+        const double r = sampleRate1x(1.0, kF);
+        int after = 0;
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            REQUIRE((g.onsetSample < kAway || g.onsetSample >= kBack));
+            if (g.onsetSample < kBack)
+            {
+                continue;
+            }
+            INFO("grain " << g.index << " at " << g.onsetSample);
+            if (after == 0)
+            {
+                REQUIRE(g.onsetSample == kBack);
+                REQUIRE(g.startPos == 0.1 * span);
+            }
+            const double expected = 0.1 + r * (onsetOf(g) - static_cast<double>(kBack));
+            REQUIRE(std::abs(g.startPos / span - expected) < 1e-12);
+            ++after;
+        }
+        REQUIRE(after == 16);
+    }
+}
+
+TEST_CASE("a change of the smear's material restarts its point", "[engine][playhead][spectral]")
+{
+    // Ruling R9: in Spectral mode a sample loaded (the material from the ring to the sample) or
+    // removed (back to the ring) restarts the Cloud playhead, as a source-mode change does: a
+    // fraction of the sample and seconds of lag don't correspond. Checked against a smear driven
+    // at the closed-form point, its tau0 at each change.
+    constexpr uint32_t kHop = 1024;
+    constexpr int64_t kLoad = 20 * kHop;
+    constexpr int64_t kRemove = 45 * kHop;
+    constexpr int64_t kFrames = 70 * kHop;
+    constexpr int64_t kF = 2 * 48000;
+    const gg::EngineConfig config = ringConfig(1.0, true, kHop);
+    const auto buf = noiseBuffer(2, kF, 16);
+    const auto input = noiseInput(kFrames, 17);
+    gg::Engine engine(config);
+    engine.setSourceMode(gg::SourceMode::Spectral);
+    engine.setCloudParams(smearParams(0.3, 1.0));
+    gg::LiveSource ring;
+    ring.prepare(kSampleRate, config.liveSeconds, kHop);
+    gg::SpectralSource smear(kSampleRate, kHop);
+    smear.setActive(true);
+    gg::SpectralMaterial onRing;
+    onRing.ring = &ring;
+    gg::SpectralMaterial onSample;
+    onSample.sample[0] = buf->channel(0);
+    onSample.sample[1] = buf->channel(1);
+    onSample.sampleFrames = kF;
+    onSample.sampleMono = false;
+    const SmearReference ringRef{0.3, ringRate(1.0), gg::ScanEdge::Wrap};
+    const SmearReference sampleRef{0.3, sampleRate1x(1.0, kF), gg::ScanEdge::Wrap, kLoad};
+    const SmearReference ringAgain{0.3, ringRate(1.0), gg::ScanEdge::Wrap, kRemove};
+    Stereo out = unwritten(kFrames);
+    for (int64_t t = 0; t < kFrames; t += kHop)
+    {
+        if (t == kLoad)
+        {
+            engine.setSource(buf);
+        }
+        if (t == kRemove)
+        {
+            engine.setSource(nullptr);
+        }
+        run(engine, out, t, t + kHop, kHop, &input);
+        const float *in[2] = {input.left.data() + t, input.right.data() + t};
+        ring.write(in, 2, 0, t, kHop);
+        const double hi = static_cast<double>(ring.windowFramesAt(t)) / kSampleRate;
+        const bool sample = t >= kLoad && t < kRemove;
+        const SmearReference &ref = sample ? sampleRef : t < kLoad ? ringRef : ringAgain;
+        smear.process(sample ? onSample : onRing, smearPoint(ref, t, sample ? 1.0 : hi),
+                      config.seed, config.layer, t, kHop);
+    }
+    REQUIRE(anyNonZero(smear.ring()));
+    REQUIRE(sameRing(engine.spectral()->ring(), smear.ring()));
+}

@@ -129,8 +129,10 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// over [0, W], W its window at the block start; the Spectral kind takes its material's. A
 /// Sample's point is folded by the scheduler; a ring's by liveGrain, with the window at the
 /// grain's onset; the smear's at each hop (SpectralSource's ScanPosition). A source-mode change
-/// restarts every stream's playhead (HB9), and a new sample rebases it at the next block, so the
-/// point keeps its fraction (HB8). At speed 0 every path is the one before the playhead, bit for
+/// restarts every stream's playhead (HB9), and so does, for the Cloud stream in Spectral mode, a
+/// change of the smear's material kind (a sample loaded or removed: a fraction against seconds of
+/// lag, ruling R9); a new sample otherwise rebases it at the next block, so the point keeps its
+/// fraction (HB8). At speed 0 every path is the one before the playhead, bit for
 /// bit.
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
@@ -163,7 +165,8 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// sample t (LiveSource). Each grain's GrainSpec::startPos is a ring-time position, and its rate
 /// is the pitch ratio (the ring runs at the output rate). At its onset T = onsetSample +
 /// onsetFrac, with the head at ρ = R(T) (R advances linearly between samples while it moves),
-/// the grain asks to start at s* = ρ − positionDraw × sampleRate, clamped to [lo, hi]:
+/// the grain asks to start at s* = ρ − positionDraw × sampleRate (a scanning draw's lag is its
+/// folded point plus positionDraw: the playhead paragraph above), clamped to [lo, hi]:
 ///
 ///     hi = ρ − 3 − M − max(0, dur × rate − span)
 ///     lo = ρ − N + 1 + M + max(0, span × (1 − rate))
@@ -691,6 +694,9 @@ class Engine
     // mode_ is the kind new grains read; it never chooses a sounding grain's kernel.
     SourceMode mode_{SourceMode::Sample};
     SourceMode requestedMode_{SourceMode::Sample};
+    // Whether the last block's smear material was the live ring (no sample in the current slot),
+    // for ruling R9's restart; true as constructed, with no sample.
+    bool materialRing_{true};
     bool enabled_{true};
     bool requestedEnabled_{true};
     bool freeze_{false};

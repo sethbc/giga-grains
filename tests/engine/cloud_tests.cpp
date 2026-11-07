@@ -2130,3 +2130,70 @@ TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud
         REQUIRE(added);
     }
 }
+
+TEST_CASE("scan params are sanitized", "[cloud][playhead]")
+{
+    // M3 playhead spec HB6: a non-finite speed is 0, a speed past ±64 is clamped to it, and an
+    // edge out of range is Wrap.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    const gg::ScanGeometry g{1.0, 0.0, 1.0}; // one unit a second at 1x
+
+    SECTION("a non-finite speed is 0")
+    {
+        for (const double bad : {nan, inf, -inf})
+        {
+            INFO("speed " << bad);
+            gg::CloudParams p = busyParams();
+            p.scanSpeed = bad;
+            gg::CloudScheduler cloud;
+            cloud.setParams(p);
+            REQUIRE(cloud.params().scanSpeed == 0.0);
+            cloud.syncPlayhead(0, g);
+            REQUIRE(cloud.scanOffsetAt(48000.0) == 0.0);
+            REQUIRE_FALSE(cloud.playhead().moving());
+        }
+    }
+
+    SECTION("a speed past its range is clamped to it")
+    {
+        for (const double speed : {100.0, 1e300, -65.0, -1e9})
+        {
+            INFO("speed " << speed);
+            gg::CloudParams p = busyParams();
+            p.scanSpeed = speed;
+            gg::CloudScheduler cloud;
+            cloud.setParams(p);
+            const double bound = speed > 0.0 ? 64.0 : -64.0;
+            REQUIRE(cloud.params().scanSpeed == bound);
+            cloud.syncPlayhead(0, g);
+            REQUIRE(cloud.scanOffsetAt(48000.0) == bound * 1.0 / 48000.0 * 48000.0);
+        }
+        gg::CloudParams p = busyParams();
+        p.scanSpeed = -0.375; // inside the range: kept as given
+        gg::CloudScheduler cloud;
+        cloud.setParams(p);
+        REQUIRE(cloud.params().scanSpeed == -0.375);
+    }
+
+    SECTION("an edge out of range is wrap")
+    {
+        for (const uint8_t raw : {uint8_t{3}, uint8_t{7}, uint8_t{255}})
+        {
+            INFO("edge " << static_cast<int>(raw));
+            gg::CloudParams p = busyParams();
+            p.scanEdge = static_cast<gg::ScanEdge>(raw);
+            gg::CloudScheduler cloud;
+            cloud.setParams(p);
+            REQUIRE(cloud.params().scanEdge == gg::ScanEdge::Wrap);
+        }
+        for (const auto edge : {gg::ScanEdge::Wrap, gg::ScanEdge::Bounce, gg::ScanEdge::Stop})
+        {
+            gg::CloudParams p = busyParams();
+            p.scanEdge = edge;
+            gg::CloudScheduler cloud;
+            cloud.setParams(p);
+            REQUIRE(cloud.params().scanEdge == edge);
+        }
+    }
+}

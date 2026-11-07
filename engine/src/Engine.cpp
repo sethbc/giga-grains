@@ -715,6 +715,16 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     // reads its point and before any grain is drawn, whether or not the stream schedules (a
     // pending restart is taken only here), with the geometry of the source in effect, its live
     // window as just written.
+    // Ruling R9: in Spectral mode the smear's point is a sample's fraction or seconds of lag
+    // behind the ring's head, which don't correspond, so a change of the material's kind (a
+    // sample loaded or removed, between calls) restarts the Cloud playhead, as a source-mode
+    // change does (HB9).
+    const bool materialRing = currentSlot().source == nullptr;
+    if (mode_ == SourceMode::Spectral && materialRing != materialRing_)
+    {
+        cloud_.restartPlayhead();
+    }
+    materialRing_ = materialRing;
     const ScanGeometry geometry = scanGeometry();
     cloud_.syncPlayhead(blockStart, geometry);
     for (Voice &voice : voices_)
