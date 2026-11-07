@@ -504,8 +504,8 @@ class LiveSource
         return detail::unit(toHead) * detail::unit(fromTail);
     }
 
-    /// Where the last read() or readLinear() was, so that reads moving forward find their slot
-    /// without a division. A fresh Cursor works for any read.
+    /// Where the last read() or readLinear() was, so that reads moving forward or backward find
+    /// their slot without a division. A fresh Cursor works for any read.
     struct Cursor
     {
         int64_t index{0}; ///< the ring-time index of the last read's first tap

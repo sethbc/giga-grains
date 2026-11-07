@@ -101,14 +101,17 @@ constexpr int64_t grainEndSample(const GrainSpec &g) noexcept
 /// level-0 frames, as the scalar reference computes it, is past the last frame, frames − 1, while
 /// its window may still be open (e × (1 / durationSamples) < 1) and before grainEndSample(g).
 /// kNoEdge when there is none: the grain ends inside the source, frames is 0 (nothing is read),
-/// or rate isn't > 0. The engine passes it to GrainPool::spawn, which ends the grain there.
+/// or rate is 0 or NaN. For a negative rate the edge is frame 0: the first t at which the read
+/// position startPos + rate × e is below 0, under the same window and end conditions. The engine
+/// passes it to GrainPool::spawn, which ends the grain there.
 ///
 /// The edge is the last frame itself, the span Engine::sampleGrain clamps the start into, for
 /// every tier and level: the same end whatever tier the ladder admits the grain at, and the
 /// interpolators' zero taps past it are read only in the fade's last few samples. The start is
 /// at or before the last frame and the rate positive, so the read only moves toward this edge: no
 /// grain reads before frame 0 while its window is open (a start of 0 reads before it only at
-/// e < 0, where the window is 0), so the start needs no edge.
+/// e < 0, where the window is 0), so the start needs no edge. For a negative rate the read moves
+/// toward the edge in its direction, frame 0, and the start is at or after it.
 ///
 /// e and the position are monotone in t, so the answer is the first n = t − onsetSample past
 /// onsetFrac + (frames − 1 − startPos) / rate; the division's estimate is stepped (at most four
@@ -116,21 +119,22 @@ constexpr int64_t grainEndSample(const GrainSpec &g) noexcept
 inline int64_t grainEdgeSample(const GrainSpec &g, int64_t frames) noexcept
 {
     GG_FP_CONTRACT_OFF
-    if (frames <= 0 || !(g.rate > 0.0))
+    if (frames <= 0 || !(g.rate > 0.0 || g.rate < 0.0))
     {
         return kNoEdge;
     }
+    const bool backward = g.rate < 0.0;
     const auto last = static_cast<double>(frames - 1);
     const int64_t natural = grainEndSample(g);
-    const auto past = [&g, last](int64_t t) noexcept {
+    const auto past = [&g, last, backward](int64_t t) noexcept {
         GG_FP_CONTRACT_OFF
         const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
-        return g.startPos + g.rate * e > last;
+        return backward ? g.startPos + g.rate * e < 0.0 : g.startPos + g.rate * e > last;
     };
     // The first integer n > onsetFrac + (last − startPos) / rate, clamped into [0, natural −
     // onsetSample] (NaN to 0) before converting.
     const auto nMax = static_cast<double>(natural - g.onsetSample);
-    double n = std::floor(g.onsetFrac + (last - g.startPos) / g.rate) + 1.0;
+    double n = std::floor(g.onsetFrac + ((backward ? 0.0 : last) - g.startPos) / g.rate) + 1.0;
     if (!(n > 0.0))
     {
         n = 0.0;

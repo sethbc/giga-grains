@@ -677,6 +677,14 @@ int64_t LiveSource::levelSlotOf(int64_t first, int64_t capacity, Cursor &cursor)
             cursor.slot -= capacity;
         }
     }
+    else if (cursor.valid && first < cursor.index && cursor.index - first < capacity)
+    {
+        cursor.slot -= cursor.index - first;
+        if (cursor.slot < 0)
+        {
+            cursor.slot += capacity;
+        }
+    }
     else
     {
         cursor.slot = first % capacity;
@@ -694,6 +702,14 @@ int64_t LiveSource::slotOf(int64_t first, Cursor &cursor) const noexcept
         if (cursor.slot >= capacity_)
         {
             cursor.slot -= capacity_;
+        }
+    }
+    else if (cursor.valid && first < cursor.index && cursor.index - first < capacity_)
+    {
+        cursor.slot -= cursor.index - first;
+        if (cursor.slot < 0)
+        {
+            cursor.slot += capacity_;
         }
     }
     else

@@ -627,7 +627,7 @@ ReadParams paramsOf(const GrainRows &rows, uint32_t i, const Tables &tables,
                     Dec decimation) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
-    return {&tables.sinc, stretchOf(rows.rate[i] * invDecimation(decimation))};
+    return {&tables.sinc, stretchOf(std::abs(rows.rate[i] * invDecimation(decimation)))};
 }
 } // namespace detail
 

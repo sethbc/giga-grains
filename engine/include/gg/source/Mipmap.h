@@ -65,12 +65,14 @@ inline constexpr uint32_t mipLevelCount(int64_t frames) noexcept
 }
 
 /// The level a grain reads (spec §6.3) at `rate`, its rate in level-0 frames per output sample,
-/// from a source of levelCount levels: floor(log2(rate)) clamped to [0, levelCount − 1] (and to
+/// from a source of levelCount levels (a reversed grain's negative rate reads its magnitude's):
+/// floor(log2(rate)) clamped to [0, levelCount − 1] (and to
 /// kMaxMipLevels − 1), so a rate in [2ᵏ, 2ᵏ⁺¹) reads level k. Exact: std::frexp gives rate's
 /// binary exponent e, rate in [2ᵉ⁻¹, 2ᵉ), with no rounding. 0 for a rate below 1, NaN included,
 /// or a source of one level; the top level for +∞. Real-time safe.
 inline uint8_t mipLevelFor(double rate, uint32_t levelCount) noexcept
 {
+    rate = std::fabs(rate); // a reversed grain's negative rate reads its magnitude's level
     if (!(rate >= 1.0) || levelCount <= 1)
     {
         return 0;

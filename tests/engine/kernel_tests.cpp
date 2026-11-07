@@ -251,14 +251,15 @@ struct NaNOutside : Hermite
 // for the brief's grain over stereo noise: two outputs from a stereo and from a mono source, and
 // one output from a stereo source. The grain has the given Texture (spec §4) and rate.
 template <class Reader, class Read>
-void requireSampleArithmetic(Read read, double texture = 0.0, double rate = 1.5)
+void requireSampleArithmetic(Read read, double texture = 0.0, double rate = 1.5,
+                             double startPos = 200.25)
 {
     constexpr int64_t kFrames = 2000;
     constexpr int64_t kLength = 1000;
     const Tables &tables = kernelTables();
     const std::vector<float> left = noise(kFrames, 7, 0);
     const std::vector<float> right = noise(kFrames, 7, 1);
-    gg::GrainSpec g = testGrain(10, 200.25);
+    gg::GrainSpec g = testGrain(10, startPos);
     g.texture = texture;
     g.rate = rate;
     REQUIRE(gg::grainEndSample(g) <= kLength);
@@ -305,7 +306,14 @@ void requireSampleArithmetic(Read read, double texture = 0.0, double rate = 1.5)
 
 TEST_CASE("sample reference follows the spec's arithmetic", "[kernel]")
 {
-    requireSampleArithmetic<Hermite>(&gg::interp::hermite4<>);
+    SECTION("forward") { requireSampleArithmetic<Hermite>(&gg::interp::hermite4<>); }
+
+    SECTION("negative rate")
+    {
+        // A reversed grain: rate -1.5 from a start mirrored into the source (720 frames of
+        // travel from 1,200.25).
+        requireSampleArithmetic<Hermite>(&gg::interp::hermite4<>, 0.0, -1.5, 1200.25);
+    }
 }
 
 TEST_CASE("textured grains match the spec loop", "[kernel]")
@@ -444,7 +452,11 @@ TEST_CASE("reference reads nothing where the window is zero", "[kernel]")
     }
 }
 
-TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
+namespace
+{
+// requireLiveArithmetic's body: the live reference against the spec's table, for a grain over
+// [startPos, rate]; `fadeKinds` also requires the fade to run through 1, (0, 1) and 0.
+void requireLiveArithmetic(double startPos, double rate, bool fadeKinds)
 {
     // A 1 s ring at 48 kHz, written with stereo noise in blocks of 100 frames, frozen from frame
     // 3,000: the write gain ramps down over 960 samples and the head stops at R = 3,960. The
@@ -457,7 +469,8 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
     const Tables &tables = kernelTables();
     const std::vector<float> left = noise(kLength, 5, 0);
     const std::vector<float> right = noise(kLength, 5, 1);
-    const gg::GrainSpec g = testGrain(3700, 3300.25);
+    gg::GrainSpec g = testGrain(3700, startPos);
+    g.rate = rate;
     REQUIRE(gg::grainEndSample(g) <= kLength);
     const OneGrain one(g);
     const gg::GrainRows &rows = one.pool.rows();
@@ -518,11 +531,26 @@ TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
         }
         REQUIRE(ring.head() == kFreezeAt + gg::LiveSource::freezeRampSamples(kRate));
         REQUIRE(fadeOne > 0);
-        REQUIRE(fadePartial > 0);
-        REQUIRE(fadeZero > 0);
+        if (fadeKinds)
+        {
+            REQUIRE(fadePartial > 0);
+            REQUIRE(fadeZero > 0);
+        }
         REQUIRE(anyNonZero(expected[0]));
         REQUIRE(sameBits(actual[0], expected[0]));
         REQUIRE(sameBits(actual[1], expected[1]));
+    }
+}
+} // namespace
+
+TEST_CASE("live reference follows the spec's arithmetic", "[kernel]")
+{
+    SECTION("forward") { requireLiveArithmetic(3300.25, 1.5, true); }
+
+    SECTION("negative rate")
+    {
+        // Reading back from 3,700.25 at rate -1.5, away from the head.
+        requireLiveArithmetic(3700.25, -1.5, false);
     }
 }
 
@@ -531,6 +559,11 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
     // The Eco tier (ruling 2) is the same arithmetic with interp::linear, or the ring's linear
     // read, in place of the Hermite.
     const Tables &tables = kernelTables();
+
+    SECTION("negative rate")
+    {
+        requireSampleArithmetic<Linear>(&gg::interp::linear<>, 0.0, -1.5, 1200.25);
+    }
 
     SECTION("sample source")
     {
@@ -748,6 +781,67 @@ TEST_CASE("eco reference reads linearly", "[kernel]")
         }
     }
 }
+TEST_CASE("sinc reference follows the spec's arithmetic at negative rates", "[kernel][grainshape]")
+{
+    // The HQ read of a reversed grain, at levels 0 to 3 (decimations 1, 2, 4, 8): the stretch is
+    // the magnitude's, specStretch(|rate| / d), the read position (startPos + rate x e) / d.
+    const Tables &tables = kernelTables();
+    constexpr int64_t kFrames = 6000;
+    constexpr int64_t kLength = 1000;
+    const std::vector<float> left = noise(kFrames, 7, 0);
+    const std::vector<float> right = noise(kFrames, 7, 1);
+    for (const double levelRate : {-0.5, -1.0, -1.5, -4.0, -8.0})
+    {
+        for (const uint32_t d : {1u, 2u, 4u, 8u})
+        {
+            INFO("level rate " << levelRate << ", decimation " << d);
+            // Level-0 units: start and rate scaled by d, exactly.
+            gg::GrainSpec g = testGrain(10, 4500.25 * static_cast<double>(d));
+            g.rate = levelRate * static_cast<double>(d);
+            const OneGrain one(g);
+            const gg::GrainRows &rows = one.pool.rows();
+            const float stretch = specStretch(std::abs(levelRate));
+            REQUIRE(gg::kernels::detail::paramsOf(rows, 0, tables, d).stretch == stretch);
+            const double invDuration = 1.0 / g.durationSamples;
+            const ChannelGains gains = channelGains(g, 2);
+            std::vector<float> expected[2] = {std::vector<float>(kLength, 0.0f),
+                                              std::vector<float>(kLength, 0.0f)};
+            std::vector<float> actual[2] = {std::vector<float>(kLength, 0.0f),
+                                            std::vector<float>(kLength, 0.0f)};
+            for (int64_t t = g.onsetSample; t < gg::grainEndSample(g); ++t)
+            {
+                const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+                const float w = tables.hann.at(e * invDuration);
+                if (!(w > 0.0f))
+                {
+                    continue;
+                }
+                const double pos = (g.startPos + g.rate * e) / static_cast<double>(d);
+                expected[0][static_cast<std::size_t>(t)] +=
+                    specSinc(left.data(), kFrames, pos, stretch) * (w * gains.c[0]);
+                expected[1][static_cast<std::size_t>(t)] +=
+                    specSinc(right.data(), kFrames, pos, stretch) * (w * gains.c[1]);
+            }
+            const gg::kernels::SampleSource src{
+                {left.data(), right.data()}, kFrames, false, nullptr, 1, d};
+            const gg::kernels::Output o{{actual[0].data(), actual[1].data()}, 0};
+            gg::kernels::renderSampleRef<Sinc>(rows, 0, src, o, 0, kLength, tables);
+            REQUIRE(anyNonZero(expected[0]));
+            REQUIRE(sameBits(actual[0], expected[0]));
+            REQUIRE(sameBits(actual[1], expected[1]));
+        }
+    }
+
+    // The stretch of a rate and of its negation is one value, and paramsOf gives it.
+    REQUIRE(gg::kernels::stretchOf(std::abs(-3.0)) == gg::kernels::stretchOf(3.0));
+    gg::GrainSpec g = testGrain(10, 5000.25);
+    g.rate = -3.0;
+    const OneGrain one(g);
+    const gg::kernels::ReadParams params =
+        gg::kernels::detail::paramsOf(one.pool.rows(), 0, tables, 1u);
+    REQUIRE(params.stretch == gg::kernels::stretchOf(3.0));
+}
+
 TEST_CASE("sinc reference follows the spec's arithmetic", "[kernel]")
 {
     // The HQ tier (spec §6.2) is the same per-sample arithmetic with the 16-tap windowed sinc,

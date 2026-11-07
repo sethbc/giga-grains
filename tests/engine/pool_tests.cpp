@@ -692,6 +692,25 @@ int64_t walkEdge(const gg::GrainSpec &g, int64_t frames)
     }
     return gg::kNoEdge;
 }
+
+// walkEdge for a negative rate: the first t whose read position is below frame 0.
+int64_t walkEdgeBackward(const gg::GrainSpec &g)
+{
+    const double invDuration = 1.0 / g.durationSamples;
+    for (int64_t t = g.onsetSample; t < gg::grainEndSample(g); ++t)
+    {
+        const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
+        if (!(e * invDuration < 1.0))
+        {
+            return gg::kNoEdge;
+        }
+        if (g.startPos + g.rate * e < 0.0)
+        {
+            return t;
+        }
+    }
+    return gg::kNoEdge;
+}
 } // namespace
 
 TEST_CASE("grainEdgeSample finds the first sample read past the source's last frame", "[pool]")
@@ -737,6 +756,49 @@ TEST_CASE("grainEdgeSample finds the first sample read past the source's last fr
     REQUIRE(short_ > 25);
     // No source (0 frames): nothing to cut.
     REQUIRE(gg::grainEdgeSample(grain(0, 0, 100.0), 0) == gg::kNoEdge);
+}
+
+TEST_CASE("grainEdgeSample finds frame 0 for a negative rate", "[pool][grainshape]")
+{
+    // 2,000 grains: rates -0.25 to -16, starts -10 to frames + 10, durations 16 to 9,600 samples,
+    // onsetFrac in [0, 1). The edge is the first sample read below frame 0, as a scan finds it.
+    uint32_t cut = 0;
+    uint32_t uncut = 0;
+    for (uint64_t k = 0; k < 2000; ++k)
+    {
+        const int64_t frames = 1 + static_cast<int64_t>(draw(21, k) % 20000);
+        gg::GrainSpec g = grain(k, static_cast<int64_t>(draw(22, k) % 100000),
+                                16.0 + gg::rng::uniform01(draw(23, k)) * 9584.0);
+        g.rate = -std::exp2(-2.0 + 6.0 * gg::rng::uniform01(draw(24, k)));
+        g.onsetFrac = k % 16 == 0 ? 0.0 : gg::rng::uniform01(draw(25, k));
+        g.startPos = -10.0 + gg::rng::uniform01(draw(26, k)) * (static_cast<double>(frames) + 20.0);
+        INFO("grain " << k << ", frames " << frames << ", start " << g.startPos << ", rate "
+                      << g.rate << ", duration " << g.durationSamples);
+        const int64_t edge = gg::grainEdgeSample(g, frames);
+        REQUIRE(edge == walkEdgeBackward(g));
+        if (edge != gg::kNoEdge)
+        {
+            REQUIRE(edge < gg::grainEndSample(g));
+            ++cut;
+        }
+        else
+        {
+            ++uncut;
+        }
+    }
+    REQUIRE(cut > 300);
+    REQUIRE(uncut > 300);
+
+    // A rate of -0 or NaN has no edge; nor has a source of no frames.
+    gg::GrainSpec g = grain(0, 0, 100.0);
+    g.startPos = 50.0;
+    g.rate = -0.0;
+    REQUIRE(gg::grainEdgeSample(g, 100) == gg::kNoEdge);
+    g.rate = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE(gg::grainEdgeSample(g, 100) == gg::kNoEdge);
+    g.rate = -1.0;
+    REQUIRE(gg::grainEdgeSample(g, 0) == gg::kNoEdge);
+    REQUIRE(gg::grainEdgeSample(g, 100) != gg::kNoEdge);
 }
 
 TEST_CASE("the pool keeps each grain's bus", "[pool]")

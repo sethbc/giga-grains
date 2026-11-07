@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numbers>
 #include <vector>
@@ -334,4 +335,24 @@ TEST_CASE("make stops and returns nullptr once the cancel flag is set", "[source
     cancel.store(true);
     REQUIRE(gg::PreparedSource::make(buffer, &cancel) == nullptr);
     REQUIRE(gg::PreparedSource::make(nullptr, &cancel) == nullptr);
+}
+
+TEST_CASE("the mip level reads the rate's magnitude", "[engine][mip][grainshape]")
+{
+    const double inf = std::numeric_limits<double>::infinity();
+    for (const double r : {1.0, 1.5, 2.0, 3.99, 4.0, 8.0, 1e300, inf})
+    {
+        for (uint32_t n = 1; n <= 6; ++n)
+        {
+            INFO("rate " << r << ", levels " << n);
+            REQUIRE(gg::mipLevelFor(-r, n) == gg::mipLevelFor(r, n));
+        }
+    }
+    for (uint32_t n = 1; n <= 6; ++n)
+    {
+        REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::quiet_NaN(), n) == 0);
+        REQUIRE(gg::mipLevelFor(-0.0, n) == 0);
+        REQUIRE(gg::mipLevelFor(-0.5, n) == 0);
+    }
+    REQUIRE(gg::mipLevelFor(-8.0, 5) == 3);
 }

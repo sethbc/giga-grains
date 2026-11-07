@@ -684,6 +684,81 @@ TEST_CASE("gatherTaps agrees with read and readLinear", "[live]")
     }
 }
 
+TEST_CASE("a backward read finds its slot without changing it", "[live][grainshape]")
+{
+    // A reversed grain reads backward. On a wrapped 50 ms ring, the taps of reads at positions
+    // stepping back by 0.7 to 3.3 frames across the storage's wrap, through one shared Cursor,
+    // equal those of a fresh Cursor's read, and after each read the cursor's slot is its index
+    // modulo the capacity (the level's, for the level read).
+    constexpr int64_t kBlock = 100;
+    gg::LiveSource ring;
+    ring.prepare(48000.0, 0.05, static_cast<uint32_t>(kBlock));
+    const int64_t frames = ring.frames();
+    REQUIRE(frames == 2400);
+    std::vector<float> inL(static_cast<std::size_t>(kBlock));
+    std::vector<float> inR(static_cast<std::size_t>(kBlock));
+    const float *in[2] = {inL.data(), inR.data()};
+    int64_t reads = 0;
+    int64_t levelReads = 0;
+    int64_t backSteps = 0;
+    bool agree = true;
+    for (int64_t blockStart = 0; blockStart < 6 * kBlock + 10 * frames; blockStart += kBlock)
+    {
+        for (int64_t j = 0; j < kBlock; ++j)
+        {
+            using gg::rng::Field;
+            const auto n = static_cast<uint64_t>(blockStart + j);
+            inL[static_cast<std::size_t>(j)] = static_cast<float>(
+                gg::rng::bipolar(gg::rng::hash({3, 0, 0, Field::SignalNoise, n})));
+            inR[static_cast<std::size_t>(j)] = static_cast<float>(
+                gg::rng::bipolar(gg::rng::hash({3, 0, 1, Field::SignalNoise, n})));
+        }
+        ring.write(in, 2, 0, blockStart, static_cast<uint32_t>(kBlock));
+    }
+    const int64_t head = ring.head();
+    REQUIRE(head > 4 * ring.view().capacity);
+    REQUIRE(ring.levelCount() > 1);
+    const int64_t capacity = ring.view().capacity;
+    const int64_t levelCapacity = (capacity + 1) / 2; // ceil(C / 2), RingStorage's Cn
+    gg::LiveSource::Cursor shared;
+    gg::LiveSource::Cursor sharedLevel;
+    double pos = static_cast<double>(head) - 12.0;
+    for (int k = 0; pos > static_cast<double>(head - frames) + 20.0; ++k)
+    {
+        pos -= 0.7 + 2.6 * static_cast<double>(k % 7) / 6.0; // 0.7 to 3.3
+        float l[4] = {};
+        float r[4] = {};
+        float fl[4] = {};
+        float fr[4] = {};
+        gg::LiveSource::Cursor fresh;
+        const bool ok = ring.gatherTaps<4>(pos, head, shared, l, r);
+        const bool okFresh = ring.gatherTaps<4>(pos, head, fresh, fl, fr);
+        agree = agree && ok == okFresh && shared.slot == shared.index % capacity;
+        if (ok)
+        {
+            agree = agree && std::memcmp(l, fl, sizeof l) == 0 && std::memcmp(r, fr, sizeof r) == 0;
+            ++reads;
+        }
+        // The level's frames are the ring's halved.
+        const double levelPos = pos / 2.0;
+        gg::LiveSource::Cursor freshLevel;
+        const bool okLevel = ring.gatherLevelTaps<4>(1, levelPos, head, sharedLevel, l, r);
+        const bool okLevelFresh = ring.gatherLevelTaps<4>(1, levelPos, head, freshLevel, fl, fr);
+        agree = agree && okLevel == okLevelFresh &&
+                sharedLevel.slot == sharedLevel.index % levelCapacity;
+        if (okLevel)
+        {
+            agree = agree && std::memcmp(l, fl, sizeof l) == 0 && std::memcmp(r, fr, sizeof r) == 0;
+            ++levelReads;
+        }
+        ++backSteps;
+    }
+    REQUIRE(backSteps > 500);
+    REQUIRE(reads > 500);
+    REQUIRE(levelReads > 300);
+    REQUIRE(agree);
+}
+
 TEST_CASE("live grains never read the future", "[live]")
 {
     // Checked analytically from the event sink, with no hook in the engine. A grain at elapsed
@@ -2169,6 +2244,7 @@ TEST_CASE("adopting storage keeps the window", "[engine][live]")
     CHECK(ring.oldestHeld() == now - 48000); // a shrink: the new N is the bound
     ring.reset();
     CHECK(ring.oldestHeld() == 0);
+    c = {}; // the cursor's slot is from the previous storage; a Cursor serves one storage
     same = true;
     for (int64_t f = now - 48000 + 1; f <= now - 3; ++f)
     {

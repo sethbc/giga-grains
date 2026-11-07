@@ -1522,7 +1522,7 @@ TEST_CASE("HQ grains latch the level of their rate and Normal grains level 0", "
     REQUIRE(gg::mipLevelFor(0x1.0p100, 5) == 4);
     REQUIRE(gg::mipLevelFor(0x1.0p100, 200) == 4); // never past kMaxMipLevels − 1
     REQUIRE(gg::mipLevelFor(0.0, 5) == 0);
-    REQUIRE(gg::mipLevelFor(-4.0, 5) == 0);
+    REQUIRE(gg::mipLevelFor(-4.0, 5) == 2); // a reversed grain reads its magnitude's level (PD2)
     REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::quiet_NaN(), 5) == 0);
     REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::infinity(), 5) == 4);
     REQUIRE(gg::mipLevelFor(std::numeric_limits<double>::infinity(), 3) == 2);
