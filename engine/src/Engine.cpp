@@ -251,6 +251,7 @@ void Engine::startVoice(uint32_t slot, uint32_t ordinal, const VoiceParams &para
     voice.scheduler.setSourceMode(mode_, config_.liveSeconds);
     voice.scheduler.setParams(params.cloud);
     voice.scheduler.forceNextOnset();
+    dropAnchor(voice); // no anchor carries over from the slot's last voice (SB4)
     voice.params = params;
     voice.ordinal = ordinal;
     voice.spawning = true;
@@ -284,6 +285,7 @@ void Engine::clearVoices() noexcept
     for (Voice &voice : voices_)
     {
         voice.spawning = false;
+        dropAnchor(voice);
     }
 }
 
@@ -504,6 +506,11 @@ void Engine::process(const float *const *in, uint32_t numInChannels, float *cons
         // grains, each finishing on the source it started on (its row's sourceSlot).
         mode_ = requestedMode_;
         applySourceMode();
+        // M3 pitch-sync spec §4.6: the anchors are on the old kind's ring; each voice refreshes.
+        for (Voice &voice : voices_)
+        {
+            dropAnchor(voice);
+        }
     }
     if (requestedEnabled_ != enabled_)
     {
@@ -618,7 +625,7 @@ void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spaw
         d.gain = static_cast<float>(static_cast<double>(d.gain) *
                                     static_cast<double>(voice.params.gain) *
                                     voice.params.amp.valueAt(peakSample) * headroom);
-        spawn(d, voice.ordinal);
+        spawn(d, voice.ordinal, best);
     }
 }
 
@@ -694,8 +701,9 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     // which the pool has already been rendered; admit() moves it forward when it has to
     // retire grains early to make room. Disabled, nothing spawns (and the pool is empty).
     int64_t renderedTo = blockStart;
-    // `voice` is GrainSpec::voice: kNoVoice for the Cloud stream's grains, else the ordinal.
-    const auto spawnAs = [&](const GrainDraw &d, uint32_t voice) {
+    // `voice` is GrainSpec::voice: kNoVoice for the Cloud stream's grains, else the ordinal;
+    // `slot` the voice's slot, kMaxVoices for the Cloud stream's.
+    const auto spawnAs = [&](const GrainDraw &d, uint32_t voice, uint32_t slot) {
         // Row 234 (gateFaults()): the gate in effect is the request, applied at process()'s first
         // frame, so a grain while it is requested off means enabled_ was read wrong. The grain
         // still goes on: the counter only records it.
@@ -707,8 +715,14 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
         {
             // setSourceMode admits Spectral only with the smear.
             const bool live = mode_ == SourceMode::Live;
+            // M3 pitch-sync spec §4.6: only a voice at Clock Pitch holds an anchor.
+            VoiceAnchor *const anchor =
+                slot < kMaxVoices && voices_[slot].scheduler.params().clock == Clock::Pitch
+                    ? &voices_[slot].anchor
+                    : nullptr;
             GrainSpec g;
-            if (liveGrain(d, g, live ? live_ : spectral_->ring(), live ? kLiveSlot : kSpectralSlot))
+            if (liveGrain(d, g, live ? live_ : spectral_->ring(), live ? kLiveSlot : kSpectralSlot,
+                          anchor))
             {
                 g.voice = voice;
                 admit(g, outputs, blockStart, renderedTo);
@@ -729,7 +743,7 @@ void Engine::processBlock(const float *const *in, uint32_t numInChannels, float 
     {
         if (!voiceMode_)
         {
-            const auto spawn = [&](const GrainDraw &d) { spawnAs(d, kNoVoice); };
+            const auto spawn = [&](const GrainDraw &d) { spawnAs(d, kNoVoice, kMaxVoices); };
             cloud_.schedule(blockStart, numFrames, config_.seed, config_.layer, kStream, spawn);
         }
         else
@@ -777,9 +791,10 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     };
 }
 
-bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
-                       uint8_t slot) const noexcept
+bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring, uint8_t slot,
+                       VoiceAnchor *anchor) const noexcept
 {
+    GG_FP_CONTRACT_OFF
     // The admission clamp (spec §6.3; the class comment has the derivation), over the ring's
     // window: its end in place of the head, its length W in place of N (M2 sub-project 2's spec
     // §6.1). Between output samples the head moves linearly while it advances, so at the real
@@ -807,6 +822,23 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
         lo = static_cast<double>(ring.windowOldestAt(t0)) + stepOldest + 1.0 + kM +
              std::max(0.0, spanOldest * (1.0 - rate));
     }
+    // The start asked for: the head less the draw, or a held voice grain's anchor (§4.6). A
+    // voice's refresh, or a held grain with no anchor on this ring, stores its own first, so a
+    // refresh that doesn't fit still leaves its held grains aiming where it asked.
+    double start = 0.0;
+    if (anchor != nullptr && d.held && anchor->slot == slot)
+    {
+        start = anchor->start;
+    }
+    else
+    {
+        start = rho - d.positionDraw * config_.sampleRate;
+        if (anchor != nullptr)
+        {
+            anchor->start = start;
+            anchor->slot = slot;
+        }
+    }
     if (lo > hi)
     {
         return false; // the grain's read span doesn't fit the ring
@@ -815,7 +847,7 @@ bool Engine::liveGrain(const GrainDraw &d, GrainSpec &g, const LiveSource &ring,
         .index = d.index,
         .onsetSample = d.onsetSample,
         .onsetFrac = d.onsetFrac,
-        .startPos = std::clamp(rho - d.positionDraw * config_.sampleRate, lo, hi),
+        .startPos = std::clamp(start, lo, hi),
         .rate = rate, // the ring runs at the output rate
         .durationSamples = dur,
         .texture = d.texture,

@@ -1479,3 +1479,164 @@ TEST_CASE("voices are block-size invariant", "[determinism][voice]")
     REQUIRE(sameBits(ref.audio.left, r.audio.left));
     REQUIRE(sameBits(ref.audio.right, r.audio.right));
 }
+
+namespace
+{
+// Four Live voices at Clock Pitch (M3 pitch-sync spec §4.5, §4.6): each holds its anchor on the
+// ring between refreshes (1.5 Hz, so two refreshes after each voice's first grain); slot 12's
+// voice starts at Free and turns to Pitch at 9600, and slot 0's f0 slides over ten cell
+// boundaries from 30,000.
+constexpr int64_t kPitchFrames = 96000;
+constexpr int64_t kPitchStart = 4800;
+constexpr int64_t kClockChange = 9600;
+constexpr int64_t kSlideStart = 30000;
+
+struct PitchVoice
+{
+    uint32_t slot;
+    uint32_t ordinal;
+    double f0;
+};
+constexpr PitchVoice kPitchVoices[] = {{0, 0, 100.0}, {3, 1, 130.0}, {7, 2, 170.0}, {12, 3, 210.0}};
+
+gg::VoiceParams pitchVoice(gg::Clock clock, double f0)
+{
+    gg::VoiceParams p;
+    p.cloud.clock = clock;
+    p.cloud.densityHz = f0;
+    p.cloud.refreshHz = 1.5;
+    p.cloud.distribution = 0.4;
+    p.cloud.grainDurationSec = 0.15; // two periods
+    p.cloud.position = 0.3;
+    p.cloud.spray = 0.2;
+    p.cloud.stereo = 0.7;
+    p.cloud.pitchSpreadSemitones = 1.0;
+    p.cloud.gain = 0.5f;
+    p.amp = {.at = 0,
+             .level = 1.0,
+             .stage = gg::AmpEnvelope::Stage::Sustain,
+             .attackPerSample = 0.0,
+             .decayPerSample = 0.0,
+             .releasePerSample = 0.0,
+             .sustain = 1.0};
+    p.gain = 0.8f;
+    return p;
+}
+
+void renderPitchVoices(const LiveInput &input, uint32_t block, LiveRender &r)
+{
+    gg::EngineConfig c{kSampleRate, kMaxBlock, 4096, 42};
+    c.liveSeconds = 4.0;
+    gg::Engine engine(c);
+    engine.setSourceMode(gg::SourceMode::Live);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    engine.setVoiceMode(true);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kPitchFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kPitchFrames), kUnwritten);
+    // The frames something changes at, in order: the start, the Clock change, the slide's ten.
+    std::vector<int64_t> at{kPitchStart, kClockChange};
+    for (int64_t i = 0; i < 10; ++i)
+    {
+        at.push_back(kSlideStart + 32 * i);
+    }
+    int64_t done = 0;
+    while (done < kPitchFrames)
+    {
+        for (std::size_t e = 0; e < at.size(); ++e)
+        {
+            if (at[e] != done)
+            {
+                continue;
+            }
+            if (e == 0)
+            {
+                for (const PitchVoice &v : kPitchVoices)
+                {
+                    const gg::Clock clock = v.slot == 12 ? gg::Clock::Free : gg::Clock::Pitch;
+                    engine.startVoice(v.slot, v.ordinal, pitchVoice(clock, v.f0));
+                }
+            }
+            else if (e == 1)
+            {
+                const PitchVoice &v = kPitchVoices[3];
+                engine.setVoiceParams(v.slot, pitchVoice(gg::Clock::Pitch, v.f0));
+            }
+            else
+            {
+                const PitchVoice &v = kPitchVoices[0];
+                const double f0 = v.f0 + 5.0 * static_cast<double>(e - 1);
+                engine.setVoiceParams(v.slot, pitchVoice(gg::Clock::Pitch, f0));
+            }
+        }
+        int64_t until = kPitchFrames;
+        for (const int64_t t : at)
+        {
+            if (t > done)
+            {
+                until = std::min(until, t);
+            }
+        }
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(block, until - done));
+        const float *in[2] = {input.left.data() + done, input.right.data() + done};
+        float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+        engine.process(in, 2, out, 2, n);
+        done += n;
+    }
+}
+} // namespace
+
+TEST_CASE("pitch voices with anchors are block-size invariant", "[determinism][pitchsync]")
+{
+    const auto input = liveNoise();
+    LiveRender ref;
+    renderPitchVoices(input, kMaxBlock, ref);
+    REQUIRE_FALSE(ref.log.overflowed);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    // Not vacuous: every voice spawns, holds its anchor (consecutive grains at one start) and
+    // refreshes it (at least three starts).
+    for (uint32_t ordinal = 0; ordinal < 4; ++ordinal)
+    {
+        INFO("voice " << ordinal);
+        std::vector<double> starts;
+        std::size_t heldPairs = 0;
+        for (const gg::GrainSpec &g : ref.log.grains)
+        {
+            if (g.voice != ordinal)
+            {
+                continue;
+            }
+            if (!starts.empty() && starts.back() == g.startPos)
+            {
+                ++heldPairs;
+            }
+            else
+            {
+                starts.push_back(g.startPos);
+            }
+        }
+        CHECK(heldPairs > 100);
+        CHECK(starts.size() >= 3);
+        // Three refreshes at Pitch; slot 12's voice is Free until 9600, each grain its own start.
+        if (ordinal == 3)
+        {
+            CHECK(starts.size() > 10);
+        }
+        else
+        {
+            CHECK(starts.size() == 3);
+        }
+    }
+    for (const uint32_t block : {1u, 7u, 32u, 256u})
+    {
+        INFO("block size " << block);
+        LiveRender r;
+        renderPitchVoices(input, block, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+}
