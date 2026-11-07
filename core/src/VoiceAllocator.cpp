@@ -91,4 +91,19 @@ bool VoiceAllocator::anySpawning() const noexcept
     return false;
 }
 
+int VoiceAllocator::oldestWeak() const noexcept
+{
+    int slot = -1;
+    for (uint32_t i = 0; i < kVoices; ++i)
+    {
+        const Voice &v = voices_[i];
+        if (v.spawning && v.weak &&
+            (slot < 0 || v.ordinal < voices_[static_cast<uint32_t>(slot)].ordinal))
+        {
+            slot = static_cast<int>(i);
+        }
+    }
+    return slot;
+}
+
 } // namespace gg::core
