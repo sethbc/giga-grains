@@ -518,8 +518,8 @@ runs the tests labeled either. The labels are:
 - `smoke`;
 - `build`: checks of the build system itself: the `asio_guard_*` tests, run on scratch CMake
   projects (`cmake/AsioGuard.cmake`), and `gg-tests`' "the build is C++23" (also `smoke`);
-- `scripts`: `check.sh`, `check-at-rest.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
-  and in scratch git repositories, and the release scripts in `scripts/release/`
+- `scripts`: `check.sh`, `check-at-rest.sh` and `worktree-setup.sh`, in scratch trees with stub
+  `cmake` and `ctest` and in scratch git repositories, and the release scripts in `scripts/release/`
   (`tests/scripts/release_scripts_tests.sh`: the tag check, the source tarball and the signing
   keychain, whose checks put a scratch keychain in your search list for a moment and restore
   it) (not on Windows);
@@ -1017,10 +1017,12 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
   expected files of the baseline's cases, and compares each case's WAV SHA-256 with
   `tests/golden/at-rest/linux-x86_64-dev.sha256`, the 108 cases as M2 left them.
   - Its last line is `baseline cases: 108, changed: 0, gone: 0`; it exits 0 only if nothing changed
-    or went, 1 otherwise, and 2 for bad usage or a platform it has no baseline for.
+    or went, 1 when something did or the renders failed, and 2 for a refusal: bad usage, another
+    platform, no baseline or `build/dev`, or an uncommitted edit of a baseline case's expected file
+    (which it would otherwise discard).
   - WAVs match only on one platform and build type, so it refuses anything but Linux x86_64 and
     compares only a `dev` build. Run it where the baseline was made.
-  - It rewrites the expected files while it runs, so stage files by name.
+  - Newer cases' expected files are rewritten and stay so, so stage files by name.
 - Look at every spectrogram before committing new goldens, and say in the commit message why they
   changed.
 

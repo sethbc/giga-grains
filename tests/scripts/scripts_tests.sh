@@ -326,13 +326,13 @@ cat >"$at/scripts/update-goldens.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "$1" >build/dev/update-goldens-arg
+for f in tests/golden/expected/*.json* tests/golden/presets/expected/*.json*; do
+    echo rewritten >"$f"
+done
 if [[ -n "${FAKE_GOLDENS_FAIL:-}" ]]; then
     echo "a render broke"
     exit 3
 fi
-for f in tests/golden/expected/*.json* tests/golden/presets/expected/*.json*; do
-    echo rewritten >"$f"
-done
 cp "$FAKE_HASHES" build/dev/golden/wav-sha256.txt
 EOF
 chmod +x "$at/scripts/update-goldens.sh"
@@ -403,6 +403,45 @@ FAKE_GOLDENS_FAIL=1 run_at_rest "$at"
 check "check-at-rest, update-goldens fails: exit 1" "$(((status == 1) ? 0 : 1))"
 expect_in "check-at-rest shows the failed run's log" "$out" "a render broke"
 expect_not_in "check-at-rest compares nothing after a failed run" "$out" "baseline cases:"
+check "check-at-rest restores the expected files after a failed run" \
+    "$(committed tests/golden/expected/a.metrics.json)"
+
+at_hashes "aaa a" "bbb b" "ppp presets/p"
+rm -f "$at/build/dev/update-goldens-arg"
+echo "hand edited" >"$at/tests/golden/expected/a.metrics.json"
+run_at_rest "$at"
+check "check-at-rest refuses an uncommitted edit of a baseline case: exit 2" \
+    "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest names the edited file" "$out" "tests/golden/expected/a.metrics.json"
+check "check-at-rest keeps the uncommitted edit" \
+    "$([[ "$(cat "$at/tests/golden/expected/a.metrics.json")" == "hand edited" ]] && echo 0 ||
+        echo 1)"
+check "check-at-rest renders nothing over an uncommitted edit" \
+    "$([[ ! -e "$at/build/dev/update-goldens-arg" ]] && echo 0 || echo 1)"
+git -C "$at" add tests/golden/expected/a.metrics.json
+run_at_rest "$at"
+check "check-at-rest refuses a staged edit of a baseline case: exit 2" \
+    "$(((status == 2) ? 0 : 1))"
+git -C "$at" reset -q
+git -C "$at" checkout -q -- tests/golden
+
+echo "hand edited" >"$at/tests/golden/expected/new-voice.metrics.json"
+run_at_rest "$at"
+check "check-at-rest allows an uncommitted edit of a newer case" "$status"
+git -C "$at" checkout -q -- tests/golden
+
+echo >>"$at/tests/golden/at-rest/linux-x86_64-dev.sha256"
+run_at_rest "$at"
+check "check-at-rest ignores a blank baseline line" "$status"
+check "check-at-rest doesn't count a blank baseline line" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 3, changed: 0, gone: 0" ]] && echo 0 || echo 1)"
+git -C "$at" checkout -q -- tests/golden
+
+cd "$work"
+run_at_rest at-rest
+cd "$src"
+check "check-at-rest takes a relative worktree" "$status"
+git -C "$at" checkout -q -- tests/golden
 
 run_at_rest
 check "check-at-rest, no worktree: exit 2" "$(((status == 2) ? 0 : 1))"

@@ -13,11 +13,12 @@
 # <worktree>/tests/golden/at-rest/linux-x86_64-dev.sha256. WAVs match only on one platform and
 # build type, so it refuses any platform but Linux x86_64.
 #
-# It rewrites expected files while it runs, so stage files by name.
+# Because it restores those files, it refuses to run over an uncommitted edit of one. Newer cases'
+# expected files are rewritten and stay so, so stage files by name.
 #
 # The last line is "baseline cases: N, changed: C, gone: G". Exit status: 0 when nothing changed
-# or went, 1 when something did or the renders failed, 2 for bad usage, an unsupported platform, or
-# a missing baseline or build tree.
+# or went, 1 when something did or the renders failed, 2 for bad usage, an unsupported platform, a
+# missing baseline or build tree, or an uncommitted edit of a baseline case's expected file.
 
 set -euo pipefail
 
@@ -41,13 +42,9 @@ if [[ ! -d build/dev ]]; then
     exit 2
 fi
 
-if ! scripts/update-goldens.sh build/dev >build/dev/update-goldens.log 2>&1; then
-    tail -20 build/dev/update-goldens.log
-    exit 1
-fi
-
 restore=()
 while read -r _ name; do
+    [[ -n "$name" ]] || continue
     case "$name" in
         presets/*)
             dir=tests/golden/presets/expected
@@ -64,13 +61,31 @@ while read -r _ name; do
         fi
     done
 done <"$base"
-if ((${#restore[@]} > 0)); then
-    git checkout -- "${restore[@]}"
+if ((${#restore[@]} > 0)) && ! git diff --quiet HEAD -- "${restore[@]}"; then
+    echo "check-at-rest: these baseline expected files have uncommitted edits, which it would" \
+        "discard; commit them, or run git checkout -- tests/golden:" >&2
+    git diff --name-only HEAD -- "${restore[@]}" >&2
+    exit 2
 fi
+restore_expected() {
+    if ((${#restore[@]} > 0)); then
+        git checkout -- "${restore[@]}"
+    fi
+}
 
+if ! scripts/update-goldens.sh build/dev >build/dev/update-goldens.log 2>&1; then
+    tail -20 build/dev/update-goldens.log
+    restore_expected
+    exit 1
+fi
+restore_expected
+
+cases=0
 changed=0
 gone=0
 while read -r sha name; do
+    [[ -n "$name" ]] || continue
+    cases=$((cases + 1))
     now="$(awk -v n="$name" '$2 == n { print $1 }' build/dev/golden/wav-sha256.txt)"
     if [[ -z "$now" ]]; then
         echo "GONE $name"
@@ -80,5 +95,5 @@ while read -r sha name; do
         changed=$((changed + 1))
     fi
 done <"$base"
-echo "baseline cases: $(wc -l <"$base" | tr -d ' '), changed: $changed, gone: $gone"
+echo "baseline cases: $cases, changed: $changed, gone: $gone"
 ((changed == 0 && gone == 0))
