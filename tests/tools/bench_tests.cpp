@@ -179,7 +179,7 @@ TEST_CASE("bench lists the engine cases in report order", "[bench]")
     CHECK(std::vector<std::string>(at, names.end()) ==
           std::vector<std::string>{"engine-layers-full", "engine-sample-hq", "engine-sample-hq-up",
                                    "engine-overload", "engine-sample-sse", "engine-sample-smear",
-                                   "engine-buses", "engine-spectral"});
+                                   "engine-buses", "engine-spectral", "engine-voices"});
 }
 
 TEST_CASE("bench rejects a run longer than an hour", "[bench]")
@@ -1376,4 +1376,36 @@ TEST_CASE("the canvas bench reports four banded lanes", "[bench]")
         CHECK(r.at("totalMs").get<double>() > 0.0);
         CHECK(r.at("resolveMs").get<double>() > 0.0);
     }
+}
+
+TEST_CASE("engine-voices runs and reports", "[bench]")
+{
+    const gg::bench::Report report = gg::bench::run(
+        {.runSeconds = 0.002, .rounds = 2, .grains = 2000, .cases = {"engine-voices"}});
+    std::vector<uint32_t> blockSizes;
+    for (const gg::bench::CaseResult &r : report.results)
+    {
+        INFO("block " << r.blockSize);
+        CHECK(r.name == "engine-voices");
+        CHECK(r.kind == "engine");
+        CHECK(r.median > 0.0);
+        blockSizes.push_back(r.blockSize);
+    }
+    CHECK(blockSizes == std::vector<uint32_t>{32, 64, 256});
+
+    // Sixteen voices at 1/16 of X's grain rate admit X's grains in all, at the Normal tier.
+    const gg::bench::TierCounts voices = gg::bench::admittedTiers("engine-voices", 2000, 256);
+    const gg::bench::TierCounts plain = gg::bench::admittedTiers("engine-sample", 2000, 256);
+    CHECK(voices.eco == 0);
+    CHECK(voices.hq == 0);
+    CHECK(voices.lowered == 0);
+    CHECK(voices.dropped == 0);
+    CHECK(voices.stolen == 0);
+    REQUIRE(voices.activeGrains.size() == 1);
+    REQUIRE(plain.activeGrains.size() == 1);
+    CHECK(voices.activeGrains[0] >= 1900);
+    CHECK(voices.activeGrains[0] <= 2100);
+    const auto admitted = static_cast<double>(voices.normal);
+    CHECK(admitted >= 0.95 * static_cast<double>(plain.normal));
+    CHECK(admitted <= 1.05 * static_cast<double>(plain.normal));
 }

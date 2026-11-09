@@ -27,7 +27,8 @@
 // spec §6.10, report-only; engine-overload sets its engine's quota, EngineSetup::quota, before the
 // warm-up), then engine-sample-sse (the AVX2 spike, spec §6.12, report-only: X on the 4-wide
 // kernels), then the extremes' engine-sample-smear, engine-buses and engine-spectral (M2 extremes
-// spec §6.10, report-only). Each one-layer case owns a gg::Engine (48 kHz, maxBlockSize 256,
+// spec §6.10, report-only), then engine-voices (M3 Voice: X's stream split across 16 voices in
+// voice mode, report-only). Each one-layer case owns a gg::Engine (48 kHz, maxBlockSize 256,
 // seeded with the bench seed) rendering one Cloud stream of Options::grains overlapping grains of
 // 100 ms (density grains / 0.1 Hz, periodic) at +7 semitones, stereo 1, over the same noise: in
 // Sample mode the noise is the source; in Live mode it is the input, fed block by block. The timed
@@ -327,6 +328,10 @@ struct EngineSetup
     bool twoBuses{false};
     /// The engine's quota in weight units (Engine::setQuota), set before the warm-up.
     uint64_t quota{gg::kUnlimitedQuota};
+    /// More than 0 runs the engine in voice mode with this many voices (at most kMaxVoices), each
+    /// a held, full-level voice stream with `params` at 1 / voices of its density, so the voices'
+    /// grains together are the Cloud stream's (engine-voices).
+    uint32_t voices{0};
 };
 
 /// engine-sample, X (ruling 4): the headline's Sample-mode case. Spray 0.45 keeps every read
@@ -388,7 +393,7 @@ double warmUpSecondsFor(const EngineSetup &setup, bool quick)
 }
 
 /// The engine cases, in report order. Each is engine-sample with its own changes.
-constexpr std::array<EngineCase, 14> kEngineCases{{
+constexpr std::array<EngineCase, 15> kEngineCases{{
     {"engine-sample", engineSample},
     // X at the Eco tier: every grain reads with linear interpolation (ruling 2).
     {"engine-sample-eco",
@@ -507,6 +512,15 @@ constexpr std::array<EngineCase, 14> kEngineCases{{
          s.warmUpSeconds = 2.0;
          return s;
      }},
+    // M3 Voice (spec §4.3), report-only beside X: engine-sample's stream split across the
+    // engine's 16 voices in voice mode, each at 1/16 of the density, held at full level, so the
+    // admitted grains total X's. The voice scheduler's merge over X's single Cloud schedule.
+    {"engine-voices",
+     [](uint32_t grains) {
+         EngineSetup s = engineSample(grains);
+         s.voices = gg::kMaxVoices;
+         return s;
+     }},
 }};
 
 /// One engine case at one block size: its engines, one per layer, which keep rendering from
@@ -534,6 +548,21 @@ class EngineConfiguration final : public Configuration
             engine->setCloudParams(s.params);
             engine->setSourceMode(s.mode);
             engine->setQuota(s.quota);
+            if (s.voices > 0)
+            {
+                engine->setVoiceMode(true);
+                gg::VoiceParams v;
+                v.cloud = s.params;
+                v.cloud.densityHz = s.params.densityHz / static_cast<double>(s.voices);
+                v.amp.stage = gg::AmpEnvelope::Stage::Sustain;
+                v.amp.level = 1.0;
+                v.amp.sustain = 1.0;
+                v.gain = 1.0f;
+                for (uint32_t slot = 0; slot < s.voices; ++slot)
+                {
+                    engine->startVoice(slot, slot, v);
+                }
+            }
             engines_.push_back(std::move(engine));
         }
         if (setup_.twoBuses)

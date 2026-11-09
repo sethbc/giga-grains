@@ -51,7 +51,13 @@ LockSet buildStructuralLocks() noexcept
         lock(layerSlot(LayerParam::Freeze, layer));
         lock(layerSlot(LayerParam::StepLength, layer));
         lock(layerSlot(LayerParam::Quality, layer));
+        // M3 sub-project 1: Mode is structure, as Source is.
+        lock(layerSlot(LayerParam::Mode, layer));
     }
+    // The MIDI settings are the instance's, not the sound's (M3 sub-project 1's spec §4.1).
+    lock(ParamSlot::Mpe);
+    lock(ParamSlot::MpeBendRange);
+    lock(ParamSlot::BendRange);
     // Every layer's five ring parameters: capture and memory (sub-project 2), which a preset load
     // keeps too (isRingParam). Ring Length would never move anyway (SP-M8, below).
     for (size_t s = 0; s < kParamCount; ++s)
@@ -68,11 +74,13 @@ constexpr size_t kDecaySlot = static_cast<size_t>(ParamSlot::ReverbDecay);
 /// The largest float below kDecayInfinite (a positive float's bits, one less).
 constexpr float kBelowInfinite = std::bit_cast<float>(std::bit_cast<uint32_t>(kDecayInfinite) - 1u);
 
-/// Slot `s`'s draw for press `counter` of `seed`, on `stream`.
+/// Slot `s`'s draw for press `counter` of `seed`, on `stream`, keyed by the slot's CLAP ID (not
+/// its index), so a parameter appended later moves no other slot's draw.
 double draw(uint64_t seed, uint32_t stream, uint32_t counter, size_t s) noexcept
 {
-    return rng::uniform01(rng::hash({seed, kMutateLayer, stream, rng::Field::PositionJitter,
-                                     static_cast<uint64_t>(counter) * kParamCount + s}));
+    return rng::uniform01(
+        rng::hash({seed, kMutateLayer, stream, rng::Field::PositionJitter,
+                   (static_cast<uint64_t>(counter) << 32) | paramId(static_cast<ParamSlot>(s))}));
 }
 } // namespace
 
@@ -122,7 +130,7 @@ void mutate(const ParamValues &in, const LockSet &locks, float amount, uint64_t 
         const md_t &meta = paramMeta(static_cast<ParamSlot>(s), mode);
         // A press is host gestures, recorded as automation: a parameter no host may automate
         // (Ring Length, which the main thread resizes the ring for) is never moved (ruling
-        // SP-M8). Its draw is skipped too; every other slot's draws are keyed by its own index,
+        // SP-M8). Its draw is skipped too; every other slot's draws are keyed by its own CLAP ID,
         // so they are unchanged.
         if ((meta.flags & CLAP_PARAM_IS_AUTOMATABLE) == 0)
         {

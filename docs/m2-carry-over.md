@@ -1,5 +1,11 @@
 # M2 carry-over: what M1 leaves open
 
+**Frozen: M2's closed record** (2026-11-07). M3 sub-project 1 split the carry-over: the 15 rows
+this file held open at the M2 close (85, 87, 88, 144, 184, 218, 233, 234, 305, 307, 330, 356, 382,
+403 and 404) moved, with their numbers, to `docs/m3-carry-over.md`, which is the carry-over from
+now on (INTENT §23 #95); each stays here as it stood at the split, and rows 184 and 404 are
+marked closed there. This file is no longer edited.
+
 **The policy was retired on 2026-10-30** (the director): deferred items are handled as superpowers'
 subagent-driven development handles them. A reviewer's minor is fixed or deferred at the controller's
 judgment; deferred minors and items blocked outside our control are listed in the sub-project's final

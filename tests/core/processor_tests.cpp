@@ -1314,9 +1314,14 @@ TEST_CASE("processor does not allocate", "[core][rt]")
         // §6.3).
         const bool layerOn = gg::core::perLayerGlobalLayer(slot) &&
                              slot == gg::core::layerOnSlot(*gg::core::perLayerGlobalLayer(slot));
+        // Mode stays Cloud (M3 Voice): at 0.4 + 0.1 every layer would be at Voice, and with
+        // no note it would spawn nothing.
+        const auto ref = gg::core::layerOf(slot);
+        const bool mode = ref && ref->param == gg::core::LayerParam::Mode;
         const double value = slot == ParamSlot::Density ? 8.0
                              : slot == ParamSlot::Size  ? -4.0
                              : layerOn                  ? 1.0
+                             : mode                     ? 0.0
                                                         : 0.4;
         events.push_back({offset, slot, false, value});
         events.push_back({offset + 3, slot, true, 0.1});

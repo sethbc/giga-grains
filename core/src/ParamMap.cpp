@@ -78,6 +78,11 @@ SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept
     return static_cast<SourceKind>(static_cast<uint8_t>(rounded));
 }
 
+LayerMode layerModeOf(float value) noexcept
+{
+    return value >= 0.5f ? LayerMode::Voice : LayerMode::Cloud;
+}
+
 SourceMode builtKind(SourceKind kind, Mode mode) noexcept
 {
     switch (kind)

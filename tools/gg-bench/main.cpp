@@ -9,7 +9,8 @@
 // engine-layers and engine-layers-full, then engine-sample-hq and engine-sample-hq-up (X at the HQ
 // tier, at Pitch 0 and +19) and engine-overload (the overload ladder at a spent quota),
 // engine-sample-sse (X on the 4-wide kernels, the AVX2 spike's fallback), and the extremes'
-// engine-sample-smear, engine-buses and engine-spectral. It times them against the reference
+// engine-sample-smear, engine-buses and engine-spectral, and M3's engine-voices (16 voices in voice
+// mode). It times them against the reference
 // kernel, M0's hermite-simd frozen in Kernels.h, and reports each engine case's ratio to it, which
 // the CI gate checks. It also still times M0's prototype kernels in Kernels.h. It began as the M0
 // kernel benchmark spike and was made gate-grade in M1 (carry-over B-I2, [133], [132]; spec §5).

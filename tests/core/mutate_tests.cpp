@@ -114,7 +114,7 @@ TEST_CASE("mutate follows the jitter law with its RNG key", "[core][mutate]")
     {
         const double u = gg::rng::uniform01(gg::rng::hash(
             {kSeed, gg::core::kMutateLayer, gg::core::kMutateStream, gg::rng::Field::PositionJitter,
-             static_cast<uint64_t>(counter) * kParamCount + s}));
+             (static_cast<uint64_t>(counter) << 32) | gg::core::paramId(ParamSlot::Size)}));
         const float range = meta.maxVal - meta.minVal;
         const float expected = std::clamp(in[s] + 0.25f * range * static_cast<float>(2.0 * u - 1.0),
                                           meta.minVal, meta.maxVal);
@@ -284,9 +284,13 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         ParamSlot::LimiterMode,
         ParamSlot::LimiterCeiling,
         ParamSlot::LimiterRelease,
+        ParamSlot::Mpe,
+        ParamSlot::MpeBendRange,
+        ParamSlot::BendRange,
     };
-    for (const LayerParam p : {LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
-                               LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
+    for (const LayerParam p :
+         {LayerParam::Mode, LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
+          LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
     {
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
@@ -298,7 +302,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 62);
+    REQUIRE(expectedStructural.count() == 62 + 4 + 3);
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -323,7 +327,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 168);
+    CHECK(bOn.count() == 175);
     LockSet unlocked = ~bOn;
     CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
@@ -364,7 +368,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 221);
+    CHECK(bOff.count() == 228);
     CHECK((bOff & ~bOn).count() == 53);
 
     // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".
@@ -533,4 +537,30 @@ TEST_CASE("a press from an infinite Decay may still move it, by its usual law", 
     }
     CHECK(moved > 0);
     CHECK(left > 0);
+}
+
+TEST_CASE("mutate draws are keyed by CLAP ID", "[core][mutate]")
+{
+    // A slot's moved value is a function of its CLAP ID and the press counter alone (re-keyed by
+    // CLAP ID, M3 sub-project 1 Task 1), so a parameter appended later moves no other slot's draw.
+    const Mode mode = Mode::Fx;
+    const ParamValues in = defaults(mode);
+    const LockSet locks = defaultMutateLocks(in, mode);
+    for (const ParamSlot slot : {ParamSlot::Size, ParamSlot::Density, ParamSlot::Spray})
+    {
+        const auto s = idx(slot);
+        const auto &meta = paramMeta(slot, mode);
+        REQUIRE(meta.type == md_t::FLOAT);
+        const uint64_t id = gg::core::paramId(slot);
+        for (const uint32_t counter : {3u, 900u})
+        {
+            const double u = gg::rng::uniform01(
+                gg::rng::hash({kSeed, gg::core::kMutateLayer, gg::core::kMutateStream,
+                               gg::rng::Field::PositionJitter, (uint64_t(counter) << 32) | id}));
+            const float range = meta.maxVal - meta.minVal;
+            const float expected = std::clamp(
+                in[s] + 0.5f * range * static_cast<float>(2.0 * u - 1.0), meta.minVal, meta.maxVal);
+            CHECK(mutated(in, locks, 0.5f, kSeed, counter, mode)[s] == expected);
+        }
+    }
 }
