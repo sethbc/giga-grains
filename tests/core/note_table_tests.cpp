@@ -285,3 +285,135 @@ TEST_CASE("voice_grouping_short_tap", "[core][notes]")
     CHECK(t.startedThisGroup().empty());
     CHECK(t.releasedThisGroup().empty());
 }
+
+TEST_CASE("note_table_mpe_released_keeps_expression", "[core][notes][voice]")
+{
+    // An MPE sender reuses a member channel for a new note, resetting its bend, pressure and
+    // CC 74 first: with MPE On the notes still releasing on that channel keep their last values,
+    // while a held or pedal-held note follows its channel. With MPE Off a released note follows
+    // its channel as before (a keyboard's wheel still moves a release).
+    const auto play = [](NoteTable &t, bool mpe) {
+        t.applyControl(ctl(ControlKind::PitchBend, 2, 1.0f), mpe);
+        t.applyControl(ctl(ControlKind::Aftertouch, 2, 0.7f), mpe);
+        t.applyControl(ctl(ControlKind::Timbre, 2, 0.6f), mpe);
+        t.apply(on(2, 60, 1), 1); // slot 0: released below
+        t.apply(on(3, 62, 2), 2); // slot 1: another channel, held
+        t.apply(off(2, 60, 1), 3);
+        // The sender's resets for a new note on channel 2, then the note.
+        t.applyControl(ctl(ControlKind::PitchBend, 2, 0.5f), mpe);
+        t.applyControl(ctl(ControlKind::Aftertouch, 2, 0.0f), mpe);
+        t.applyControl(ctl(ControlKind::Timbre, 2, 0.0f), mpe);
+        t.apply(on(2, 64, 3), 4); // slot 2
+    };
+    SECTION("MPE On")
+    {
+        NoteTable t;
+        play(t, true);
+        REQUIRE(t.notes()[0].state == State::Released);
+        CHECK(t.notes()[0].bend == Catch::Approx(1.0f));
+        CHECK(t.notes()[0].pressure == Catch::Approx(0.7f));
+        CHECK(t.notes()[0].timbre == Catch::Approx(0.6f));
+        CHECK(t.notes()[2].bend == 0.0f);
+        CHECK(t.notes()[2].pressure == 0.0f);
+        CHECK(t.notes()[2].timbre == 0.0f);
+        // A pedal-held note is still sounding-held: it follows its channel.
+        t.applyControl(ctl(ControlKind::Sustain, 2, 1.0f), true);
+        t.apply(off(2, 64, 3), 5);
+        REQUIRE(t.notes()[2].state == State::PedalHeld);
+        t.applyControl(ctl(ControlKind::PitchBend, 2, 0.75f), true);
+        t.applyControl(ctl(ControlKind::Aftertouch, 2, 0.4f), true);
+        t.applyControl(ctl(ControlKind::Timbre, 2, 0.3f), true);
+        CHECK(t.notes()[2].bend == Catch::Approx(0.5f));
+        CHECK(t.notes()[2].pressure == Catch::Approx(0.4f));
+        CHECK(t.notes()[2].timbre == Catch::Approx(0.3f));
+        CHECK(t.notes()[0].bend == Catch::Approx(1.0f)); // the released one still keeps its own
+        CHECK(t.notes()[0].pressure == Catch::Approx(0.7f));
+        CHECK(t.notes()[0].timbre == Catch::Approx(0.6f));
+    }
+    SECTION("MPE Off")
+    {
+        NoteTable t;
+        play(t, false);
+        REQUIRE(t.notes()[0].state == State::Released);
+        CHECK(t.notes()[0].bend == 0.0f);
+        CHECK(t.notes()[0].pressure == 0.0f);
+        CHECK(t.notes()[0].timbre == 0.0f);
+    }
+}
+
+TEST_CASE("note_table_full_group_lists_a_slot_once", "[core][notes][voice]")
+{
+    // In one group with a full table, a note that starts and ends there can be replaced by a
+    // later note-on of the same group: its slot is listed once, for the new note, so the
+    // Processor starts one voice for it, and no release names the new note's slot.
+    NoteTable t;
+    for (int i = 0; i < 127; ++i)
+    {
+        t.apply(on(0, static_cast<int16_t>(i), i), static_cast<uint64_t>(i + 1));
+    }
+    t.beginGroup();
+    t.apply(on(1, 10, 500), 200);
+    t.apply(off(1, 10, 500), 201);
+    REQUIRE(t.startedThisGroup().size() == 1);
+    const uint8_t slot = t.startedThisGroup()[0];
+    NoteTable::Note replaced{};
+    REQUIRE(t.apply(on(1, 11, 501), 202, &replaced));
+    CHECK(replaced.id == 500);
+    REQUIRE(t.notes()[slot].id == 501);
+    REQUIRE(t.startedThisGroup().size() == 1);
+    CHECK(t.startedThisGroup()[0] == slot);
+    CHECK(t.releasedThisGroup().empty());
+    // A slot released in this group but started in an earlier one, then replaced: the new
+    // note's slot is in the started list alone.
+    t.beginGroup();
+    t.apply(off(0, 5, 5), 300);
+    REQUIRE(t.releasedThisGroup().size() == 1);
+    REQUIRE(t.apply(on(1, 12, 502), 301));
+    CHECK(t.notes()[5].id == 502);
+    REQUIRE(t.startedThisGroup().size() == 1);
+    CHECK(t.startedThisGroup()[0] == 5);
+    CHECK(t.releasedThisGroup().empty());
+}
+
+TEST_CASE("note_table_choke", "[core][notes][voice]")
+{
+    // A choke (CLAP NOTE_CHOKE) ends a note at once: held, pedal-held or released, it becomes
+    // Released and choked, the pedal ignored. Addressed as an Off is: by ID, or by (channel, key)
+    // with wildcards; an unknown ID is ignored.
+    const auto choke = [](int16_t ch, int16_t key, int32_t id = -1) {
+        NoteEvent n{0, NoteEventType::Choke, ch, key};
+        n.noteId = id;
+        return n;
+    };
+    NoteTable t;
+    t.applyControl(ctl(ControlKind::Sustain, 0, 1.0f), false);
+    t.apply(on(0, 60, 1), 1);
+    t.apply(on(0, 62, 2), 2);
+    t.apply(on(1, 64, 3), 3);
+    t.apply(on(1, 65, 4), 4);
+    t.apply(off(0, 62, 2), 5); // pedal-held
+    REQUIRE(t.notes()[1].state == State::PedalHeld);
+    t.beginGroup();
+    t.apply(choke(0, 60, 9), 6); // an unknown ID: ignored
+    CHECK(t.notes()[0].state == State::Held);
+    CHECK_FALSE(t.notes()[0].choked);
+    t.apply(choke(0, 60, 1), 7);
+    CHECK(t.notes()[0].state == State::Released);
+    CHECK(t.notes()[0].choked);
+    t.apply(choke(0, 62), 8); // the pedal-held note, by its pair
+    CHECK(t.notes()[1].state == State::Released);
+    CHECK(t.notes()[1].choked);
+    t.apply(choke(1, -1), 9); // a wildcard key: every note on channel 1
+    CHECK(t.notes()[2].choked);
+    CHECK(t.notes()[3].choked);
+    CHECK(keys(t).empty());
+    CHECK(t.releasedThisGroup().size() == 4);
+    // A released note can be choked too, which ends its tail.
+    t.apply(on(2, 70, 5), 10);
+    t.applyControl(ctl(ControlKind::Sustain, 0, 0.0f), false);
+    t.apply(off(2, 70, 5), 11);
+    REQUIRE(t.notes()[4].state == State::Released);
+    REQUIRE_FALSE(t.notes()[4].choked);
+    t.apply(choke(2, 70, 5), 12);
+    CHECK(t.notes()[4].choked);
+}
