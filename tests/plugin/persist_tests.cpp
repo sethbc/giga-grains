@@ -1819,6 +1819,9 @@ struct Mismatch
     float foundR{0.0f};
     float againL{0.0f};
     float againR{0.0f};
+    float comparedL{0.0f}; // what the compare itself held, before anything read the frame again
+    float comparedR{0.0f};
+    float comparedV{0.0f};
     float expected{0.0f};
     int64_t badFrames{0};
     int64_t lastBad{0};
@@ -2042,12 +2045,20 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
             continue;
         }
         int64_t first = -1;
+        float comparedL = 0.0f;
+        float comparedR = 0.0f;
+        float comparedV = 0.0f;
         for (int64_t f = 0; f < w.frames(); ++f)
         {
             const auto v = static_cast<float>((copy->oldest + f) % 1000000);
-            if (w.channel(0)[f] != v || w.channel(1)[f] != -v)
+            const float l = w.channel(0)[f];
+            const float r = w.channel(1)[f];
+            if (l != v || r != -v)
             {
                 first = f;
+                comparedL = l;
+                comparedR = r;
+                comparedV = v;
                 break;
             }
         }
@@ -2061,6 +2072,9 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
                 Mismatch &m = mismatch;
                 m.hasFrame = true;
                 m.frame = copy->oldest + first;
+                m.comparedL = comparedL;
+                m.comparedR = comparedR;
+                m.comparedV = comparedV;
                 m.foundL = w.channel(0)[first];
                 m.foundR = w.channel(1)[first];
                 m.expected = static_cast<float>(m.frame % 1000000);
@@ -2105,7 +2119,9 @@ TEST_CASE("the ring reader's copies match what the audio thread wrote", "[plugin
             firstBad << "; frame " << m.frame << " (index " << m.frame - m.oldest << "): found L "
                      << m.foundL << " R " << m.foundR << " (read again: L " << m.againL << " R "
                      << m.againR << "), expected L " << m.expected << "; bad frames in the copy "
-                     << m.badFrames << ", the last " << m.lastBad;
+                     << m.badFrames << ", the last " << m.lastBad << "; the compare held L "
+                     << std::hexfloat << m.comparedL << " R " << m.comparedR << " against v "
+                     << m.comparedV << std::defaultfloat;
         }
         firstBad << "; at that read: swaps " << m.swaps << ", adopted " << m.adopted << " ("
                  << m.adoptedFull << " of a full ring), an offer "

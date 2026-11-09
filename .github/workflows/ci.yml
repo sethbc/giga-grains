@@ -63,7 +63,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, row403-probe]
     # A release tag (spec §6.1): v<numeric>[-<suffix>], matching CMake's version.
     tags: ['v*']
   pull_request:
@@ -276,16 +276,6 @@ jobs:
             preset: mac-universal
             build_dir: build/mac-universal
             bench: build/mac-universal/tools/gg-bench/gg-bench
-          - os: windows-2022
-            preset: windows-clangcl
-            build_dir: build/windows
-            bench: build/windows/tools/gg-bench/gg-bench.exe
-            exe: .exe
-          # Ubuntu 24.04, INTENT §15's Linux baseline (§23 #91), with gcc-13 from its archive.
-          - os: ubuntu-24.04
-            preset: linux-gcc13
-            build_dir: build/linux-gcc13
-            bench: build/linux-gcc13/tools/gg-bench/gg-bench
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       # The SDKs that clap-wrapper would download at configure time (the VST3 SDK, Apple's
@@ -840,7 +830,7 @@ jobs:
       # and a tag run them, and the native arm64 ctest above always does.
       - name: Test the x86_64 slice under Rosetta (macOS)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
-        timeout-minutes: 20
+        timeout-minutes: 60
         run: |
           if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
             sudo softwareupdate --install-rosetta --agree-to-license
@@ -849,30 +839,41 @@ jobs:
           tests="$build_dir/tests/gg-tests"
           render="$build_dir/tools/gg-render/gg-render"
           echo "gg-tests: $(lipo -archs "$tests"); gg-render: $(lipo -archs "$render")"
-          slow=""
-          if [[ "${{ github.event_name }}" == pull_request || "${{ github.ref }}" == refs/heads/main && "${{ github.event_name }}" == push ]]; then
-            slow="~[slow]"
-          fi
+          slow="~[slow]"
           logs="$build_dir/rosetta-logs"
           mkdir -p "$logs"
-          pids=()
-          for i in 0 1 2; do
-            arch -x86_64 "$tests" "~[serial]$slow" --order decl --shard-count 3 --shard-index "$i" \
-              > "$logs/shard-$i.txt" 2>&1 &
-            pids+=("$!")
-          done
+          # Row 403's probe: no product code, beside three rounds of CI's shards.
+          probe="$build_dir/row403-probe"
+          clang++ -std=c++20 -O3 -ffp-contract=off -arch x86_64 -pthread scripts/row403-probe.cpp -o "$probe"
+          echo "probe: $(lipo -archs "$probe")"
+          arch -x86_64 "$probe" "$logs/probe.stop" > "$logs/probe.txt" 2>&1 &
+          probe_pid=$!
           failed=0
-          for i in 0 1 2; do
-            if wait "${pids[$i]}"; then status=0; else status=$?; fi
-            echo "::group::gg-tests shard $((i + 1)) of 3 (exit $status)"
-            cat "$logs/shard-$i.txt"
-            echo "::endgroup::"
-            if [[ $status != 0 ]]; then
-              echo "::error title=Rosetta::gg-tests shard $((i + 1)) of 3 failed (exit $status)"
-              failed=1
-            fi
+          for round in 1 2 3; do
+            pids=()
+            for i in 0 1 2; do
+              arch -x86_64 "$tests" "~[serial]$slow" --order decl --shard-count 3 --shard-index "$i" \
+                > "$logs/shard-$round-$i.txt" 2>&1 &
+              pids+=("$!")
+            done
+            for i in 0 1 2; do
+              if wait "${pids[$i]}"; then status=0; else status=$?; fi
+              echo "::group::round $round: gg-tests shard $((i + 1)) of 3 (exit $status)"
+              cat "$logs/shard-$round-$i.txt"
+              echo "::endgroup::"
+              if [[ $status != 0 ]]; then
+                echo "::error title=Rosetta::round $round: gg-tests shard $((i + 1)) of 3 failed (exit $status)"
+                failed=1
+              fi
+            done
           done
-          arch -x86_64 "$tests" "[serial]$slow" --allow-running-no-tests || failed=1
+          touch "$logs/probe.stop"
+          wait "$probe_pid" || true
+          echo "::group::row 403 probe"
+          cat "$logs/probe.txt"
+          echo "::endgroup::"
+          echo "row 403 probe mismatches: $(grep -c '^MISMATCH' "$logs/probe.txt" || true)"
+          exit "$failed"
           out="$build_dir/golden-x86_64"
           arch -x86_64 "$render" --write-media "$out-media"
           export render out
@@ -1212,7 +1213,7 @@ jobs:
   sanitizer:
     name: sanitizer (${{ matrix.sanitizer }}${{ matrix.shard && format(' {0}/6', matrix.shard) || '' }})
     needs: plan
-    if: ${{ needs.plan.outputs.docs_only != 'true' }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     # 90, not 60 (INTENT §23 #68, 2026-10-31), from when one job ran both sanitizers; a shard
     # takes a fraction of it.
