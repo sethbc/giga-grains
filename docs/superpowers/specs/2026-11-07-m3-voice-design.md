@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Built on `m3-voice` (draft PR #37), 2026-11-07, written overnight at the director's request. **The director approved** (2026-11-07, "3) approved") the calls put to him by name: V1, V2, V3, V4 and B10; V5, V6 and the rulings B1 to B9 stand as Claude's. Gain staging (voices sum without headroom) waits for sub-project 2 ("4) sounds fine"; carry-over) |
+| **Status** | Built on `m3-voice` (draft PR #37), 2026-11-07, written overnight at the director's request. **The director approved** (2026-11-07, "3) approved") the calls put to him by name: V1, V2, V3, V4 and B10; V5, V6 and the rulings B1 to B9 stand as Claude's. Gain staging, first deferred to sub-project 2 ("4) sounds fine"), was then asked for here and is built as V7 (voice headroom, `1 / sqrt(n)` per voice grain; row 411 closed) |
 | **Program** | `docs/superpowers/specs/2026-11-07-m3-program-design.md` (§4, §5, §8 row 1; its §2a P1 to P8) |
 | **Branch** | `m3-voice` (from `m3-program`) |
 | **Research** | the note path (`Processor`, `Engine`, `CloudScheduler`, `GrainPool`, `ModMatrix`, the plugin's events), clap-wrapper's MPE paths, sst-voicemanager (not used, P6); the notes are summarized where used |
@@ -208,6 +208,16 @@ voice tints and new presets (5); per-sample pitch glides inside a grain (later, 
 - **Pressure:** a note's poly aftertouch when it has had one, else its channel's pressure. With MPE
   On, the master channel's pressure isn't a note's (it stays the global Aftertouch source).
 - **Timbre:** its channel's CC 74 / 127 (MPE On: member channels; MPE Off: the note's channel).
+- **A releasing note keeps its expression under MPE** (the final review): with MPE On a member
+  channel's bend, pressure and timbre reach its held and pedal-held notes only, so a sender that
+  reuses the channel for a new note (resetting them first) doesn't move the voices still releasing
+  there. With MPE Off they reach released notes too: a keyboard's wheel still bends a release.
+- **A choke silences** (the final review): CLAP's NOTE_CHOKE is the core's `Choke`, addressed as a
+  note-off is (by ID, else channel and key, −1 any), but it ends every note it matches, held,
+  pedal-held or released, at its boundary, the pedal ignored. A Voice layer's voices for it stop
+  spawning there with no Env 1 release (their grains play out their windows, as a steal's), and
+  the note ends (`CLAP_EVENT_NOTE_END`); a note choked in its own group starts no voice. A Cloud
+  layer hears a note-off.
 - **CLAP note expressions** (Bitwig CLAP; VST3 through `clap_plugin_as_vst3`): matched by note ID,
   else by (channel, key); TUNING adds semitones; PRESSURE sets Pressure; BRIGHTNESS sets Timbre;
   VOLUME multiplies the voice's gain (CLAP's 0 to 4); PAN, VIBRATO and EXPRESSION are accepted and

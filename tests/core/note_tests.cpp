@@ -928,6 +928,7 @@ struct M2Held
             held[static_cast<size_t>(n.key)] |= static_cast<uint16_t>(1u << n.channel);
             break;
         case NoteEventType::Off:
+        case NoteEventType::Choke: // M2 had no Choke; the plugin sent a choke as an Off
         {
             const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
             if (n.key < 0)
