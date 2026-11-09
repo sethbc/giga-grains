@@ -166,7 +166,7 @@ gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *
 /// std::invalid_argument for a name parseRenderSpec never lets through.
 gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<RouteSpec> &mod);
 
-/// gg-render's exit statuses (CLAUDE.md, "Golden renders").
+/// gg-render's exit statuses (AGENTS.md, "Golden renders").
 inline constexpr int kExitPass = 0;
 inline constexpr int kExitCompareFailed = 1;
 inline constexpr int kExitBadInput = 2;

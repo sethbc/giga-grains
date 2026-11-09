@@ -650,7 +650,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     const auto frames = static_cast<std::size_t>(framesFor(spec.durationSeconds, spec.sampleRate));
     namespace fs = std::filesystem;
     // Read first, so a bad preset fails before anything is made. A plain value, not one built in
-    // a ternary or a std::optional (GCC 13's -Wmaybe-uninitialized; CLAUDE.md).
+    // a ternary or a std::optional (GCC 13's -Wmaybe-uninitialized; AGENTS.md).
     const bool hasPreset = !spec.preset.empty();
     gg::core::SessionState preset;
     if (hasPreset)

@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Guidance for Claude Code sessions working in this repository.
+Guidance for agent sessions working in this repository.
 
 ## Start here
 
@@ -127,6 +127,27 @@ resource, so machines must catch everything they can catch.
   our control (upstream, the director's ears, a later feature) are listed in the sub-project's final
   report and recorded in that file as a plain log, with no count rules. A row stays until the thing
   it names is done; nothing is filed upstream.
+- **The superpowers workflows** (the director, 2026-11-08; INTENT §23 #95). All work runs through
+  them, resumed work included. Invoke each as a skill; following its idea without invoking it
+  doesn't count:
+  - `brainstorming` before any new spec or design change. It needs the director's answers, so the
+    controller runs it with them. It is never handed to a spec agent or replaced by provisional
+    calls, even when the director is away: work that hasn't been through it waits. A provisional
+    call only settles what an approved spec and plan leave open;
+  - `using-git-worktrees` before any implementation, then `scripts/worktree-setup.sh` as its project
+    setup;
+  - `writing-plans` for every plan and plan amendment;
+  - `subagent-driven-development` for every build, resuming from its ledger;
+  - `test-driven-development` in every implementer's dispatch, for any change to code or behavior,
+    with the RED and GREEN evidence in its report;
+  - `requesting-code-review` after each task and on the whole branch (through subagent-driven
+    development) and directly for a change outside a plan;
+  - `finishing-a-development-branch` last on every branch. The standing answer to its menu is a
+    draft pull request to `main`; merging stays with the controller.
+- **Worktrees stay out of the director's source directory** (the director, 2026-11-08): never a
+  top-level folder in `~/src`. Use the native tool's `.claude/worktrees/` inside the repository, or
+  on the Linux box `~/.local/share/giga-grains/worktrees/`. A tree that moves needs its `build/`
+  deleted and configured again, since the build tree holds absolute paths.
 - **Models** (the director, 2026-10-30): no Fable, ever. Name `model` on every dispatch. Where
   superpowers' Model Selection says "the most capable model", use opus; otherwise haiku for
   mechanical work and sonnet for integration and as the reviewer floor.
@@ -230,7 +251,7 @@ versions in the step summary.
 
 **The required checks** (INTENT §23 #77). `main`'s ruleset requires two: `ci-ok` and
 `clang-format`. `ci-ok` passes only when `plan`, every build leg and every sanitizer job passed. A
-pull request whose every changed file is under `docs/`, or is `INTENT.md` or `CLAUDE.md`, is
+pull request whose every changed file is under `docs/`, or is `INTENT.md` or `AGENTS.md`, is
 documents only: `plan` says so, the build legs and the sanitizers skip, and `ci-ok` passes on the
 skip in about a minute. Any other Markdown file counts as code (`THIRD_PARTY_NOTICES.md` is
 embedded in the editor, the content and installer READMEs are staged into the products, and the
@@ -497,7 +518,7 @@ runs the tests labeled either. The labels are:
 - `smoke`;
 - `build`: checks of the build system itself: the `asio_guard_*` tests, run on scratch CMake
   projects (`cmake/AsioGuard.cmake`), and `gg-tests`' "the build is C++23" (also `smoke`);
-- `scripts`: `check.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
+- `scripts`: `check.sh`, `check-at-rest.sh` and `worktree-setup.sh`, in scratch trees with stub `cmake` and `ctest`
   and in scratch git repositories, and the release scripts in `scripts/release/`
   (`tests/scripts/release_scripts_tests.sh`: the tag check, the source tarball and the signing
   keychain, whose checks put a scratch keychain in your search list for a moment and restore
@@ -991,6 +1012,15 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     and after, and say in the commit that every hash matches: the goldens' metrics allow 0.5 dB,
     and the event log holds only the grains, so a small gain error after them passes the goldens
     (INTENT §19).
+- **The at-rest check, `scripts/check-at-rest.sh <worktree>`** (INTENT §23 #95) proves a feature
+  at rest moves nothing: it runs `update-goldens.sh` in `<worktree>/build/dev`, restores the
+  expected files of the baseline's cases, and compares each case's WAV SHA-256 with
+  `tests/golden/at-rest/linux-x86_64-dev.sha256`, the 108 cases as M2 left them.
+  - Its last line is `baseline cases: 108, changed: 0, gone: 0`; it exits 0 only if nothing changed
+    or went, 1 otherwise, and 2 for bad usage or a platform it has no baseline for.
+  - WAVs match only on one platform and build type, so it refuses anything but Linux x86_64 and
+    compares only a `dev` build. Run it where the baseline was made.
+  - It rewrites the expected files while it runs, so stage files by name.
 - Look at every spectrogram before committing new goldens, and say in the commit message why they
   changed.
 
