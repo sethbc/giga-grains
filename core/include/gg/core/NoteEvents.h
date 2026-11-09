@@ -19,6 +19,10 @@ enum class NoteEventType : uint8_t
     Off,    ///< Releases the held pairs that channel and key match; −1 matches any.
     AllOff, ///< Releases every key held on its channel, as MIDI CC 123 does (ruling R14); −1
             ///< releases everything. The key is ignored.
+    Choke,  ///< CLAP's NOTE_CHOKE: ends the notes it addresses at once, as Off addresses them
+            ///< (by ID, else channel and key, −1 any) but held, pedal-held or released, the
+            ///< pedal ignored. A Voice layer finishes their voices at its boundary with no
+            ///< Env 1 release (their grains play out, as a steal); a Cloud layer hears an Off.
 };
 
 /// A note event inside one process() call (spec §6.1). The grains ignore velocity (D6); an On's
@@ -36,7 +40,7 @@ struct NoteEvent
     /// with an ID >= 0 releases the note with that ID (its channel and key are not read), and
     /// is ignored when none is held. An Off without one releases by (channel, key).
     int32_t noteId{-1};
-    /// Off only: 0..1. Clamped to it; NaN counts as 0.
+    /// Off only: 0..1. Clamped to it; NaN counts as 0. (A Choke's is read as 0.)
     float releaseVelocity{0.0f};
 };
 
