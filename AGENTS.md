@@ -1014,14 +1014,16 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     (INTENT §19).
 - **The at-rest check, `scripts/check-at-rest.sh <worktree>`** (INTENT §23 #95) proves a feature
   at rest moves nothing: it runs `update-goldens.sh` in `<worktree>/build/dev`, restores the
-  expected files of the baseline's cases, and compares each case's WAV SHA-256 with
-  `tests/golden/at-rest/linux-x86_64-dev.sha256`, the 108 cases as M2 left them.
+  expected files of the baseline's cases, and compares each case's WAV SHA-256 with this platform's
+  baseline in `tests/golden/at-rest/`: the 108 cases as M2 left them.
   - Its last line is `baseline cases: 108, changed: 0, gone: 0`; it exits 0 only if nothing changed
-    or went, 1 when something did or the renders failed, and 2 for a refusal: bad usage, another
-    platform, no baseline or `build/dev`, or an uncommitted edit of a baseline case's expected file
+    or went, 1 when something did or the renders failed, and 2 for a refusal: bad usage, no baseline
+    for this platform, no `build/dev`, or an uncommitted edit of a baseline case's expected file
     (which it would otherwise discard).
-  - WAVs match only on one platform and build type, so it refuses anything but Linux x86_64 and
-    compares only a `dev` build. Run it where the baseline was made.
+  - **One baseline per platform,** named `<os>-<arch>-dev.sha256` (`linux-x86_64-dev` so far),
+    because a WAV's exact bytes differ between platforms, and always from a `dev` build. A different
+    compiler may need its own too. To add one, run `scripts/update-goldens.sh build/dev` at a commit
+    whose audio is known to be right and commit `build/dev/golden/wav-sha256.txt` under that name.
   - Newer cases' expected files are rewritten and stay so, so stage files by name.
 - Look at every spectrogram before committing new goldens, and say in the commit message why they
   changed.

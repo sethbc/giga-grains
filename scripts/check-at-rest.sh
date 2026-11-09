@@ -9,16 +9,18 @@
 #
 # It runs scripts/update-goldens.sh in <worktree>/build/dev, restores the committed expected files
 # of the baseline's cases (this machine's metrics may differ in the last digits; a newer case keeps
-# its render), and compares each case's WAV SHA-256 with
-# <worktree>/tests/golden/at-rest/linux-x86_64-dev.sha256. WAVs match only on one platform and
-# build type, so it refuses any platform but Linux x86_64.
+# its render), and compares each case's WAV SHA-256 with this platform's baseline,
+# <worktree>/tests/golden/at-rest/<os>-<arch>-dev.sha256 (linux-x86_64-dev, say). A WAV's exact
+# bytes differ between platforms, so each platform has its own file. To add one, run
+# scripts/update-goldens.sh build/dev in a dev build at a commit whose audio is known to be right
+# and commit build/dev/golden/wav-sha256.txt as that file.
 #
 # Because it restores those files, it refuses to run over an uncommitted edit of one. Newer cases'
 # expected files are rewritten and stay so, so stage files by name.
 #
 # The last line is "baseline cases: N, changed: C, gone: G". Exit status: 0 when nothing changed
-# or went, 1 when something did or the renders failed, 2 for bad usage, an unsupported platform, a
-# missing baseline or build tree, or an uncommitted edit of a baseline case's expected file.
+# or went, 1 when something did or the renders failed, 2 for bad usage, no baseline for this
+# platform, no build tree, or an uncommitted edit of a baseline case's expected file.
 
 set -euo pipefail
 
@@ -26,15 +28,12 @@ if (($# != 1)); then
     echo "usage: $0 <worktree>" >&2
     exit 2
 fi
-if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
-    echo "check-at-rest: only the linux-x86_64-dev baseline exists; this is" \
-        "$(uname -s) $(uname -m)" >&2
-    exit 2
-fi
 cd "$1"
-base=tests/golden/at-rest/linux-x86_64-dev.sha256
+base="tests/golden/at-rest/$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)-dev.sha256"
 if [[ ! -f "$base" ]]; then
-    echo "check-at-rest: no baseline at $base" >&2
+    echo "check-at-rest: this platform has no baseline yet ($base). To add one, run" \
+        "scripts/update-goldens.sh build/dev at a commit whose audio is known to be right," \
+        "then commit build/dev/golden/wav-sha256.txt as that file." >&2
     exit 2
 fi
 if [[ ! -d build/dev ]]; then

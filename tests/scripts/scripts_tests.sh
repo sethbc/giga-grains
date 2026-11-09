@@ -27,7 +27,8 @@
 # the media folder, their hashes listed as presets/<case> beside the others.
 # check-at-rest.sh runs against a scratch git repository with a stub update-goldens.sh and a stub
 # uname: nothing changed, a changed and a gone case, the expected files it restores and the newer
-# case's it leaves, a failed render, and the refusals (usage, platform, no baseline, no build tree).
+# case's it leaves, a failed render, the baseline chosen by platform, and the refusals (usage, no
+# baseline for the platform, no build tree, an uncommitted edit of a baseline case).
 # fetch-content.cmake fetches a scratch zip with the content release's layout by a file:// URL:
 # it extracts it and writes .gg-pin, a second run is "already at" the pin, a pin with the wrong
 # hash fails and leaves no zip, a stale .gg-pin is fetched over, and -DCHECK passes a matching
@@ -449,12 +450,31 @@ expect_in "check-at-rest, no worktree: usage" "$out" "usage:"
 
 rm -f "$at/build/dev/update-goldens-arg"
 FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 run_at_rest "$at"
-check "check-at-rest refuses macOS: exit 2" "$(((status == 2) ? 0 : 1))"
-expect_in "check-at-rest says which baseline it has" "$out" "linux-x86_64-dev"
+check "check-at-rest, a platform with no baseline: exit 2" "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest names the missing platform's baseline" "$out" \
+    "tests/golden/at-rest/darwin-arm64-dev.sha256"
+expect_in "check-at-rest says how to make a baseline" "$out" "build/dev/golden/wav-sha256.txt"
 FAKE_UNAME_M=aarch64 run_at_rest "$at"
-check "check-at-rest refuses Linux on another CPU: exit 2" "$(((status == 2) ? 0 : 1))"
-check "check-at-rest renders nothing when it refuses" \
+check "check-at-rest, Linux on another CPU has its own baseline: exit 2" \
+    "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest keys the baseline by CPU too" "$out" "linux-aarch64-dev"
+check "check-at-rest renders nothing without a baseline" \
     "$([[ ! -e "$at/build/dev/update-goldens-arg" ]] && echo 0 || echo 1)"
+
+# A second platform's baseline, whose hashes are not Linux's: the run on that platform uses it.
+echo "mmm a" >"$at/tests/golden/at-rest/darwin-arm64-dev.sha256"
+at_hashes "mmm a" "bbb b" "ppp presets/p"
+FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 run_at_rest "$at"
+check "check-at-rest uses this platform's baseline: exit 0" "$status"
+check "check-at-rest counts this platform's baseline" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 1, changed: 0, gone: 0" ]] && echo 0 || echo 1)"
+git -C "$at" checkout -q -- tests/golden
+run_at_rest "$at"
+check "check-at-rest on Linux ignores another platform's baseline: exit 1" \
+    "$(((status == 1) ? 0 : 1))"
+expect_in "check-at-rest on Linux compares Linux's hashes" "$out" "CHANGED a"
+rm "$at/tests/golden/at-rest/darwin-arm64-dev.sha256"
+git -C "$at" checkout -q -- tests/golden
 
 mv "$at/build" "$work/at-build"
 run_at_rest "$at"
