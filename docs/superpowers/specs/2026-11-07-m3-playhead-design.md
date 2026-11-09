@@ -42,8 +42,8 @@ and its event log byte for byte.
 - the records: INTENT §14, §17, §18, §20 and a §23 row; the program design's §8 row (§6).
 
 **Out:**
-- tempo-locked speed (Scan Speed in beats) and a restart at the host's transport start: **M4's**,
-  with the Sync scheduler and the synced modulator rates (H13);
+- tempo-locked speed (Scan Speed in beats) and a lock to the host's transport: **sub-project 7's
+  (Scan Sync)**, in M3 (H13);
 - scan loop points inside a sample (a start and a length narrowing the window): later, if ears ask;
   a Live ring's Loop and splices already narrow its window (§4.3);
 - reversed grains (a grain reading backward): another feature. A grain reads forward at its own
@@ -57,7 +57,7 @@ and its event log byte for byte.
 - **H0. The playhead is a new M3 sub-project, 3b, run in parallel with 2 to 5.** It amends the
   approved program design (§8 gains a row, §20's M3 row names it) with a §23 row. It belongs to M3
   because it is how a Voice layer is played. *Declined:* folding it into sub-project 2 (already the
-  largest; a separate branch merges sooner); deferring it to M4 with tempo sync (M3's instrument
+  largest; a separate branch merges sooner); deferring it to M4, tempo sync's home when this was written (M3's instrument
   would close unable to play through a sample).
 
 - **H1. Scan Speed is an offset in source time added to Position, at s seconds of source per
@@ -104,7 +104,7 @@ and its event log byte for byte.
   Position; with no notes the FX's playhead runs free from activation. *Declined:* a free-running
   Cloud playhead in the instrument (where a phrase starts would depend on when it was played); a
   restart at every note-on in Cloud (a chord, or a trill, would restart it every note); a restart at
-  the transport's start (M4's, H13).
+  the transport's start (sub-project 7's Scan Sync, H13).
 
 - **H5. The playhead is exactly accumulated, piecewise linear in the sample clock.** Its offset at a
   grain's onset t (in output samples, with its fraction) is `x(t) = x0 + r × (t − τ0)`: r is the
@@ -169,9 +169,11 @@ and its event log byte for byte.
   new list after `GG_LAYER_PARAMS_M2_EXTREMES`; 0x6B to 0x6F stay unused. **No global parameter**:
   the agreed global range 0x40 to 0x47 stays unused.
 
-- **H13. Tempo-locked speed is M4's.** M4's Sync work gives Scan Speed a synced form (a beat length
-  per pass over the window) and the restart at the transport's start, beside the synced modulator
-  and delay rates. Nothing here precludes either: the rate is one number per stream.
+- **H13. Tempo-locked speed is sub-project 7's (Scan Sync), in M3.** Amended by the director's
+  review of 2026-11-09: this call first gave it to M4, and the director has since moved tempo sync
+  into M3. Sub-project 7 gives Scan Speed a synced form (a beat length per pass over the window)
+  and the lock to the transport, beside the synced modulator and delay rates. Nothing here
+  precludes either: the rate is one number per stream.
 
 ## 3a. The builder check's rulings (Claude's, binding on the plan)
 
@@ -422,10 +424,11 @@ A new Catch2 tag `[playhead]` (the CTest label `playhead`), listed in CLAUDE.md'
 - **§17** (UI): the Edit view's placement of the three.
 - **§18** (state): the three parameters, saved with the patch and set by a preset load; the running
   offsets not saved; no patch-version bump.
-- **§20** (the roadmap): M3's row names sub-project 3b; **M4's row** gains tempo-locked Scan Speed
-  and the transport-start restart (H13).
+- **§20** (the roadmap): M3's row names sub-project 3b, and says tempo-locked Scan Speed and the
+  lock to the transport are sub-project 7's Scan Sync (H13); M4's row doesn't change.
 - **§23:** one row for this sub-project (the next free number at merge; #97 on this branch), with
-  H0 to H13 marked provisional.
+  H0 to H13 recorded as Claude's calls, confirmed by the director's review of 2026-11-09 (H13 as
+  amended there).
 - The program design's §8 gains row 3b and §10 its open items (none left: this spec settles them).
 - CLAUDE.md: the parameter and golden counts, the `playhead` label, the new `gg-render` names.
 
