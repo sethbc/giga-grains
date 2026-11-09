@@ -498,6 +498,44 @@ add_test(NAME render_capture_over_cap
         "-DEXPECTED_STDERR2=over the memory cap: needs 32 MB, 10 MB free of 64 MB"
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
 set_tests_properties(render_capture_over_cap PROPERTIES LABELS render)
+# The tuning key (M3 tuning spec §5.5): a spec's own tuning that tuning-library refuses is bad input
+# (exit 2, with its message); a missing file is bad input naming the path; --save-state writes the
+# TUNE chunk (names empty for inline text); and a state whose TUNE the build can't parse only
+# warns (A10): a 12-TET render, exit 0.
+set(GG_RENDER_FIXTURES ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/render)
+foreach (case IN ITEMS
+        "bad_scl|render-tuning-bad-scl.json|Invalid SCL note count."
+        "kbm_misfit|render-tuning-kbm-misfit.json|Unable to apply mapping of size 7"
+        "missing_file|render-tuning-missing-file.json|no-such-tuning.scl")
+    string(REPLACE "|" ";" case_parts "${case}")
+    list(GET case_parts 0 case_name)
+    list(GET case_parts 1 case_spec)
+    list(GET case_parts 2 case_message)
+    add_test(NAME render_tuning_${case_name}
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+            "-DARGS=${GG_RENDER_FIXTURES}/${case_spec};-o;${CMAKE_CURRENT_BINARY_DIR}/render-tuning-${case_name}.wav"
+            -DEXPECTED_CODE=2 "-DEXPECTED_STDERR=gg-render: "
+            "-DEXPECTED_STDERR2=${case_message}"
+            -DABSENT=${CMAKE_CURRENT_BINARY_DIR}/render-tuning-${case_name}.wav
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+    set_tests_properties(render_tuning_${case_name} PROPERTIES LABELS render)
+endforeach ()
+add_test(NAME render_tuning_save_state
+        COMMAND ${CMAKE_COMMAND} -DGG_RENDER=$<TARGET_FILE:gg-render>
+        -DFIXTURES=${GG_RENDER_FIXTURES}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/render-tuning-save-state
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/render_tuning_save_state.cmake)
+set_tests_properties(render_tuning_save_state PROPERTIES LABELS render)
+# bad-tuning.ggst is a --save-state of render-tuning-save-state.json with its scale's note count
+# (" 19") changed to " 99" (fixtures/render/README.md).
+set(render_tuning_bad_state_args ${GG_RENDER_FIXTURES}/render-tuning-bad-state.json
+        -o ${CMAKE_CURRENT_BINARY_DIR}/render-tuning-bad-state.wav)
+add_test(NAME render_tuning_bad_state_warns
+        COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:gg-render>
+        "-DARGS=${render_tuning_bad_state_args}" -DEXPECTED_CODE=0
+        "-DEXPECTED_STDERR=gg-render: warning: the state's tuning didn't load: "
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-exit-code.cmake)
+set_tests_properties(render_tuning_bad_state_warns PROPERTIES LABELS render)
 # --pack-preset takes only -o and --content-dir: another option is refused (exit 2); and a source
 # that doesn't parse (here a render spec) is bad input, with the parser's message.
 add_test(NAME render_pack_preset_alone

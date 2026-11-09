@@ -29,6 +29,7 @@
 #include "gg/core/PresetInfo.h"
 #include "gg/core/Processor.h"
 #include "gg/core/SessionState.h"
+#include "gg/core/Tuning.h"
 #include "gg/engine/Engine.h"
 #include "gg/media/ContentPaths.h"
 #include "gg/media/Decode.h"
@@ -367,6 +368,71 @@ gg::core::ModRoutes routesWith(gg::core::ModRoutes routes, const std::vector<Rou
     return routes;
 }
 
+gg::core::TuningFiles resolveTuningSpec(const TuningSpec &spec,
+                                        const std::filesystem::path &specDir,
+                                        const std::optional<std::filesystem::path> &mediaDir)
+{
+    namespace fs = std::filesystem;
+    const fs::path base = mediaDir ? *mediaDir : specDir;
+    const auto fromFile = [&](const std::string &written, std::string &bytes, std::string &name) {
+        fs::path path = pathFromUtf8(written);
+        if (path.is_relative() && !base.empty())
+        {
+            path = base / path;
+        }
+        const std::string shown = utf8FromPath(path);
+        std::error_code ec;
+        const auto size = fs::file_size(path, ec);
+        std::ifstream in(path, std::ios::binary);
+        if (ec || !in)
+        {
+            throw BadInput(fmt::format("can't read the tuning file {}", shown));
+        }
+        if (size > gg::core::kMaxTuningTextBytes)
+        {
+            throw BadInput(fmt::format("the tuning file {} is over {} KiB", shown,
+                                       gg::core::kMaxTuningTextBytes >> 10));
+        }
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (in.bad())
+        {
+            throw BadInput(fmt::format("can't read the tuning file {}", shown));
+        }
+        name = utf8FromPath(path.filename());
+        if (name.size() > gg::core::kMaxTuningNameBytes)
+        {
+            throw BadInput(fmt::format("the tuning file's name {} is over {} bytes", name,
+                                       gg::core::kMaxTuningNameBytes));
+        }
+    };
+    const auto inlineText = [](const std::string &text, std::string &bytes, const char *what) {
+        if (text.size() > gg::core::kMaxTuningTextBytes)
+        {
+            throw BadInput(fmt::format("the tuning's {} text is over {} KiB", what,
+                                       gg::core::kMaxTuningTextBytes >> 10));
+        }
+        bytes = text;
+    };
+    gg::core::TuningFiles files;
+    if (spec.sclFile)
+    {
+        fromFile(*spec.sclFile, files.scl, files.sclName);
+    }
+    else if (spec.sclText)
+    {
+        inlineText(*spec.sclText, files.scl, "scl");
+    }
+    if (spec.kbmFile)
+    {
+        fromFile(*spec.kbmFile, files.kbm, files.kbmName);
+    }
+    else if (spec.kbmText)
+    {
+        inlineText(*spec.kbmText, files.kbm, "kbm");
+    }
+    return files;
+}
+
 namespace
 {
 /// The state of the preset file at `path` (RenderSpec::preset), for `mode`'s product. Throws
@@ -417,6 +483,25 @@ gg::core::SessionState readPresetFile(const std::string &path, gg::core::Mode mo
             fmt::format("the preset {} names a ring, which a preset never carries", path));
     }
     return state;
+}
+
+/// The warning for a state's or a preset's TUNE that tuningFromScala refuses (the tuning spec's
+/// A10), and the table of the render's tuning: `files`' when they load, else 12-TET.
+gg::core::TuningTable tableOfFiles(const gg::core::TuningFiles &files, const char *whose,
+                                   bool warnOnly)
+{
+    auto table = gg::core::tuningFromScala(files.scl, files.kbm);
+    if (table)
+    {
+        return *table;
+    }
+    if (!warnOnly)
+    {
+        throw BadInput(fmt::format("tuning: {}", table.error()));
+    }
+    fmt::print(stderr, "gg-render: warning: the {}'s tuning didn't load: {}\n", whose,
+               table.error());
+    return gg::core::TuningTable::twelveTet();
 }
 
 /// The ring operations as events at absolute frames: the commands in the spec's (time) order, and
@@ -536,7 +621,8 @@ std::shared_ptr<gg::SampleBuffer> ringBuffer(const gg::core::Processor &processo
 void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, uint32_t capMiB,
                  const std::array<std::optional<gg::core::MediaEntry>, gg::core::kLayers> &entries,
                  const std::array<std::shared_ptr<gg::SampleBuffer>, gg::core::kLayers> &captured,
-                 const RenderOptions &options)
+                 const std::optional<gg::core::TuningFiles> &tuning,
+                 const std::optional<std::string> &newerTuning, const RenderOptions &options)
 {
     namespace fs = std::filesystem;
     gg::core::SessionState state;
@@ -547,6 +633,13 @@ void saveSession(const gg::core::Processor &processor, const RenderSpec &spec, u
     state.seed = spec.seed;
     state.routes = processor.routes();
     state.memoryCapMiB = capMiB;
+    // TUNE: the tuning in effect, or a newer build's payload as the state came (encodeState writes
+    // one or the other).
+    state.tuning = tuning;
+    if (!tuning)
+    {
+        state.newerTuning = newerTuning;
+    }
 
     // The embed rule: layer by layer, a ring before a capture, embedded while the audio together
     // stays within the cap, else filed in the captures folder under its fingerprint.
@@ -658,6 +751,7 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     const auto &statePath = fx ? spec.fx.statePath : spec.instrument.statePath;
     const auto &operations = fx ? spec.fx.operations : spec.instrument.operations;
     const auto &memoryCapMiB = fx ? spec.fx.memoryCapMiB : spec.instrument.memoryCapMiB;
+    const auto &tuning = fx ? spec.fx.tuning : spec.instrument.tuning;
     const auto frames = static_cast<std::size_t>(framesFor(spec.durationSeconds, spec.sampleRate));
     namespace fs = std::filesystem;
     // Read first, so a bad preset fails before anything is made. A plain value, not one built in
@@ -743,6 +837,38 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
         }
         gg::core::keepRingParams(defaults, preset.values);
         processor.setBases(preset.values);
+    }
+
+    // The tuning (M3 tuning spec §5.5): the state's, then the preset's, then the spec's own, each
+    // replacing the one before, set before the first block. A state's or a preset's that the build
+    // can't load is a warning and 12-TET (A10); the spec's own is bad input.
+    std::optional<gg::core::TuningFiles> tuningFiles;
+    std::optional<std::string> newerTuning;
+    std::optional<gg::core::TuningTable> tuningTable;
+    if (session)
+    {
+        tuningFiles = session->tuning;
+        newerTuning = session->newerTuning;
+        if (tuningFiles)
+        {
+            tuningTable = tableOfFiles(*tuningFiles, "state", true);
+        }
+    }
+    if (hasPreset && preset.tuning)
+    {
+        tuningFiles = preset.tuning;
+        newerTuning.reset();
+        tuningTable = tableOfFiles(*tuningFiles, "preset", true);
+    }
+    if (tuning)
+    {
+        tuningFiles = resolveTuningSpec(*tuning, {}, std::nullopt);
+        newerTuning.reset();
+        tuningTable = tableOfFiles(*tuningFiles, "spec", false);
+    }
+    if (tuningTable)
+    {
+        processor.setTuning(*tuningTable);
     }
 
     // What each layer's source costs the cap, and what a save needs to write it.
@@ -1189,7 +1315,8 @@ gg::metrics::AudioData renderProcessor(const RenderSpec &spec, std::vector<std::
     }
     if (saving)
     {
-        saveSession(processor, spec, capMiB, sampleEntries, captured, options);
+        saveSession(processor, spec, capMiB, sampleEntries, captured, tuningFiles, newerTuning,
+                    options);
     }
     if (report != nullptr)
     {

@@ -326,7 +326,8 @@ int run(int argc, char **argv)
         {
             contentRoot = pathFromUtf8(contentDir);
         }
-        const std::string bytes = gg::render::packPreset(*source, contentRoot, error);
+        const std::string bytes = gg::render::packPreset(
+            *source, contentRoot, error, pathFromUtf8(packSourcePath).parent_path());
         if (bytes.empty())
         {
             return fail(fmt::format("{}: {}", packSourcePath, error));

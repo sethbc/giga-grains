@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "gg/core/ModMatrix.h"
 #include "gg/core/NoteEvents.h"
 #include "gg/core/EnableFault.h"
+#include "gg/core/SessionState.h"
 #include "gg/grain/GrainPool.h"
 #include "gg/metrics/AudioData.h"
 
@@ -163,6 +166,17 @@ using RenderReport = gg::core::FaultCounts;
 /// `report`, when not null, receives what the render saw beside its audio (RenderReport).
 gg::metrics::AudioData render(const RenderSpec &spec, std::vector<std::string> *eventLines,
                               const RenderOptions &options = {}, RenderReport *report = nullptr);
+
+/// The files of a spec's `tuning` (TuningSpec), as TUNE keeps them: each inline text as it is, with
+/// an empty name, and each file's bytes with its path's last component as the name. A relative
+/// file is `mediaDir`'s when that is given, else `specDir`'s (an absolute one is as it is; the
+/// render's own paths are already resolved by resolvePaths, so it passes empty ones). Throws
+/// BadInput, naming the file, for a file that is missing, unreadable or over
+/// gg::core::kMaxTuningTextBytes, a text over it, or a name over gg::core::kMaxTuningNameBytes.
+/// It does not parse the texts (gg::core::tuningFromScala does).
+gg::core::TuningFiles resolveTuningSpec(const TuningSpec &spec,
+                                        const std::filesystem::path &specDir,
+                                        const std::optional<std::filesystem::path> &mediaDir);
 
 /// The routes in effect for a render: `routes` (the factory routes, or a preset's) with each of
 /// the spec's routes (`mod`) set in its slot, a "None" route clearing it. Throws

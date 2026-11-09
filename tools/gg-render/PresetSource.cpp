@@ -20,6 +20,7 @@
 #include "gg/core/Preset.h"
 #include "gg/core/PresetInfo.h"
 #include "gg/core/SessionState.h"
+#include "gg/core/Tuning.h"
 #include "gg/media/ContentPaths.h"
 #include "gg/media/Sample.h"
 
@@ -84,7 +85,7 @@ PresetSource readSource(const json &j)
 {
     const Object o(
         j, "the preset source", "",
-        {"product", "name", "author", "description", "tags", "params", "mod", "samples"});
+        {"product", "name", "author", "description", "tags", "params", "mod", "samples", "tuning"});
     PresetSource source;
     const auto product = gg::core::modeNamed(o.string("product"));
     if (!product)
@@ -144,6 +145,10 @@ PresetSource readSource(const json &j)
     {
         source.samples = readSamplePaths(o.member("samples"));
     }
+    if (o.has("tuning"))
+    {
+        source.tuning = readTuning(o.member("tuning"));
+    }
     return source;
 }
 } // namespace
@@ -167,7 +172,8 @@ std::optional<PresetSource> parsePresetSource(const std::string &text, std::stri
 }
 
 std::string packPreset(const PresetSource &source,
-                       const std::optional<std::filesystem::path> &contentDir, std::string &error)
+                       const std::optional<std::filesystem::path> &contentDir, std::string &error,
+                       const std::filesystem::path &sourceDir)
 {
     error.clear();
     const gg::core::Mode mode = source.info.product;
@@ -189,6 +195,27 @@ std::string packPreset(const PresetSource &source,
     {
         error = e.what();
         return {};
+    }
+    // The tuning's texts, as TUNE keeps them; tuning-library must accept the pair (a preset that
+    // never loads is no preset).
+    if (source.tuning)
+    {
+        try
+        {
+            gg::core::TuningFiles files =
+                resolveTuningSpec(*source.tuning, sourceDir, std::nullopt);
+            if (const auto table = gg::core::tuningFromScala(files.scl, files.kbm); !table)
+            {
+                error = fmt::format("tuning: {}", table.error());
+                return {};
+            }
+            state.tuning = std::move(files);
+        }
+        catch (const BadInput &e)
+        {
+            error = e.what();
+            return {};
+        }
     }
     // Each sample by its content-relative reference (MEDI version 2's, spec §6.6, §6.12): the
     // file under contentDir, checked and read for its fingerprint, format, channels, rate and
