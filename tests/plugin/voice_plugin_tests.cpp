@@ -632,3 +632,43 @@ TEST_CASE("plugin_note_end_on_eviction", "[plugin][voice][notes]")
     ends.insert(ends.end(), last.begin(), last.end());
     CHECK(ends == std::vector<End>{{100, 0, 0}});
 }
+
+TEST_CASE("plugin_note_choke_silences", "[plugin][voice][notes]")
+{
+    // A CLAP NOTE_CHOKE silences: on a Voice layer the choked note's voice stops spawning at the
+    // choke's boundary, with no Env 1 release, and its NOTE_END comes in the choke's own call;
+    // a note-off there would release over 200 ms (18 blocks). A Cloud layer hears an off, which
+    // ends the note in that call too. By ID and by (channel, key).
+    const bool voice = GENERATE(true, false);
+    const bool byId = GENERATE(true, false);
+    CAPTURE(voice, byId);
+    PluginUnderTest plugin(kInstrumentId);
+    GrainLog log;
+    setUpInstrument(plugin, log, "voice-choke", voice);
+    const auto on = note(CLAP_EVENT_NOTE_ON, 3, 64, 42);
+    run(plugin, {&on.header});
+    run(plugin, {});
+    REQUIRE(heldKeys(plugin) == std::vector<int>{64});
+    const auto choke =
+        byId ? note(CLAP_EVENT_NOTE_CHOKE, -1, -1, 42) : note(CLAP_EVENT_NOTE_CHOKE, 3, 64, -1);
+    OutputEvents out;
+    run(plugin, {&choke.header}, &out);
+    CHECK(endsIn(out) == std::vector<End>{{42, 3, 64}});
+    CHECK(heldKeys(plugin).empty());
+    if (voice)
+    {
+        REQUIRE(log.any(0));
+        CHECK(log.last(0)->onsetSample < 2 * kBlock);
+        CHECK_FALSE(plugin.impl().processor()->voicesSounding());
+    }
+    for (int k = 0; k < 20; ++k)
+    {
+        out.clear();
+        run(plugin, {}, &out);
+        CHECK(endsIn(out).empty());
+    }
+    if (voice)
+    {
+        CHECK(log.last(0)->onsetSample < 2 * kBlock);
+    }
+}
