@@ -13,6 +13,7 @@
 #include <sst/cpputils/rtsan_support.h>
 
 #include "gg/core/Window.h"
+#include "gg/grain/AmpEnvelope.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/CloudScheduler.h"
 #include "gg/grain/GrainPool.h"
@@ -68,6 +69,21 @@ struct EngineConfig
     KernelChoice kernels{KernelChoice::Auto};
 };
 
+/// The most voice streams one layer's engine runs beside its Cloud stream (M3 Voice spec §4.3).
+inline constexpr uint32_t kMaxVoices = 16;
+
+/// One voice stream's controls (M3 Voice spec §4.3, V1): its stream's parameters (the layer's
+/// effective values with the voice's own pitch and route offsets folded in), its amplitude
+/// envelope, and its gain.
+struct VoiceParams
+{
+    CloudParams cloud;
+    /// Env 1 as the voice's own ADSR, sampled at each grain's peak (V1).
+    AmpEnvelope amp;
+    /// The voice's Level offset and its volume expression, linear.
+    float gain{1.0f};
+};
+
 /// Called on the audio thread, from inside process(), once for every grain that spawns, in
 /// spawn order, with the engine's EngineConfig::layer (M2 sub-project 1's spec §6.7). It must be
 /// real-time safe.
@@ -87,6 +103,21 @@ using GrainStealSink = void (*)(void *ctx, uint32_t layer, uint64_t index, int64
 /// the source mode changes they finish on their sample or on their ring (setSourceMode). Its pool
 /// row says which (GrainSpec::sourceSlot: a sample slot, kLiveSlot or kSpectralSlot).
 /// The enable gate (setEnabled) holds the stream off while the ring and the clock run on.
+///
+/// **Voices** (M3 Voice spec §4.3, V1, V4, B3). In voice mode (setVoiceMode) the Cloud stream
+/// doesn't schedule; up to kMaxVoices voice streams do, in slots 0..kMaxVoices − 1. Each is a
+/// CloudScheduler with no held keys and no note gate, keyed by stream 1 + its ordinal (Cloud's is
+/// stream 0), started with a forced onset (startVoice). Every spawning voice's draws of a block
+/// are merged before admission by onset sample, ties by ordinal (then by slot), so the pool sees
+/// non-decreasing onsets, as its ledger and steal cursor need, and the order depends on neither
+/// the slots nor the block boundaries. Their grains share the layer's one pool, quota and
+/// ladder, and are summed in spawn order like any others. A voice grain's gain is its draw's ×
+/// VoiceParams::gain × amp.valueAt(onsetSample + trunc(durationSamples / 2)) × 1 / sqrt(n), in
+/// double, rounded to float once (V7's headroom: n is the layer's spawning voices, counted once a
+/// process() call, so one voice is unchanged and n is block-size invariant); GrainSpec::voice
+/// carries the ordinal. A finished voice (finishVoice) stops spawning and its grains play out their
+/// windows: no grain is cut. The Spectral Smear keeps reading the layer's Cloud parameters'
+/// Position. With voice mode off (the default) the engine is the Cloud engine above, bit for bit.
 ///
 /// With the same configuration, source, input and parameter changes (at the same sample
 /// positions), the output and the grain events are bit-identical however the host splits blocks
@@ -293,7 +324,8 @@ class Engine
     void setSourceMode(SourceMode mode) noexcept;
 
     /// The enable gate (spec §6.2). Takes effect from the next process() call's first frame. Off:
-    /// the grains still sounding end there, and no grain spawns while off; the ring is still
+    /// the grains still sounding end there, every voice is finished (clearVoices), and no grain
+    /// spawns while off; the ring is still
     /// written, and the clock, the retirement of sources and freeze go on, so a layer switched on
     /// later reads recent audio. On again: the pending onset is forced to that frame
     /// (CloudScheduler::forceNextOnset), as a first held key forces it. The default is on.
@@ -302,6 +334,40 @@ class Engine
     void setEnabled(bool enabled) noexcept { requestedEnabled_ = enabled; }
     /// The enable gate in effect: set by the last process() call (see setEnabled).
     bool enabled() const noexcept { return enabled_; }
+
+    /// Voice mode (M3 Voice spec B3): on, the Cloud stream doesn't schedule and the spawning
+    /// voices do; off (the default), only the Cloud stream does. Turning it off finishes every
+    /// voice (a switch to Cloud, §4.3) and forces the Cloud stream's next onset
+    /// (CloudScheduler::forceNextOnset), so its first grain sounds at the next process() call's
+    /// first frame; setting the mode it already has changes nothing. Applies from the next
+    /// process() call's first frame. Real-time safe, with the same threading rule as
+    /// setCloudParams.
+    void setVoiceMode(bool on) noexcept;
+    /// Whether voice mode is on (setVoiceMode).
+    bool voiceMode() const noexcept { return voiceMode_; }
+
+    /// Starts a voice in `slot` (below kMaxVoices; otherwise ignored), replacing whatever the slot
+    /// held (that voice's grains play out): a new stream with `params`, keyed by stream 1 +
+    /// ordinal from grain index 0, its first onset forced to the next process() call's first frame
+    /// (the note's boundary). ordinal counts the layer's voices; it must be below kNoVoice
+    /// (otherwise ignored), and two spawning voices should not share one. The voice spawns while
+    /// voice mode is on and the layer is enabled. Real-time safe, with the same threading rule as
+    /// setCloudParams.
+    void startVoice(uint32_t slot, uint32_t ordinal, const VoiceParams &params) noexcept;
+    /// The voice in `slot`'s new controls, as setCloudParams' are the Cloud stream's: from the
+    /// next process() call's first frame, for every grain it spawns from then (a density or
+    /// distribution change moves its pending onset, ruling M1-h). Ignored for a slot out of
+    /// range or not spawning. Real-time safe, with the same threading rule as setCloudParams.
+    void setVoiceParams(uint32_t slot, const VoiceParams &params) noexcept;
+    /// Stops the voice in `slot` spawning (V4: its grains play out their windows). Ignored for a
+    /// slot out of range. Real-time safe, with the same threading rule as setCloudParams.
+    void finishVoice(uint32_t slot) noexcept;
+    /// Whether the voice in `slot` spawns (started and not finished nor cleared); false for a
+    /// slot out of range.
+    bool voiceSpawning(uint32_t slot) const noexcept;
+    /// Finishes every voice. The enable gate turning off and reset() do it too, at the frame they
+    /// clear the pool. Real-time safe, with the same threading rule as setCloudParams.
+    void clearVoices() noexcept;
 
     /// Freezes the live ring (see LiveSource): the write gain ramps to 0 over 20 ms and then the
     /// head stops, so grains keep reading what the ring holds; off, the head resumes and the gain
@@ -325,7 +391,8 @@ class Engine
     /// safe, with the same threading rule as setCloudParams. Kept by reset().
     void setQuota(uint64_t units) noexcept { requestedQuota_ = units; }
 
-    /// Silences every grain, lowers bus2Used() and restarts the clock, the schedule and ring time
+    /// Silences every grain, finishes every voice (clearVoices), lowers bus2Used() and restarts
+    /// the clock, the schedule and ring time
     /// at 0, the Spectral Smear's included. Keeps the current source (the previous one retires, see
     /// takeRetiredSource), the source mode, the enable gate, the Cloud parameters, the held keys,
     /// the note gate, the freeze setting, the quota and the sinks, and zeroes the dropped, lowered
@@ -515,6 +582,15 @@ class Engine
     };
     void admit(const GrainSpec &g, const BlockOutputs &outputs, int64_t blockStart,
                int64_t &renderedTo) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Voice mode's schedule for [blockStart, blockStart + numFrames): every spawning voice's
+    /// draws, merged by (onset sample, ordinal, slot), each with its voice gain, passed to
+    /// spawn(const GrainDraw &, uint32_t ordinal) in that order.
+    template <class Spawn>
+    void scheduleVoices(int64_t blockStart, uint32_t numFrames,
+                        Spawn &&spawn) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Sets the source mode in effect (mode_, config_.liveSeconds) on the Cloud stream and on
+    /// every voice stream.
+    void applySourceMode() noexcept;
     /// Adds every pool grain into its row's bus over [from, to), in spawn order, with each grain's
     /// latched tier and source, whatever the mode in effect: the SIMD live kernel for a grain of
     /// kLiveSlot over the live ring, and for one of kSpectralSlot over the smear's ring, otherwise
@@ -531,6 +607,18 @@ class Engine
     SincTable sinc_; // the HQ tier's windowed sinc, built here, off the audio thread
     GrainPool pool_;
     CloudScheduler cloud_;
+    // The voice streams (M3 Voice spec §4.3): each slot's scheduler, controls, ordinal and
+    // whether it spawns. A slot's scheduler keeps its state after the voice finishes, unused
+    // until the slot's next startVoice.
+    struct Voice
+    {
+        CloudScheduler scheduler;
+        VoiceParams params;
+        uint32_t ordinal{0};
+        bool spawning{false};
+    };
+    Voice voices_[kMaxVoices];
+    bool voiceMode_{false};
     LiveSource live_;
     // The Spectral Smear (EngineConfig::spectral), or null.
     std::unique_ptr<SpectralSource> spectral_;

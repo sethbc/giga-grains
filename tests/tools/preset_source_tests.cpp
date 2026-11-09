@@ -422,6 +422,21 @@ TEST_CASE("a preset source may not set a ring parameter", "[render]")
     }
 }
 
+TEST_CASE("a preset source may not set a MIDI setting", "[render]")
+{
+    // M3 sub-project 1's spec §4.1: a preset load keeps the instance's MPE, MPE Bend Range and
+    // Bend Range, so a source sets none (exit 2 through gg-render --pack-preset).
+    for (const char *name : {"MPE", "MPE Bend Range", "Bend Range"})
+    {
+        INFO(name);
+        auto j = fxTestJson();
+        j["params"][name] = 1;
+        const std::string error = rejection(j);
+        CHECK_THAT(error, ContainsSubstring(std::string("params.") + name));
+        CHECK_THAT(error, ContainsSubstring("MIDI setting"));
+    }
+}
+
 TEST_CASE("a render through a preset loads its samples from --content-dir", "[render]")
 {
     // Spec §6.10: the preset's samples are resolved against --content-dir alone, loaded and

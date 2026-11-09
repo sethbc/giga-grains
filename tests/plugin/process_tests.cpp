@@ -204,11 +204,11 @@ uint32_t tailOf(const gg::test::PluginUnderTest &plugin)
     return tail->get(plugin.clap());
 }
 
-// The instrument's tail at `rate` (ruling R-T7a): 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay,
-// rounded up to whole frames.
+// The instrument's tail at `rate` (ruling R-T7a): 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay
+// + Env 1's longest release, 10 s (M3 Voice spec §4.6), rounded up to whole frames.
 uint32_t instrumentTail(double rate)
 {
-    return static_cast<uint32_t>(std::ceil((2.0 + 0.5 + 2.0 * 60.0) * rate));
+    return static_cast<uint32_t>(std::ceil((2.0 + 0.5 + 2.0 * 60.0 + 10.0) * rate));
 }
 
 // One process() of `frames` frames of silence (the FX's input is silent, the instrument has
@@ -381,15 +381,16 @@ TEST_CASE("only the midi a note event converts counts as one", "[plugin]")
         const auto e = gg::test::midiEvent(status, data1, data2, 0);
         return GigaGrainsPlugin::isNoteEvent(&e.header);
     };
-    CHECK(counts(0x93, 60, 100));      // note-on, channel 4
-    CHECK(counts(0x90, 60, 0));        // note-on at velocity 0: a note-off
-    CHECK(counts(0x8F, 60, 0));        // note-off, channel 16
-    CHECK(counts(0xB2, 123, 0));       // CC 123, all notes off
-    CHECK_FALSE(counts(0xB0, 1, 64));  // CC 1
-    CHECK_FALSE(counts(0xB0, 120, 0)); // CC 120, all sound off: not converted
-    CHECK_FALSE(counts(0xA0, 60, 10)); // polyphonic pressure
-    CHECK_FALSE(counts(0xE0, 0, 64));  // pitch bend
-    CHECK_FALSE(counts(0xF8, 0, 0));   // the clock
+    CHECK(counts(0x93, 60, 100));       // note-on, channel 4
+    CHECK(counts(0x90, 60, 0));         // note-on at velocity 0: a note-off
+    CHECK(counts(0x8F, 60, 0));         // note-off, channel 16
+    CHECK(counts(0xB2, 123, 0));        // CC 123, all notes off
+    CHECK(counts(0xB2, 123 | 0x80, 0)); // a data byte is taken as its 7 bits, as for controls
+    CHECK_FALSE(counts(0xB0, 1, 64));   // CC 1
+    CHECK_FALSE(counts(0xB0, 120, 0));  // CC 120, all sound off: not converted
+    CHECK_FALSE(counts(0xA0, 60, 10));  // polyphonic pressure
+    CHECK_FALSE(counts(0xE0, 0, 64));   // pitch bend
+    CHECK_FALSE(counts(0xF8, 0, 0));    // the clock
     const auto on = noteOn(60, 0);
     CHECK(GigaGrainsPlugin::isNoteEvent(&on.header));
     CHECK_FALSE(GigaGrainsPlugin::isNoteEvent(nullptr));
@@ -1582,14 +1583,15 @@ TEST_CASE("fx tail is infinite in every state", "[plugin][space]")
 
 TEST_CASE("instrument tail is its longest finite one at the active rate", "[plugin][space]")
 {
-    // Ruling R-T7a: 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay = 122.5 s, in frames at the
-    // active rate, whatever the values and the notes; at 48 kHz before the first activation.
+    // Ruling R-T7a: 2 s Size + 0.5 s Pre-delay + 2 × 60 s Decay, and since M3 Env 1's longest
+    // release, 10 s (its Voice spec §4.6), = 132.5 s, in frames at the active rate, whatever the
+    // values and the notes; at 48 kHz before the first activation.
     // tail.changed is never called.
     TailHost host;
     gg::test::PluginUnderTest instrument(kInstrumentId, host.clap());
     REQUIRE(instrument.valid());
     CHECK(tailOf(instrument) == instrumentTail(48000.0));
-    CHECK(tailOf(instrument) == 5880000u);
+    CHECK(tailOf(instrument) == 6360000u);
     throughTailStates(instrument, false, [&](const char *state) {
         CAPTURE(state);
         CHECK(tailOf(instrument) == instrumentTail(48000.0));
@@ -1604,17 +1606,17 @@ TEST_CASE("instrument tail is its longest finite one at the active rate", "[plug
         instrument.deactivate();
         CHECK(tailOf(instrument) == instrumentTail(rate)); // the last activation's rate
     }
-    CHECK(tailOf(instrument) == 5402250u); // 122.5 s at 44.1 kHz
+    CHECK(tailOf(instrument) == 5843250u); // 132.5 s at 44.1 kHz
     CHECK(host.tailChanges() == 0);
 }
 
 TEST_CASE("instrument tail saturates below infinite", "[plugin][space]")
 {
-    // tailGet's arithmetic: 122.5 s rounded up to frames, held below CLAP's infinite (INT32_MAX
+    // tailGet's arithmetic: 132.5 s rounded up to frames, held below CLAP's infinite (INT32_MAX
     // and up) where a rate would reach it, and for a NaN rate.
     using gg::plugin::GigaGrainsPlugin;
-    CHECK(GigaGrainsPlugin::instrumentTailFrames(48000.0) == 5880000u);
-    CHECK(GigaGrainsPlugin::instrumentTailFrames(44100.0) == 5402250u);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(48000.0) == 6360000u);
+    CHECK(GigaGrainsPlugin::instrumentTailFrames(44100.0) == 5843250u);
     CHECK(GigaGrainsPlugin::instrumentTailFrames(1.0e9) == kInfiniteTail - 1);
     CHECK(GigaGrainsPlugin::instrumentTailFrames(std::numeric_limits<double>::quiet_NaN()) ==
           kInfiniteTail - 1);

@@ -59,7 +59,11 @@ TEST_CASE("bursts: 16 x 1024 events, fx", "[sweep]") { bursts(Mode::Fx, 3101, 0.
 
 TEST_CASE("bursts: 16 x 1024 events, instrument", "[sweep]")
 {
-    bursts(Mode::Instrument, 3102, 0.405);
+    // The floor moved from 0.405 to 0.39 (scored 0.3968): M3 sub-project 1's seven parameters
+    // (Mode x4, MPE, MPE Bend Range, Bend Range) join the draw list, so each event's pick, a
+    // draw over the CLAP IDs, lands on others, and this seed's burst now moves fewer of the
+    // parameters that keep the render scoring; no exemption widened and nothing clicks.
+    bursts(Mode::Instrument, 3102, 0.39);
 }
 
 TEST_CASE("bursts at block size 1", "[sweep]") { bursts(Mode::Fx, 3103, 0.395, 1); }

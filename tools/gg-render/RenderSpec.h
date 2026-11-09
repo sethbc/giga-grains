@@ -245,6 +245,29 @@ struct AutomationPoint
 ///   boundary, never applies.
 /// - The grains ignore velocity (D6); an On's velocity is the mod matrix's Velocity source (M2
 ///   sub-project 1's spec §6.8), velocity / 127.
+/// - M3 Voice (spec §4.8), all optional:
+///   - "id": the note's CLAP note ID, an integer >= 0, on its On and its Off (an Off with an ID
+///     releases the note with that ID; without one, by channel and key). Two notes with one ID
+///     may not overlap in time (an end at the other's start is not an overlap). A note without
+///     an "id" that has "expressions" is given the ID 1000000 + its index in the list (notes[0]
+///     gets 1000000), so the Processor can match them; explicit IDs of 1000000 and above may
+///     clash with those and are refused when they do. A note with neither sends no ID (-1).
+///   - "releaseVelocity": 0..127, 0 by default, sent on the Off as releaseVelocity / 127.
+///   - "expressions": a list of {"time", "kind", "value"}, in time order, "time" in seconds from
+///     the render's start, from the note's start up to (not including) its end by frame. "kind"
+///     is "tuning" (semitones, -120..120), "pressure" (0..1), "brightness" (0..1) or "volume"
+///     (a gain, 0..4); each becomes a ControlEvent of the matching Note kind with the note's ID,
+///     channel and key, at round(time x sampleRate), merged by frame with the spec's controls
+///     (on one frame the controls go first, then the expressions in note order).
+struct NoteExpressionSpec
+{
+    double timeSeconds{0.0};
+    std::string kind; ///< "tuning", "pressure", "brightness" or "volume".
+    double value{0.0};
+
+    friend bool operator==(const NoteExpressionSpec &, const NoteExpressionSpec &) = default;
+};
+
 struct NoteSpec
 {
     double timeSeconds{0.0};     ///< >= 0, rounding to a frame before the render's end.
@@ -252,9 +275,23 @@ struct NoteSpec
     double durationSeconds{1.0}; ///< > 0, at most kMaxSeconds; the Off rounds past the On (R17).
     uint8_t channel{0};          ///< 0..15; optional in the spec, 0 by default.
     uint8_t velocity{100};       ///< 0..127; optional in the spec, 100 by default.
+    int32_t id{-1};              ///< The CLAP note ID (>= 0), or -1 for none.
+    uint8_t releaseVelocity{0};  ///< 0..127; optional in the spec, 0 by default.
+    std::vector<NoteExpressionSpec> expressions{}; ///< Time-ordered, inside the note's span.
 
     friend bool operator==(const NoteSpec &, const NoteSpec &) = default;
 };
+
+/// The CLAP note ID notes[index] is sent with: its "id", else kAssignedNoteIdBase + index when it
+/// has expressions, else -1 (none).
+inline constexpr int32_t kAssignedNoteIdBase = 1000000;
+inline int32_t noteIdOf(const std::vector<NoteSpec> &notes, std::size_t index)
+{
+    const NoteSpec &n = notes[index];
+    return n.id >= 0                ? n.id
+           : !n.expressions.empty() ? kAssignedNoteIdBase + static_cast<int32_t>(index)
+                                    : int32_t{-1};
+}
 
 /// One route of the mod matrix (gg::core::ModRoute; M2 sub-project 1's spec §6.8), by name, set in
 /// its slot before the render on top of the product's factory routes (gg::core::factoryRoutes),
@@ -285,6 +322,8 @@ struct RouteSpec
     /// The curve's stable name (gg::core::modCurveName): "Bipolar" (the default), "Unipolar",
     /// "BipolarPositive", "UnipolarSquared", "RampThreeQuarters" or "TopQuarter".
     std::string curve{"Bipolar"};
+    /// M3 Voice: the route applies only per voice on a Voice layer (gg::core::ModRoute::voiceOnly).
+    bool voiceOnly{false};
 
     friend bool operator==(const RouteSpec &, const RouteSpec &) = default;
 };
@@ -293,14 +332,18 @@ struct RouteSpec
 /// round(timeSeconds × sampleRate), merged with the automation and the notes in each process()
 /// call. The times follow the automation's rules (a control after the render's last grid
 /// boundary never applies), and in time order (equal times allowed; on one frame, list order).
+/// M3 Voice (spec §4.8) adds three kinds: "sustain" (CC 64: 0..1, 0.5 and above is down),
+/// "timbre" (CC 74: 0..1) and "polyPressure" (polyphonic aftertouch: 0..1), which alone requires
+/// "key" (0..127) and which no other kind accepts.
 struct ControlSpec
 {
     double timeSeconds{0.0}; ///< >= 0, rounding to a frame before the render's end.
     /// "modWheel" (CC 1), "aftertouch" (channel pressure) or "pitchBend": the mod matrix's Mod
-    /// Wheel, Aftertouch and Pitch Bend sources.
+    /// Wheel, Aftertouch and Pitch Bend sources; or "sustain", "timbre" or "polyPressure".
     std::string kind;
     double value{0.0};  ///< 0..1; pitch bend's center is 0.5.
     uint8_t channel{0}; ///< 0..15; optional in the spec, 0 by default.
+    int16_t key{-1};    ///< "polyPressure" only: 0..127.
 
     friend bool operator==(const ControlSpec &, const ControlSpec &) = default;
 };

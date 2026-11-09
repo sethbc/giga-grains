@@ -116,7 +116,15 @@ PresetSource readSource(const json &j)
                                                 productName(*product)));
                 }
                 // A preset load keeps the instance's ring parameters (the program manager's
-                // ruling), so a source setting one would mean nothing.
+                // ruling) and its MIDI settings (M3 sub-project 1), so a source setting one would
+                // mean nothing.
+                if (gg::core::isMidiSetting(*slot))
+                {
+                    throw SpecError(fmt::format(
+                        "params.{} is a MIDI setting, which a preset doesn't set (a load keeps "
+                        "the instance's)",
+                        item.key()));
+                }
                 if (gg::core::isRingParam(*slot))
                 {
                     throw SpecError(fmt::format(

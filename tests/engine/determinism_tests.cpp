@@ -21,6 +21,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/Rng.h"
 #include "gg/engine/Engine.h"
+#include "gg/grain/AmpEnvelope.h"
 #include "gg/grain/Budget.h"
 #include "gg/grain/Tier.h"
 #include "gg/source/PreparedSource.h"
@@ -1343,4 +1344,138 @@ TEST_CASE("a spectral render is block-size invariant", "[determinism]")
             REQUIRE(sameBits(ref.audio.right, r.audio.right));
         }
     }
+}
+
+namespace
+{
+// Voice events (M3 Voice spec §4.3), each made between process() calls at its frame: four
+// voices started, re-parameterized and finished at fixed samples, one slot reused.
+struct VoiceEvent
+{
+    int64_t frame;
+    enum class Kind : uint8_t
+    {
+        Start,
+        Params,
+        Finish,
+    } kind;
+    uint32_t slot;
+    uint32_t ordinal;
+    double densityHz;
+    double pitchSemitones;
+};
+constexpr int64_t kVoiceFrames = 72000;
+constexpr VoiceEvent kVoiceEvents[] = {
+    {0, VoiceEvent::Kind::Start, 0, 0, 37.0, 0.0},
+    {4000, VoiceEvent::Kind::Start, 5, 1, 50.0, -5.0},
+    {9001, VoiceEvent::Kind::Start, 2, 2, 23.0, 7.0},
+    {15000, VoiceEvent::Kind::Params, 0, 0, 90.0, 2.0},
+    {20000, VoiceEvent::Kind::Finish, 5, 0, 0.0, 0.0},
+    {27000, VoiceEvent::Kind::Start, 5, 3, 61.0, -12.0},
+    {33333, VoiceEvent::Kind::Start, 9, 4, 44.0, 12.0},
+    {40000, VoiceEvent::Kind::Finish, 0, 0, 0.0, 0.0},
+    {50000, VoiceEvent::Kind::Finish, 2, 0, 0.0, 0.0},
+    {60000, VoiceEvent::Kind::Finish, 5, 0, 0.0, 0.0},
+    {60000, VoiceEvent::Kind::Finish, 9, 0, 0.0, 0.0},
+};
+
+gg::VoiceParams voiceParams(const VoiceEvent &e)
+{
+    gg::VoiceParams v;
+    v.cloud = kParams;
+    v.cloud.densityHz = e.densityHz;
+    v.cloud.pitchSemitones = e.pitchSemitones;
+    // An attack from the event's frame over 0.1 s, decaying to 0.6 over 0.2 s.
+    v.amp = {.at = e.frame,
+             .level = 0.0,
+             .stage = gg::AmpEnvelope::Stage::Attack,
+             .attackPerSample = 1.0 / 4800.0,
+             .decayPerSample = 0.4 / 9600.0,
+             .releasePerSample = 0.0,
+             .sustain = 0.6};
+    v.gain = 0.8f;
+    return v;
+}
+
+struct VoiceRender
+{
+    Render audio;
+    GrainLog log;
+};
+
+void renderVoices(const std::shared_ptr<const gg::SampleBuffer> &source,
+                  const std::vector<uint32_t> &blockSizes, VoiceRender &r)
+{
+    gg::Engine engine(config(42));
+    engine.setSource(source);
+    engine.setEventSink(&GrainLog::record, &r.log);
+    engine.setVoiceMode(true);
+    constexpr float kUnwritten = std::numeric_limits<float>::quiet_NaN();
+    r.audio.left.assign(static_cast<std::size_t>(kVoiceFrames), kUnwritten);
+    r.audio.right.assign(static_cast<std::size_t>(kVoiceFrames), kUnwritten);
+    int64_t done = 0;
+    std::size_t next = 0;
+    std::size_t event = 0;
+    while (done < kVoiceFrames)
+    {
+        for (; event < std::size(kVoiceEvents) && kVoiceEvents[event].frame == done; ++event)
+        {
+            const VoiceEvent &e = kVoiceEvents[event];
+            switch (e.kind)
+            {
+            case VoiceEvent::Kind::Start:
+                engine.startVoice(e.slot, e.ordinal, voiceParams(e));
+                break;
+            case VoiceEvent::Kind::Params:
+                engine.setVoiceParams(e.slot, voiceParams(e));
+                break;
+            case VoiceEvent::Kind::Finish:
+                engine.finishVoice(e.slot);
+                break;
+            }
+        }
+        const int64_t until =
+            event < std::size(kVoiceEvents) ? kVoiceEvents[event].frame : kVoiceFrames;
+        const uint32_t want = blockSizes[next++ % blockSizes.size()];
+        const auto n = static_cast<uint32_t>(std::min<int64_t>(want, until - done));
+        float *out[2] = {r.audio.left.data() + done, r.audio.right.data() + done};
+        engine.process(out, 2, n);
+        done += n;
+    }
+}
+} // namespace
+
+TEST_CASE("voices are block-size invariant", "[determinism][voice]")
+{
+    const auto source = sineSource();
+    VoiceRender ref;
+    renderVoices(source, {kMaxBlock}, ref);
+    REQUIRE_FALSE(ref.log.overflowed);
+    REQUIRE(allFinite(ref.audio.left));
+    REQUIRE(allFinite(ref.audio.right));
+    REQUIRE(peak(ref.audio.left) > 0.05f);
+    // Not vacuous: all five voices spawn, and nothing after the last finish.
+    uint32_t seen = 0;
+    for (const gg::GrainSpec &g : ref.log.grains)
+    {
+        REQUIRE(g.voice < 5);
+        seen |= 1u << g.voice;
+        REQUIRE(g.onsetSample < 60000);
+    }
+    REQUIRE(seen == 0x1Fu);
+    for (const uint32_t block : {1u, 32u, 64u, 4096u, 777u})
+    {
+        INFO("block size " << block);
+        VoiceRender r;
+        renderVoices(source, {block}, r);
+        REQUIRE_FALSE(r.log.overflowed);
+        REQUIRE(r.log.grains == ref.log.grains);
+        REQUIRE(sameBits(ref.audio.left, r.audio.left));
+        REQUIRE(sameBits(ref.audio.right, r.audio.right));
+    }
+    VoiceRender r;
+    renderVoices(source, randomSplit(), r);
+    REQUIRE(r.log.grains == ref.log.grains);
+    REQUIRE(sameBits(ref.audio.left, r.audio.left));
+    REQUIRE(sameBits(ref.audio.right, r.audio.right));
 }

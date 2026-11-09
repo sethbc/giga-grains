@@ -129,7 +129,8 @@ TEST_CASE("the hidden slots", "[ui]")
 
 TEST_CASE("the panel order is the spec's", "[ui]")
 {
-    CHECK(gg::ui::slotsIn(Panel::Source, 0) == std::vector<ParamSlot>{ParamSlot::Source});
+    CHECK(gg::ui::slotsIn(Panel::Source, 0) ==
+          std::vector<ParamSlot>{ParamSlot::Source, ParamSlot::Mode});
     // Smear sits beside Texture, before Quality (M2 sub-project 6's PR 2).
     CHECK(gg::ui::slotsIn(Panel::Grain, 0) ==
           std::vector<ParamSlot>{ParamSlot::Size, ParamSlot::SizeSpread, ParamSlot::Position,
@@ -214,6 +215,26 @@ TEST_CASE("the Filter panel breaks before each bus", "[ui]")
             ref && (ref->param == LayerParam::Bus1Filter || ref->param == LayerParam::Bus2Filter);
         REQUIRE(gg::ui::placementOf(slot).has_value());
         CHECK(gg::ui::placementOf(slot)->breakBefore == busStart);
+    }
+}
+
+TEST_CASE("Mode sits beside Source and the MIDI settings are the FX view's", "[ui]")
+{
+    // M3 sub-project 1's spec §4.1: each layer's Mode follows its Source in the Source panel.
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        INFO("layer " << int(layer));
+        CHECK(gg::ui::slotsIn(Panel::Source, layer) ==
+              std::vector<ParamSlot>{gg::core::layerSlot(LayerParam::Source, layer),
+                                     gg::core::layerSlot(LayerParam::Mode, layer)});
+    }
+    CHECK(gg::ui::slotsIn(Panel::Midi, 0) ==
+          std::vector<ParamSlot>{ParamSlot::Mpe, ParamSlot::MpeBendRange, ParamSlot::BendRange});
+    CHECK(gg::ui::slotsIn(Panel::Midi, 3) == gg::ui::slotsIn(Panel::Midi, 0));
+    CHECK(std::string(gg::ui::panelName(Panel::Midi)) == "MIDI");
+    for (const ParamSlot slot : gg::ui::slotsIn(Panel::Midi, 0))
+    {
+        CHECK(gg::ui::placementOf(slot)->view == View::Fx);
     }
 }
 

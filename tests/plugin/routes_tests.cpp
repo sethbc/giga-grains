@@ -367,3 +367,26 @@ TEST_CASE("an inactive plugin's route edit applies at activate", "[plugin]")
     processBlock(plugin, id);
     CHECK(plugin.impl().processor()->routes() == a);
 }
+
+TEST_CASE("uiSetRoutes keeps voiceOnly", "[plugin]")
+{
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    const auto mode = plugin.impl().mode();
+    CHECK(plugin.impl().uiRoutes()[43].voiceOnly); // a new instance's factory routes
+    auto routes = withRoute(mode, 20,
+                            {ModSource::Pressure, gg::core::kSameLayer, ParamSlot::Size,
+                             gg::core::kAllLayers, 1.0f, ModCurve::Unipolar, true});
+    REQUIRE(plugin.activate(kRate, kBlock));
+    plugin.impl().uiSetRoutes(routes);
+    CHECK(plugin.impl().uiRoutes() == routes);
+    CHECK(plugin.impl().uiRoutes()[20].voiceOnly);
+    const std::string saved = plugin.save();
+    PluginUnderTest restored(id);
+    REQUIRE(restored.valid());
+    REQUIRE(restored.load(saved));
+    CHECK(restored.impl().uiRoutes() == routes);
+    CHECK(restored.impl().uiRoutes()[20].voiceOnly);
+}

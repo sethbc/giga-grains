@@ -154,6 +154,18 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// **The tail** (sub-project 4's spec §6.7; ruling R-T7a) is a constant per product: the FX's is
 /// infinite, the instrument's kInstrumentTailSeconds at the active rate. Nothing calls
 /// clap_host_tail.changed. tailGet() says why.
+///
+/// **Notes and voices** (M3 Voice spec §4.2, §4.5): the host's notes reach the Processor with
+/// their CLAP note IDs and release velocities (toNoteEvent), and their expressions as controls
+/// (toControlEvent): CLAP note expressions (TUNING, PRESSURE, BRIGHTNESS and VOLUME), and from
+/// MIDI each channel's bend and pressure, CC 64 (the pedal), CC 74 and poly pressure, which the
+/// Processor reads per channel (MPE). clap_plugin_as_vst3 (extension()) has clap-wrapper's VST3
+/// offer 16 MIDI channels and the note expressions TUNING, VOLUME, PAN and BRIGHTNESS. Each note
+/// the Processor ends (Processor::takeEndedNotes: released with no voice left for it, or held at
+/// a reset()) goes to the host as CLAP_EVENT_NOTE_END from the next process() call
+/// (sendEndedNotes), which clap-wrapper's VST3 needs to free its active-note record. A
+/// deactivation sends none: the Processor and its notes go with it, and the wrapper drops its
+/// record with the session.
 class GigaGrainsPlugin : public plugHelper_t
 {
   public:
@@ -220,8 +232,10 @@ class GigaGrainsPlugin : public plugHelper_t
     /// they move to that boundary from their own, so past this cap the output is no longer block-
     /// size invariant.
     static constexpr std::size_t kMaxNoteEvents = 1024;
-    /// The most MIDI control events (CC 1, channel pressure, pitch bend) one process() call hands
-    /// to the Processor in one go (its control span). Controls beyond it apply at the block's end,
+    /// The most control events (what isControlEvent admits: MIDI CC 1, CC 64, CC 74, poly
+    /// pressure, channel pressure and pitch bend, and CLAP's TUNING, PRESSURE, BRIGHTNESS and
+    /// VOLUME note expressions) one process() call hands to the Processor in one go (its control
+    /// span). Controls beyond it apply at the block's end,
     /// at the next grid boundary, as notes beyond kMaxNoteEvents do.
     static constexpr std::size_t kMaxControlEvents = 1024;
     /// The CLAP note IDs remembered for note-offs addressed by ID alone (ruling R15). When the
@@ -229,10 +243,15 @@ class GigaGrainsPlugin : public plugHelper_t
     static constexpr std::size_t kMaxNoteIds = 256;
     /// CLAP's infinite tail: tail.get values from INT32_MAX up (clap/ext/tail.h).
     static constexpr uint32_t kTailInfinite = 0x7FFFFFFF;
+    /// Env 1's longest release (Env 1 Release's maximum, 10 s): how long a voice keeps spawning
+    /// after its note-off (M3 Voice spec §4.6).
+    static constexpr double kVoiceReleaseSeconds = 10.0;
     /// The instrument's tail, in seconds (ruling R-T7a): the longest it can ring after its last
     /// note, at every parameter's maximum: Size's 2 s release, Reverb Pre-delay's 0.5 s and
-    /// twice Reverb Decay's longest finite 60 s (spec §6.7's multiple).
-    static constexpr double kInstrumentTailSeconds = 2.0 + 0.5 + 2.0 * 60.0;
+    /// twice Reverb Decay's longest finite 60 s (spec §6.7's multiple), and since M3 a voice's
+    /// release, kVoiceReleaseSeconds, before its last grains (M3 Voice spec §4.6). The FX's
+    /// tail is infinite, which no voice outlasts.
+    static constexpr double kInstrumentTailSeconds = 2.0 + 0.5 + 2.0 * 60.0 + kVoiceReleaseSeconds;
     /// The rate tailGet() assumes before the first activate().
     static constexpr double kDefaultTailRate = 48000.0;
 
@@ -422,13 +441,21 @@ class GigaGrainsPlugin : public plugHelper_t
     /// CLAP note-on, note-off or note choke, or a MIDI note-on, note-off or CC 123. Stateless.
     static bool isNoteEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Whether `header` is an event toControlEvent converts, which counts toward
-    /// kMaxControlEvents: a MIDI CC 1, channel pressure or pitch bend. Stateless.
+    /// kMaxControlEvents: a MIDI CC 1, CC 64, CC 74, poly pressure, channel pressure or pitch
+    /// bend, or a CLAP note expression TUNING, PRESSURE, BRIGHTNESS or VOLUME (PAN, VIBRATO and
+    /// EXPRESSION are accepted and ignored until M3 sub-project 2, so they don't count).
+    /// Stateless.
     static bool isControlEvent(const clap_event_header *header) noexcept SST_CPPUTILS_NONBLOCKING;
-    /// The MIDI control `header` as a ControlEvent (M2 sub-project 1's spec §6.8), at its time,
-    /// on its channel: CC 1 (0xBn, controller 1) is ModWheel, value / 127; channel pressure
-    /// (0xDn) is Aftertouch, pressure / 127; pitch bend (0xEn) is PitchBend,
-    /// (msb << 7 | lsb) / 16383, so its center 0x2000 is 8192 / 16383. Each data byte is taken as
-    /// its 7 bits. False for any other event. Stateless.
+    /// The control `header` as a ControlEvent (M2 sub-project 1's spec §6.8, M3 Voice spec
+    /// §4.5), at its time, on its channel. MIDI, each data byte taken as its 7 bits: CC 1 (0xBn,
+    /// controller 1) is ModWheel, value / 127; CC 64 is Sustain and CC 74 Timbre, value / 127;
+    /// poly pressure (0xAn) is PolyPressure, pressure / 127 for its key; channel pressure (0xDn)
+    /// is Aftertouch, pressure / 127; pitch bend (0xEn) is PitchBend, (msb << 7 | lsb) / 16383, so
+    /// its center 0x2000 is 8192 / 16383 (the Processor takes the 14-bit value back from it, B7).
+    /// A CLAP note expression keeps its note ID, channel and key: TUNING is NoteTuning
+    /// (semitones), PRESSURE NotePressure, BRIGHTNESS NoteBrightness and VOLUME NoteVolume, each
+    /// value as it comes (the Processor clamps it). The port is ignored. False for any other
+    /// event. Stateless.
     static bool toControlEvent(const clap_event_header *header,
                                gg::core::ControlEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
 
@@ -506,6 +533,14 @@ class GigaGrainsPlugin : public plugHelper_t
     bool remoteControlsPageGet(uint32_t pageIndex,
                                clap_remote_controls_page *page) noexcept override;
 
+    // ---- Extensions clap-helpers doesn't know: clap_plugin_as_vst3 (see the class comment) ----
+
+    /// clap-wrapper's CLAP_PLUGIN_AS_VST3: 16 MIDI channels on the note port, and the note
+    /// expressions TUNING, VOLUME, PAN and BRIGHTNESS (M3 Voice spec §4.5). PRESSURE is left out:
+    /// the wrapper then sends VST3's poly pressure as MIDI 0xAn, which toControlEvent converts
+    /// (its own PRESSURE note expression is never offered to the host). nullptr for any other.
+    const void *extension(const char *id) noexcept override;
+
     // ---- Tail (see the class comment) ----
 
     bool implementsTail() const noexcept override { return true; }
@@ -544,18 +579,38 @@ class GigaGrainsPlugin : public plugHelper_t
     /// choke, MIDI's note-on, note-off and CC 123 (all notes off on its channel, ruling R14).
     /// False for any other event. An On carries its velocity, the mod matrix's Velocity source
     /// (M2 sub-project 1's spec §6.8): CLAP's 0..1 as it comes, MIDI's / 127. The port is
-    /// ignored; out-of-range channels and keys pass through, for the Processor to drop.
+    /// ignored; out-of-range CLAP channels and keys pass through, for the Processor to drop.
+    /// Each MIDI data byte is taken as its 7 bits (a key, a velocity, the controller number of
+    /// CC 123), as isNoteEvent, toControlEvent and the note-on count take them.
     ///
-    /// CLAP note IDs (ruling R15): a note-on with an ID ≥ 0 and an in-range channel and key is
-    /// remembered in noteIds_. A note-off or choke with an ID ≥ 0 forgets it, and if its channel
-    /// and key are both −1 releases the ID's (channel, key) alone; an unknown ID keeps the
-    /// wildcards, which release everything. Every off (CLAP or MIDI, CC 123 included) also
-    /// forgets the IDs of the notes it releases. So call it once per event, in the host's order.
-    /// Audio thread.
+    /// CLAP note IDs (ruling R15; M3 Voice spec §4.2): an On carries its note ID (−1 for none
+    /// and for MIDI), and one with an ID ≥ 0 and an in-range channel and key is remembered in
+    /// noteIds_. A note-off or choke with a remembered ID releases that note alone, by its ID
+    /// (the Processor's note table then tells two notes on one channel and key apart), when its
+    /// channel and key are both −1 or both given, even when the given pair isn't the one the ID
+    /// was remembered with (the lenient choice: the ID names the note); with one of them −1 it
+    /// keeps that wildcard, which releases every note it matches (R15). An unknown ID keeps the
+    /// off's channel and key, so wildcards release everything, safer than a stuck note. An Off
+    /// carries its release velocity: CLAP's 0..1 as it comes, a MIDI note-off's / 127 (a choke's,
+    /// and a MIDI note-on at velocity 0's, are 0). Each off forgets the IDs of the notes it
+    /// releases: an ID's own, the oldest remembered on a (channel, key) it releases by pair (the
+    /// note table releases the oldest held there), or every one a wildcard or CC 123 matches; a
+    /// choke by pair forgets every ID on the pair (it ends every note there). A choke becomes
+    /// NoteEventType::Choke, addressed as an off: a Voice layer's voices for it finish at once,
+    /// with no release, and the note ends (NOTE_END); a Cloud layer hears an off. So call it once
+    /// per event, in the host's order. Audio thread.
     bool toNoteEvent(const clap_event_header *header,
                      gg::core::NoteEvent &event) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Forgets the note IDs remembered for (`channel`, `key`), −1 matching any. Audio thread.
     void forgetNoteIds(int16_t channel, int16_t key) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Forgets the oldest note ID remembered for (`channel`, `key`), if any. Audio thread.
+    void forgetOldestNoteId(int16_t channel, int16_t key) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// Takes the notes the Processor ended (Processor::takeEndedNotes) after those still waiting
+    /// in ended_, and pushes each to `out` as CLAP_EVENT_NOTE_END (its note ID, port 0, its
+    /// channel and key) at frame `time`, oldest first. Those the host refuses (a full list, or
+    /// no list) wait in ended_ for the next call, never retried within this one. Audio thread.
+    void sendEndedNotes(const clap_output_events *out,
+                        uint32_t time) noexcept SST_CPPUTILS_NONBLOCKING;
     /// Applies the parameter, note and control events of `in` from index `first` between two
     /// process() calls: values at once with setBase, modulation, notes and controls at the next
     /// control-grid boundary. Needs the processor; audio thread.
@@ -793,6 +848,10 @@ class GigaGrainsPlugin : public plugHelper_t
     };
     std::array<NoteIdSlot, kMaxNoteIds> noteIds_{};
     uint64_t noteIdAge_{0};
+    // The ended notes whose NOTE_END the host hasn't taken yet (sendEndedNotes), oldest first.
+    // Audio thread; activate() empties it (the notes went with the last Processor).
+    std::array<gg::core::EndedNote, gg::core::Processor::kMaxEndedNotes> ended_{};
+    std::size_t endedCount_{0};
 };
 
 /// Creates a plugin instance of `product` for the factory: a GigaGrainsPlugin in a headless

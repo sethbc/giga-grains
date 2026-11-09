@@ -42,7 +42,8 @@
 //   AVX2 kernels the two ratios compare the paths in the same rounds;
 // - three cases of the extremes sub-project (spec §6.10), each engine-sample with a change:
 //   engine-sample-smear (Smear's jitter and detune), engine-buses (half the grains on the second
-//   bus, through the two-bus process) and engine-spectral (Spectral grains over the smear ring).
+//   bus, through the two-bus process) and engine-spectral (Spectral grains over the smear ring) and
+//   engine-voices (X's stream split across 16 voices in voice mode).
 // Every engine case's ratio, ns per grain-sample over reference's in the same round, cancels the
 // machine's speed (ruling 3), though not its microarchitecture: on CI the same code's ratios
 // differ by up to ~20% between the CPU models GitHub assigns a leg. A baseline file therefore

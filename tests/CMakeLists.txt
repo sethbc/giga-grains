@@ -18,6 +18,7 @@ add_executable(gg-tests
         core/mod_processor_tests.cpp
         core/mod_sources_tests.cpp
         core/mutate_tests.cpp
+        core/note_table_tests.cpp
         core/note_tests.cpp
         core/parammap_tests.cpp
         core/patch_tests.cpp
@@ -31,6 +32,7 @@ add_executable(gg-tests
         core/space_reverb_tests.cpp
         core/spectral_processor_tests.cpp
         core/threads_tests.cpp
+        core/voice_processor_tests.cpp
         engine/cloud_tests.cpp
         engine/denormal_tests.cpp
         engine/determinism_tests.cpp
@@ -50,6 +52,7 @@ add_executable(gg-tests
         engine/spectral_tests.cpp
         engine/sinc_table_tests.cpp
         engine/task_runner_tests.cpp
+        engine/voice_tests.cpp
         engine/window_tests.cpp
         media/budget_tests.cpp
         media/collect_tests.cpp
@@ -175,6 +178,7 @@ if (GG_BUILD_PLUGINS)
             plugin/routes_tests.cpp
             plugin/rt_tests.cpp
             plugin/sample_tests.cpp
+            plugin/voice_plugin_tests.cpp
             )
     target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/plugin/src)
 endif ()

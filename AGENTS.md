@@ -20,7 +20,7 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
-- **Where we are** (INTENT §20, §23 #61, #64, #71, #93): M0 and M1 are done, and so are the installers and
+- **Where we are** (INTENT §20, §23 #61, #64, #71, #93, #95): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
   is `docs/releasing.md`). **M2 is closed** (2026-11-03) as seven sub-projects in four waves, run by one
   agent session each (`docs/superpowers/specs/2026-10-29-m2-program-design.md`: read its §6
@@ -45,16 +45,27 @@ AGPL-3.0-or-later.
   `gg-snap` and the GPU spike. Sub-project 7, the close, is built (INTENT §23 #93; PR #31): the
   consistency pass, the carry-over burned down to 15 open rows, the from-scratch build setup, the
   gate, the idle figures and the release commit for v0.2.0 (the program manager tags it). **M3 is
-  in progress** (since 2026-11-07), run as M1 was: one session, serial sub-projects, parallel
-  tasks inside each (INTENT §20, §23 #87, #94; `docs/superpowers/specs/2026-11-07-m3-program-design.md`:
-  0 row 405, 1 Voice slice, 2 Full expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets,
-  6 Close). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  in progress** (since 2026-11-07). It began as M1 was run, one session with serial
+  sub-projects (§23 #87), and since 2026-11-07 its sub-projects run in parallel on their own
+  branches, merging as each is ready (the director; INTENT §20, §23 #87, #94, #96;
+  `docs/superpowers/specs/2026-11-07-m3-program-design.md`: 0 row 405, 1 Voice slice, 2 Full
+  expression, 3 Pitch-sync, 4 Microtuning, 5 Views and presets, 6 Close). **Sub-projects 2, 3
+  and 4 are specified and being planned in parallel**, on `m3-sp2-expression`,
+  `m3-sp3-pitchsync` and `m3-sp4-tuning`. **M3 sub-project 1, the Voice slice, is built** (INTENT
+  §23 #95; branch `m3-voice`, draft PR #37; spec
+  `docs/superpowers/specs/2026-11-07-m3-voice-design.md`): a per-layer Mode (Cloud or Voice), up
+  to 16 voices a layer with automatic headroom (V7), the note table and the sustain pedal, MPE
+  and CLAP note expressions, per-voice modulation with the Voice-only routes (factory slots 44
+  to 48), 290 parameter slots (four parameters: Mode in each of four layers, plus MPE, MPE Bend
+  Range and Bend Range, seven slots), eight voice goldens, and the carry-over in
+  `docs/m3-carry-over.md` (`docs/m2-carry-over.md` is M2's frozen record). M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
   JSON in `docs/benchmarks/`, the listening packs in `docs/listening/`, the M0 and M1 spikes in
   `docs/spikes/`, the release notes in `docs/releases/`, and the carry-over in
-  `docs/m2-carry-over.md` (M1's, frozen as its record, is `docs/m1-carry-over.md`), and the
+  `docs/m3-carry-over.md` (M2's, frozen as its record, is `docs/m2-carry-over.md`; M1's is
+  `docs/m1-carry-over.md`), and the
   dependency watch, `docs/dependency-watch.md`: the pins that trail upstream on purpose, each with
   what would move it and what to check (not carry-over; INTENT §23 #90).
 
@@ -121,13 +132,13 @@ resource, so machines must catch everything they can catch.
   statistics or spectrograms.
 - Each milestone ends with a listening gate: render A/B files plus a short checklist for the
   director.
-- **Deferred items** (`docs/m2-carry-over.md`) are handled as superpowers' subagent-driven development
+- **Deferred items** (`docs/m3-carry-over.md`) are handled as superpowers' subagent-driven development
   handles them (the director, 2026-10-30, retiring the 2026-10-28 carry-over policy): a reviewer's
   minor is fixed or deferred at the controller's judgment; deferred minors and items blocked outside
   our control (upstream, the director's ears, a later feature) are listed in the sub-project's final
   report and recorded in that file as a plain log, with no count rules. A row stays until the thing
   it names is done; nothing is filed upstream.
-- **The superpowers workflows** (the director, 2026-11-08; INTENT §23 #95). All work runs through
+- **The superpowers workflows** (the director, 2026-11-08; INTENT §23 #97). All work runs through
   them, resumed work included. Invoke each as a skill; following its idea without invoking it
   doesn't count:
   - `brainstorming` before any new spec or design change. It needs the director's answers, so the
@@ -417,6 +428,13 @@ runs the tests labeled either. The labels are:
   - `layers` (M2 sub-project 1): the four layers, in the engine (the layer's RNG key, the enable
     gate, the kind switch, the spreads) and in the `Processor` (the sum in order, the morph law,
     on and off, the kinds, the instrument's input into the rings, the event order);
+  - `voice` and `notes` (M3 sub-project 1): `voice` is the Voice slice's tests, in the engine (a
+    voice stream's key, the merge by onset, the steal, the clears), the `Processor` (Mode, the
+    per-voice sources and routes, bend with MPE Off and On, expression, the tail, the voice
+    goldens' MPE-against-expression equality) and the plugin (CLAP note IDs and expressions,
+    MIDI-MPE, the pedal, `clap_plugin_as_vst3`, `NOTE_END`, the tripwire with voices); `notes` is
+    the note table (identity by ID or pair, the pedal, expression state, the held set equal to
+    M2's on M2 sequences);
   - `mod`: the mod matrix: its routes, curves and factory routes (M1's `macroOffsets` bit for
     bit), the modulation sources, and the `Processor`'s per-cell application; also the editor's
     rings (`tests/ui/rings_tests.cpp`, tagged `[ui][mod]`);
@@ -594,7 +612,7 @@ multiply-add. Keep that step whenever the macOS leg changes.
 
 **The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
 Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
-cases alone, then all 108 golden cases (the 60 and the 48 preset goldens, whose packed presets
+cases alone, then all 116 golden cases (the 68 and the 48 preset goldens, whose packed presets
 the native `ctest` built) three `gg-render` processes at a time, each with `--content-dir` set to
 the fetched content. On a pull request and a
 push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
@@ -695,7 +713,8 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     Since M2 sub-project 3 each layer has `"A Quality"` … `"D Quality"` (0 Eco, 1 Normal, 2 HQ;
     bare `"Quality"` means layer A's) and there is a global `"Budget"` (a count of Normal grains,
     256 to 16,384, default 4,096): 223 parameters in all, 283 with M2 sub-project 2's twenty ring
-    parameters and M2 sub-project 4's forty.
+    parameters and M2 sub-project 4's forty, 290 with M3 sub-project 1's four parameters,
+    seven slots (Mode in each of four layers, plus MPE, MPE Bend Range and Bend Range).
     Sample mode takes `"quality": "hq"` beside `"eco"` and `"normal"`, and sets no quota.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
@@ -717,7 +736,16 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
       layer-A or global name with `targetLayer` `"A"`–`"D"` or `"all"`), set on top of the
       factory routes; a slot named twice is an error, and `"source": "None"` clears one.
     - `controls` is a time-ordered list of `{"time", "kind", "value", "channel"}`, kinds
-      `modWheel`, `aftertouch` and `pitchBend`, values 0–1, sent as MIDI control events.
+      `modWheel`, `aftertouch` and `pitchBend`, and since M3 sub-project 1 `sustain` (CC 64; 0.5
+      and above is down), `timbre` (CC 74) and `polyPressure` (which alone needs a `"key"`),
+      values 0–1, sent as MIDI control events; `aftertouch` and `pitchBend` keep their channel,
+      so MPE as MIDI renders. A route in `mod` takes an optional `"voiceOnly"` (skipped on Cloud
+      layers, per voice on a Voice layer). A note in `notes` takes optional `"id"` (its CLAP note
+      ID, from 0), `"releaseVelocity"` (0–127) and `"expressions"`, a time-ordered list of
+      `{"time", "kind", "value"}` with kinds `tuning` (semitones), `pressure`, `brightness` and
+      `volume`, sent as CLAP note expressions on that note (a note with expressions and no `id`
+      is given 1,000,000 plus its index); `params` takes `"A Mode"` … `"D Mode"` (0 Cloud, 1
+      Voice), `"MPE"`, `"MPE Bend Range"` and `"Bend Range"`.
     - `transport` is `{"tempoBpm", "playing", "startBeat"}`, a steady transport set once before
       the render (playing by default, from beat 0); without it the transport sources hold at 0.
     - `preset` (M2 sub-project 5's spec §6.10) is a `.ggpreset` file's path, resolved like a
@@ -807,7 +835,7 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
   into the build tree (see "Setup"), for the cases and tests that read it.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 60, and 48 preset goldens beside them (below): 108.
+  next time CMake runs. There are 68, and 48 preset goldens beside them (below): 116.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -953,6 +981,26 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     - Every one of the 51 earlier cases renders bit-identically with Smear 0, Bus Split 0, the
       filters Off, the delay at Amount 0 and the limiter Off: an extremes change that moves one
       is a regression.
+  - **M3 sub-project 1's eight voice goldens** (the Voice slice; its spec §4.9), each
+    catching all 16 injected steps (no table entry):
+    - `inst-voice-chord`: a pedaled C-major chord at Mode Voice over a 220 Hz sine, the pedal up
+      at 3 s, the release still spawning to about 4 s;
+    - `inst-voice-release`: one note, Env 1 Release 2 s, Density 32 Hz, the stream through the
+      release;
+    - `inst-voice-mpe`: three MPE notes on channels 2 to 4 (MPE On) with bend slides, pressure
+      swells and CC 74 moves, as MIDI;
+    - `inst-voice-expr`: the same gestures as CLAP note expressions; its event log equals
+      `inst-voice-mpe`'s with `i` dropped, and its WAV is byte-identical (a test in
+      `tests/core/voice_processor_tests.cpp`);
+    - `inst-voice-steal`: 20 notes held at once on one layer, four voice steals, no click;
+    - `inst-voice-dup`: two notes on one (channel, key) with IDs 1 and 2, released one at a time
+      (row 184);
+    - `fx-voice`: the FX, layer A Voice over a live 330 Hz sine at amplitude 0.1, a three-note
+      chord (at 0.5 it saturated before V7's headroom, carry-over row 411);
+    - `inst-voice-layers`: layers A Voice and B Cloud (a sweep sample, +7) together, three notes.
+    - V7's headroom (`1 / sqrt(n)` per voice grain) regenerated seven of them (all but
+      `inst-voice-release`); every one of the 108 earlier cases' WAV SHA-256 was unchanged: a voice
+      change that moves one is a regression.
   - **M2 sub-project 5's 48 preset goldens** (its spec §10; labels `golden` and `presets`), one
     per factory preset, in their own folder: `tests/golden/presets/cases/<fx|inst>-NN-<slug>.json`,
     expected files in `tests/golden/presets/expected/`, tests `golden_preset_<case>`, each 6 s
@@ -976,7 +1024,8 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
   - They compare the metrics within tolerances.
   - They compare the grain-event log exactly per line (CR and final newline ignored). That
     comparison is the cross-platform determinism gate. Each `.events.jsonl` line is one grain:
-    `i`, `layer` (0–3, since M2 sub-project 1), `onset`, `frac`, `pos`, `rate`, `dur`, `tex`
+    `i`, `layer` (0–3, since M2 sub-project 1), `v` (a voice grain's ordinal, since M3
+    sub-project 1; absent on Cloud lines, which are byte-identical), `onset`, `frac`, `pos`, `rate`, `dur`, `tex`
     (its Texture, since sub-project 5), `tier` (0 Eco, 1 Normal, 2 HQ, after the ladder), `lvl`
     (its latched mip level; both since M2 sub-project 3), `gain` and `pan` (`formatEventLine` in
     `tools/gg-render/Render.h`). A grain the overload ladder stole also has a line,
@@ -1012,7 +1061,7 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     and after, and say in the commit that every hash matches: the goldens' metrics allow 0.5 dB,
     and the event log holds only the grains, so a small gain error after them passes the goldens
     (INTENT §19).
-- **The at-rest check, `scripts/check-at-rest.sh <worktree>`** (INTENT §23 #95) proves a feature
+- **The at-rest check, `scripts/check-at-rest.sh <worktree>`** (INTENT §23 #97) proves a feature
   at rest moves nothing: it runs `update-goldens.sh` in `<worktree>/build/dev`, restores the
   expected files of the baseline's cases, and compares each case's WAV SHA-256 with this platform's
   baseline in `tests/golden/at-rest/`: the 108 cases as M2 left them.
@@ -1084,6 +1133,9 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
     - `engine-spectral`: `engine-sample` with Spectral grains (Position 0.5, 1 s of Spray) over
       the Spectral Smear's ring, which the engine fills from the same noise as sample material,
       after a 2 s warm-up so the ring holds smear; report-only, with no baseline entry yet;
+    - `engine-voices` (M3 sub-project 1): `engine-sample`'s stream split across the engine's 16
+      voices in voice mode, each held at full level at 1/16 of the grain rate, so the admitted
+      grains total X's; report-only, with no baseline entry yet;
   - `reference`: M0's 4-wide Hermite kernel, frozen (`renderHermiteSimd` in
     `tools/gg-bench/Kernels.h`). It is the CPU gate's yardstick. `Kernels.h` includes no engine
     header: it holds its own frozen copies of the Hann table and the readers, so no engine
@@ -1108,7 +1160,7 @@ $b --chain [--quick | --seconds S] [--rounds N] [--commit SHA] [--json out.json]
   `reference` for any ratio to be printed.
 - **Other options:** `--grains N` changes the grain count; `--cases a,b` runs only those cases
   (the default is all; `--help` lists them).
-- **Run length:** the full default run is 63 configurations × 5 rounds × 2 s, about 10.5
+- **Run length:** the full default run is 66 configurations × 5 rounds × 2 s, about 11
   minutes of timing (36 and about 6 minutes before the four cases of M2 sub-project 3 joined, 48
   before M2 sub-project 2's `engine-live-long` and M2 sub-project 4's four), plus
   `engine-live-long`'s three 300 s warm-ups, a few minutes more of wall time; a CI leg's benchmark

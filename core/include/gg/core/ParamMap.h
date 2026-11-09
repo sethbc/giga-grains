@@ -61,6 +61,16 @@ struct SpaceParams
 /// nearest integer (halves up), 0 to 4. `layer` is below kLayers (asserted; the namespace's note).
 SourceKind sourceKindOf(const ParamValues &effective, uint8_t layer) noexcept;
 
+/// A layer's Mode (M3 sub-project 1's spec §4.1): how it plays notes, from the Mode parameter.
+enum class LayerMode : uint8_t
+{
+    Cloud, ///< M2's: the held keys set the Cloud stream's pitches.
+    Voice, ///< One voice per note.
+};
+
+/// The mode a Mode value means: below 0.5 (or NaN) is Cloud, else Voice.
+LayerMode layerModeOf(float value) noexcept;
+
 /// The source kind a layer of `kind` reads in `mode`'s product (spec §6.4): Sample and Live are
 /// built in wave 1, in both products; Resample, a Live-mode engine whose ring the instance's
 /// output feeds, since M2 sub-project 2 (its spec §6.2), and Spectral since M2 sub-project 4, in

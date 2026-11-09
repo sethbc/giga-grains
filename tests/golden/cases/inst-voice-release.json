@@ -1,0 +1,10 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 7.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 5.0, "Size": -4.0, "Level": -18.0, "A Mode": 1, "A Env 1 Release": 1.0},
+  "notes": [{"time": 0.25, "key": 60, "duration": 1.5}]
+}

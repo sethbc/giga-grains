@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -19,6 +20,8 @@
 #include <span>
 #include <string>
 #include <system_error>
+
+#include <clapwrapper/vst3.h>
 
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamMap.h"
@@ -288,6 +291,7 @@ bool GigaGrainsPlugin::activate(double sampleRate, uint32_t /*minFrameCount*/,
         processor_ = std::move(processor);
         engineBlockSize_ = config.maxBlockSize;
         noteIds_.fill(NoteIdSlot{}); // a new session holds no notes
+        endedCount_ = 0;             // and has ended none: the last one's went with it
         gg::core::CommandEvent stale{};
         while (commandQueue_.pop(stale))
         {
@@ -568,6 +572,8 @@ clap_process_status GigaGrainsPlugin::processNonblocking(const clap_process *pro
     {
         applyBetweenBlocks(in, next);
     }
+    // The notes that ended in this call (or at a reset() before it): by its last frame.
+    sendEndedNotes(process->out_events, process->frames_count > 0 ? process->frames_count - 1 : 0);
     requestCollect();
     checkKinds();
     checkRingLengths();
@@ -722,6 +728,47 @@ void GigaGrainsPlugin::requestCollect() noexcept
     }
 }
 
+void GigaGrainsPlugin::sendEndedNotes(const clap_output_events *out, uint32_t time) noexcept
+{
+    endedCount_ += processor_->takeEndedNotes(
+        std::span<gg::core::EndedNote>(ended_.data() + endedCount_, ended_.size() - endedCount_));
+    std::size_t sent = 0;
+    for (; sent < endedCount_; ++sent)
+    {
+        const gg::core::EndedNote &n = ended_[sent];
+        clap_event_note e{};
+        e.header = {sizeof(e), time, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_END, 0};
+        e.note_id = n.noteId;
+        e.port_index = 0;
+        e.channel = n.channel;
+        e.key = n.key;
+        e.velocity = 0.0;
+        if (out == nullptr || !out->try_push(out, &e.header))
+        {
+            break; // the host's list is full: the rest wait for the next call
+        }
+    }
+    std::copy(ended_.begin() + static_cast<std::ptrdiff_t>(sent),
+              ended_.begin() + static_cast<std::ptrdiff_t>(endedCount_), ended_.begin());
+    endedCount_ -= sent;
+}
+
+const void *GigaGrainsPlugin::extension(const char *id) noexcept
+{
+    static const clap_plugin_as_vst3 asVst3{
+        [](const clap_plugin *, uint32_t) -> uint32_t { return 16; },
+        [](const clap_plugin *) -> uint32_t {
+            return AS_VST3_NOTE_EXPRESSION_TUNING | AS_VST3_NOTE_EXPRESSION_VOLUME |
+                   AS_VST3_NOTE_EXPRESSION_PAN | AS_VST3_NOTE_EXPRESSION_BRIGHTNESS;
+        },
+    };
+    if (id != nullptr && std::strcmp(id, CLAP_PLUGIN_AS_VST3) == 0)
+    {
+        return &asVst3;
+    }
+    return nullptr;
+}
+
 uint32_t GigaGrainsPlugin::tailGet() const noexcept
 {
     // A constant per product (ruling R-T7a), never a function of the values, Freeze or the
@@ -869,7 +916,7 @@ bool GigaGrainsPlugin::isNoteEvent(const clap_event_header *header) noexcept
         // clock, other CCs) doesn't count toward kMaxNoteEvents.
         const auto *e = reinterpret_cast<const clap_event_midi *>(header);
         const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
-        return status == 0x80 || status == 0x90 || (status == 0xB0 && e->data[1] == 123);
+        return status == 0x80 || status == 0x90 || (status == 0xB0 && (e->data[1] & 0x7F) == 123);
     }
     return header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF ||
            header->type == CLAP_EVENT_NOTE_CHOKE;
@@ -877,14 +924,26 @@ bool GigaGrainsPlugin::isNoteEvent(const clap_event_header *header) noexcept
 
 bool GigaGrainsPlugin::isControlEvent(const clap_event_header *header) noexcept
 {
-    if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID ||
-        header->type != CLAP_EVENT_MIDI)
+    if (header == nullptr || header->space_id != CLAP_CORE_EVENT_SPACE_ID)
+    {
+        return false;
+    }
+    if (header->type == CLAP_EVENT_NOTE_EXPRESSION)
+    {
+        const auto which =
+            reinterpret_cast<const clap_event_note_expression *>(header)->expression_id;
+        return which == CLAP_NOTE_EXPRESSION_TUNING || which == CLAP_NOTE_EXPRESSION_PRESSURE ||
+               which == CLAP_NOTE_EXPRESSION_BRIGHTNESS || which == CLAP_NOTE_EXPRESSION_VOLUME;
+    }
+    if (header->type != CLAP_EVENT_MIDI)
     {
         return false;
     }
     const auto *e = reinterpret_cast<const clap_event_midi *>(header);
     const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
-    return (status == 0xB0 && e->data[1] == 1) || status == 0xD0 || status == 0xE0;
+    const auto controller = static_cast<uint8_t>(e->data[1] & 0x7F);
+    return (status == 0xB0 && (controller == 1 || controller == 64 || controller == 74)) ||
+           status == 0xA0 || status == 0xD0 || status == 0xE0;
 }
 
 bool GigaGrainsPlugin::toControlEvent(const clap_event_header *header, ControlEvent &event) noexcept
@@ -893,6 +952,29 @@ bool GigaGrainsPlugin::toControlEvent(const clap_event_header *header, ControlEv
     {
         return false;
     }
+    if (header->type == CLAP_EVENT_NOTE_EXPRESSION)
+    {
+        // Matched by the Processor by note ID, else by (channel, key); the port is ignored.
+        const auto *x = reinterpret_cast<const clap_event_note_expression *>(header);
+        ControlKind kind = ControlKind::NoteVolume;
+        switch (x->expression_id)
+        {
+        case CLAP_NOTE_EXPRESSION_TUNING:
+            kind = ControlKind::NoteTuning;
+            break;
+        case CLAP_NOTE_EXPRESSION_PRESSURE:
+            kind = ControlKind::NotePressure;
+            break;
+        case CLAP_NOTE_EXPRESSION_BRIGHTNESS:
+            kind = ControlKind::NoteBrightness;
+            break;
+        default: // VOLUME: isControlEvent admits no other
+            break;
+        }
+        event = ControlEvent{header->time, kind,      x->channel, static_cast<float>(x->value),
+                             x->key,       x->note_id};
+        return true;
+    }
     const auto *e = reinterpret_cast<const clap_event_midi *>(header);
     const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
     const auto channel = static_cast<int16_t>(e->data[0] & 0x0F);
@@ -900,8 +982,15 @@ bool GigaGrainsPlugin::toControlEvent(const clap_event_header *header, ControlEv
     const auto data2 = static_cast<uint32_t>(e->data[2] & 0x7F);
     if (status == 0xB0)
     {
-        event = ControlEvent{header->time, ControlKind::ModWheel, channel,
-                             static_cast<float>(data2) / 127.0f};
+        const ControlKind kind = data1 == 64   ? ControlKind::Sustain
+                                 : data1 == 74 ? ControlKind::Timbre
+                                               : ControlKind::ModWheel;
+        event = ControlEvent{header->time, kind, channel, static_cast<float>(data2) / 127.0f};
+    }
+    else if (status == 0xA0)
+    {
+        event = ControlEvent{header->time, ControlKind::PolyPressure, channel,
+                             static_cast<float>(data2) / 127.0f, static_cast<int16_t>(data1)};
     }
     else if (status == 0xD0)
     {
@@ -946,36 +1035,47 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
             }
             *slot = NoteIdSlot{e->note_id, e->channel, e->key, ++noteIdAge_};
         }
-        event = NoteEvent{header->time, NoteEventType::On, e->channel, e->key,
-                          static_cast<float>(e->velocity)};
+        event = NoteEvent{header->time,
+                          NoteEventType::On,
+                          e->channel,
+                          e->key,
+                          static_cast<float>(e->velocity),
+                          e->note_id >= 0 ? e->note_id : -1};
         return true;
     }
     if (header->type == CLAP_EVENT_NOTE_OFF || header->type == CLAP_EVENT_NOTE_CHOKE)
     {
-        // A choke is a note-off. Wildcards (−1) release every held note they match, except that
-        // an off with both wildcards and a known ID releases that ID's note alone (ruling R15).
-        // An unknown ID keeps the release of everything: safer than a stuck note.
+        // A choke is the core's Choke (it silences: a Voice layer's voices finish at once, with
+        // no release; a Cloud layer hears a note-off), addressed as a note-off is. Wildcards (−1)
+        // match every note they match, except that an off with a known ID and both wildcards, or
+        // both fields given, addresses that ID's note alone (ruling R15), by its ID. An unknown
+        // ID keeps the off's fields: wildcards release everything, safer than a stuck note.
         const auto *e = reinterpret_cast<const clap_event_note *>(header);
-        int16_t channel = e->channel;
-        int16_t key = e->key;
-        if (e->note_id >= 0)
+        const bool choke = header->type == CLAP_EVENT_NOTE_CHOKE;
+        const NoteEventType type = choke ? NoteEventType::Choke : NoteEventType::Off;
+        const float release = choke ? 0.0f : static_cast<float>(e->velocity);
+        const bool oneWildcard = (e->channel == -1) != (e->key == -1);
+        if (e->note_id >= 0 && !oneWildcard)
         {
             for (NoteIdSlot &s : noteIds_)
             {
                 if (s.id == e->note_id)
                 {
-                    if (channel == -1 && key == -1)
-                    {
-                        channel = s.channel;
-                        key = s.key;
-                    }
+                    event = NoteEvent{header->time, type, s.channel, s.key, 0.0f, s.id, release};
                     s = NoteIdSlot{}; // the note has ended
-                    break;
+                    return true;
                 }
             }
         }
-        forgetNoteIds(channel, key);
-        event = NoteEvent{header->time, NoteEventType::Off, channel, key};
+        if (e->channel >= 0 && e->key >= 0 && !choke)
+        {
+            forgetOldestNoteId(e->channel, e->key); // the note the pair releases
+        }
+        else
+        {
+            forgetNoteIds(e->channel, e->key);
+        }
+        event = NoteEvent{header->time, type, e->channel, e->key, 0.0f, -1, release};
         return true;
     }
     if (header->type == CLAP_EVENT_MIDI)
@@ -983,26 +1083,34 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
         const auto *e = reinterpret_cast<const clap_event_midi *>(header);
         const auto status = static_cast<uint8_t>(e->data[0] & 0xF0);
         const auto channel = static_cast<int16_t>(e->data[0] & 0x0F);
-        const auto key = static_cast<int16_t>(e->data[1]);
+        // Each data byte is taken as its 7 bits, as toControlEvent and isNoteEvent take them.
+        const auto key = static_cast<int16_t>(e->data[1] & 0x7F);
+        const auto velocity = static_cast<uint8_t>(e->data[2] & 0x7F);
         if (status == 0x90)
         {
-            // A note-on with velocity 0 is a note-off (MIDI 1.0).
-            const auto type = e->data[2] > 0 ? NoteEventType::On : NoteEventType::Off;
+            // A note-on with velocity 0 is a note-off (MIDI 1.0), with no release velocity.
+            const auto type = velocity > 0 ? NoteEventType::On : NoteEventType::Off;
             if (type == NoteEventType::Off)
             {
-                forgetNoteIds(channel, key);
+                forgetOldestNoteId(channel, key);
             }
-            event = NoteEvent{header->time, type, channel, key,
-                              static_cast<float>(e->data[2] & 0x7F) / 127.0f};
+            event =
+                NoteEvent{header->time, type, channel, key, static_cast<float>(velocity) / 127.0f};
             return true;
         }
         if (status == 0x80)
         {
-            forgetNoteIds(channel, key);
-            event = NoteEvent{header->time, NoteEventType::Off, channel, key};
+            forgetOldestNoteId(channel, key);
+            event = NoteEvent{header->time,
+                              NoteEventType::Off,
+                              channel,
+                              key,
+                              0.0f,
+                              -1,
+                              static_cast<float>(velocity) / 127.0f};
             return true;
         }
-        if (status == 0xB0 && e->data[1] == 123)
+        if (status == 0xB0 && key == 123)
         {
             // CC 123, all notes off: it releases the notes held on its channel (ruling R14).
             forgetNoteIds(channel, -1);
@@ -1023,6 +1131,23 @@ void GigaGrainsPlugin::forgetNoteIds(int16_t channel, int16_t key) noexcept
         {
             s = NoteIdSlot{};
         }
+    }
+}
+
+void GigaGrainsPlugin::forgetOldestNoteId(int16_t channel, int16_t key) noexcept
+{
+    NoteIdSlot *oldest = nullptr;
+    for (NoteIdSlot &s : noteIds_)
+    {
+        if (s.id >= 0 && s.channel == channel && s.key == key &&
+            (oldest == nullptr || s.age < oldest->age))
+        {
+            oldest = &s;
+        }
+    }
+    if (oldest != nullptr)
+    {
+        *oldest = NoteIdSlot{};
     }
 }
 
@@ -1795,7 +1920,8 @@ bool GigaGrainsPlugin::presetEdited() const noexcept
     for (std::size_t s = 0; s < kParamCount; ++s)
     {
         // A preset load ignores the ring parameters, so reloading wouldn't undo a change.
-        if (gg::core::isRingParam(static_cast<ParamSlot>(s)))
+        if (gg::core::isRingParam(static_cast<ParamSlot>(s)) ||
+            gg::core::isMidiSetting(static_cast<ParamSlot>(s)))
         {
             continue;
         }
@@ -2160,7 +2286,7 @@ void GigaGrainsPlugin::countNoteOns(const clap_input_events *events) noexcept
         {
             const auto *midi = reinterpret_cast<const clap_event_midi *>(e);
             // A note-on with velocity 0 is a note-off (MIDI 1.0).
-            if ((midi->data[0] & 0xF0) == 0x90 && midi->data[2] > 0)
+            if ((midi->data[0] & 0xF0) == 0x90 && (midi->data[2] & 0x7F) > 0)
             {
                 ++count;
             }

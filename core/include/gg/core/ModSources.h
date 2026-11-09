@@ -11,6 +11,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Rng.h"
+#include "gg/grain/AmpEnvelope.h"
 
 /// The mod matrix's sources (M2 spec §6.8): small state machines, each stepped once per 32-sample
 /// grid cell (`cellSeconds` is 32 / sampleRate, fixed per Processor) and giving a value in [0, 1].
@@ -71,6 +72,22 @@ class Adsr
     /// advances the level by one cell.
     float step(const AdsrParams &params, bool gate, double cellSeconds) noexcept;
 
+    /// Whether the level is 0 and stays there while the gate and the controls stand, as of the
+    /// last step: the envelope idles, or it sustains at a Sustain of 0 (M3 Voice spec V1, B8: the
+    /// cue a voice takes to finish). A reset envelope is idle until a step opens its gate.
+    bool idle() const noexcept
+    {
+        return stage_ == Stage::Idle || (stage_ == Stage::Sustain && level_ == 0.0);
+    }
+
+    /// The last stepped cell as an AmpEnvelope (M3 Voice spec V1): its first sample `at` (the
+    /// boundary that step was for), the level at the cell's start (the value step returned), the
+    /// stage the gate gave it there, and the slopes `params` give per output sample at
+    /// `sampleRate`, each time clamped below at one cell as step clamps it. So valueAt(t) is, for
+    /// t in the cell, the level the cell's linear segment passes through at t, and past the cell
+    /// what the envelope reaches with the gate as it stands. Idle (0) before any step.
+    AmpEnvelope envelope(int64_t at, const AdsrParams &params, double sampleRate) const noexcept;
+
   private:
     enum class Stage : uint8_t
     {
@@ -86,6 +103,12 @@ class Adsr
     double releaseFrom_{0.0};
     Stage stage_{Stage::Idle};
     bool gate_{false};
+    // The last stepped cell (envelope): its start level, its stage after the gate's change, the
+    // release's start level then and the cell's length.
+    double cellLevel_{0.0};
+    double cellReleaseFrom_{0.0};
+    Stage cellStage_{Stage::Idle};
+    double cellSeconds_{0.0};
 };
 
 /// A random source's controls (spec §6.9): new values per second, and the glide's Smooth.

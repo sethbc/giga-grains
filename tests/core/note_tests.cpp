@@ -911,3 +911,143 @@ TEST_CASE("process with notes does not allocate", "[core][rt]")
         REQUIRE(allFinite(left));
     }
 }
+
+namespace
+{
+
+// M2's held set, kept as it was: one channel bit per key.
+struct M2Held
+{
+    std::array<uint16_t, 128> held{};
+
+    void apply(const NoteEvent &n)
+    {
+        switch (n.type)
+        {
+        case NoteEventType::On:
+            held[static_cast<size_t>(n.key)] |= static_cast<uint16_t>(1u << n.channel);
+            break;
+        case NoteEventType::Off:
+        case NoteEventType::Choke: // M2 had no Choke; the plugin sent a choke as an Off
+        {
+            const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
+            if (n.key < 0)
+            {
+                for (uint16_t &c : held)
+                {
+                    c &= keep;
+                }
+            }
+            else
+            {
+                held[static_cast<size_t>(n.key)] &= keep;
+            }
+            break;
+        }
+        case NoteEventType::AllOff:
+        {
+            const auto keep = static_cast<uint16_t>(n.channel < 0 ? 0u : ~(1u << n.channel));
+            for (uint16_t &c : held)
+            {
+                c &= keep;
+            }
+            break;
+        }
+        }
+    }
+
+    std::vector<uint8_t> keys() const
+    {
+        std::vector<uint8_t> k;
+        for (size_t i = 0; i < held.size(); ++i)
+        {
+            if (held[i] != 0)
+            {
+                k.push_back(static_cast<uint8_t>(i));
+            }
+        }
+        return k;
+    }
+};
+
+} // namespace
+
+TEST_CASE("the held set matches M2 on every sequence", "[core][notes]")
+{
+    for (uint64_t seq = 0; seq < 200; ++seq)
+    {
+        auto draw = [seq, n = uint64_t{0}](uint32_t range) mutable {
+            const uint64_t h = gg::rng::hash({seq, 0, 0, gg::rng::Field::SignalNoise, n++});
+            return static_cast<uint32_t>(gg::rng::uniform01(h) * range) % range;
+        };
+        auto p = instrument(1, 64);
+        M2Held m2;
+        std::array<std::array<bool, 16>, 128> down{}; // no duplicate On of a held pair
+        std::vector<float> left(64), right(64);
+        float *out[2] = {left.data(), right.data()};
+        for (int step = 0; step < 40; ++step)
+        {
+            std::vector<NoteEvent> events;
+            const uint32_t count = 1 + draw(4);
+            for (uint32_t e = 0; e < count; ++e)
+            {
+                const auto ch = static_cast<int16_t>(draw(3));
+                const auto key = static_cast<int16_t>(58 + draw(6));
+                const uint32_t kind = draw(10);
+                NoteEvent n{e, NoteEventType::On, ch, key, 0.5f};
+                if (kind < 5)
+                {
+                    if (down[static_cast<size_t>(key)][static_cast<size_t>(ch)])
+                    {
+                        continue;
+                    }
+                    down[static_cast<size_t>(key)][static_cast<size_t>(ch)] = true;
+                }
+                else if (kind < 8)
+                {
+                    n.type = NoteEventType::Off;
+                    down[static_cast<size_t>(key)][static_cast<size_t>(ch)] = false;
+                }
+                else if (kind == 8)
+                {
+                    n.type = NoteEventType::Off;
+                    n.key = draw(2) == 0 ? int16_t{-1} : key;
+                    n.channel = draw(2) == 0 ? int16_t{-1} : ch;
+                    for (size_t k = 0; k < 128; ++k)
+                    {
+                        for (size_t c = 0; c < 16; ++c)
+                        {
+                            if ((n.key < 0 || n.key == static_cast<int16_t>(k)) &&
+                                (n.channel < 0 || n.channel == static_cast<int16_t>(c)))
+                            {
+                                down[k][c] = false;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    n.type = NoteEventType::AllOff;
+                    if (draw(2) == 0)
+                    {
+                        n.channel = -1;
+                    }
+                    for (auto &row : down)
+                    {
+                        for (size_t c = 0; c < 16; ++c)
+                        {
+                            if (n.channel < 0 || n.channel == static_cast<int16_t>(c))
+                            {
+                                row[c] = false;
+                            }
+                        }
+                    }
+                }
+                events.push_back(n);
+                m2.apply(n);
+            }
+            p->process(nullptr, 0, out, 2, 64, {}, events);
+            REQUIRE(keysOf(*p) == m2.keys());
+        }
+    }
+}

@@ -91,6 +91,50 @@ void Adsr::reset() noexcept
     releaseFrom_ = 0.0;
     stage_ = Stage::Idle;
     gate_ = false;
+    cellLevel_ = 0.0;
+    cellReleaseFrom_ = 0.0;
+    cellStage_ = Stage::Idle;
+    cellSeconds_ = 0.0;
+}
+
+AmpEnvelope Adsr::envelope(int64_t at, const AdsrParams &params, double sampleRate) const noexcept
+{
+    AmpEnvelope e;
+    e.at = at;
+    e.level = cellLevel_;
+    if (cellSeconds_ <= 0.0 || !(sampleRate > 0.0))
+    {
+        return e; // never stepped: Idle at 0
+    }
+    switch (cellStage_)
+    {
+    case Stage::Idle:
+        e.stage = AmpEnvelope::Stage::Idle;
+        break;
+    case Stage::Attack:
+        e.stage = AmpEnvelope::Stage::Attack;
+        break;
+    case Stage::Decay:
+        e.stage = AmpEnvelope::Stage::Decay;
+        break;
+    case Stage::Sustain:
+        e.stage = AmpEnvelope::Stage::Sustain;
+        break;
+    case Stage::Release:
+        e.stage = AmpEnvelope::Stage::Release;
+        break;
+    }
+    const double sustain =
+        params.sustain >= 0.0f ? (params.sustain <= 1.0f ? params.sustain : 1.0f) : 0.0f;
+    // step's per-cell increments over the cell's samples: cellSeconds / T per cell is
+    // 1 / (T × sampleRate) per sample.
+    e.attackPerSample = 1.0 / (atLeastOneCell(params.attackSec, cellSeconds_) * sampleRate);
+    e.decayPerSample =
+        (1.0 - sustain) / (atLeastOneCell(params.decaySec, cellSeconds_) * sampleRate);
+    e.releasePerSample =
+        cellReleaseFrom_ / (atLeastOneCell(params.releaseSec, cellSeconds_) * sampleRate);
+    e.sustain = sustain;
+    return e;
 }
 
 float Adsr::step(const AdsrParams &params, bool gate, double cellSeconds) noexcept
@@ -106,6 +150,10 @@ float Adsr::step(const AdsrParams &params, bool gate, double cellSeconds) noexce
         releaseFrom_ = level_;
     }
     gate_ = gate;
+    cellLevel_ = level_;
+    cellReleaseFrom_ = releaseFrom_;
+    cellStage_ = stage_;
+    cellSeconds_ = cellSeconds;
 
     const double sustain =
         params.sustain >= 0.0f ? (params.sustain <= 1.0f ? params.sustain : 1.0f) : 0.0f;
