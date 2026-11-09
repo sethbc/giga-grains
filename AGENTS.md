@@ -1021,8 +1021,8 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     for this platform, no `build/dev`, or an uncommitted edit of a baseline case's expected file
     (which it would otherwise discard).
   - **One baseline per platform,** named `<os>-<arch>-dev.sha256` (`linux-x86_64-dev` so far),
-    because a WAV's exact bytes differ between platforms, and always from a `dev` build. A different
-    compiler may need its own too. To add one, run `scripts/update-goldens.sh build/dev` at a commit
+    because a WAV's exact bytes differ between platforms, and always from a `dev` build. If a second
+    compiler on one platform turns out to differ, the name will have to carry it too. To add one, run `scripts/update-goldens.sh build/dev` at a commit
     whose audio is known to be right and commit `build/dev/golden/wav-sha256.txt` under that name.
   - Newer cases' expected files are rewritten and stay so, so stage files by name.
 - Look at every spectrogram before committing new goldens, and say in the commit message why they
