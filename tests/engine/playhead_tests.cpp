@@ -178,16 +178,17 @@ TEST_CASE("a rebase continues from the same point", "[engine][playhead]")
     const double slopeAfter = p.offsetAt(9600.0 + 4800.0) - p.offsetAt(9600.0);
     CHECK(slopeAfter == 2.0 * slopeBefore);
 
-    // An edge change rebases too, with the new edge's canon: Bounce reduces over 2L.
-    // x = t / 65536, so x(229376) = 3.5: Wrap's canon would give 0.5, Bounce's (over 2L = 2) 1.5.
+    // An edge change rebases too: the offset is refolded under the old edge (ruling R11), then
+    // reduced by the new edge's canon. x = t / 65536, so x(229376) = 3.5, whose Wrap point is 0.5:
+    // x0 = 0.5, and Bounce reads the same point (not 1.5, the new canon of the raw offset).
     gg::Playhead b;
     b.sync(0, 1.0, gg::ScanEdge::Wrap, geometry(kDyadicUnitsPerSecond), kSampleRate, 0.0);
     b.sync(229376, 1.0, gg::ScanEdge::Bounce, geometry(kDyadicUnitsPerSecond), kSampleRate, 0.0);
     CHECK(b.edge() == gg::ScanEdge::Bounce);
-    CHECK(b.offsetAt(229376.0) == 1.5);
+    CHECK(b.offsetAt(229376.0) == 0.5);
     CHECK(gg::scanFold(0.0 + b.offsetAt(229376.0), 0.0, 1.0, gg::ScanEdge::Bounce) ==
-          gg::scanFold(3.5, 0.0, 1.0, gg::ScanEdge::Bounce));
-    CHECK(b.offsetAt(229376.0 + 32768.0) == 2.0); // the same slope after
+          gg::scanFold(3.5, 0.0, 1.0, gg::ScanEdge::Wrap));
+    CHECK(b.offsetAt(229376.0 + 32768.0) == 1.0); // the same slope after
 }
 
 TEST_CASE("stop leaves the edge on a reversal", "[engine][playhead]")
