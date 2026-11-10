@@ -808,17 +808,17 @@ TEST_CASE("a preset load sets the scan parameters and INIT clears them", "[core]
                 CHECK(values[i] == state.values[i]);
             }
         }
-        // INIT again: every one back to its default.
-        const SessionState init = initState(mode);
+        // INIT over the modified state, as the plugin's loadInit applies it (initState, then
+        // keepRingLengths against the current values): every scan value is back to 0.
+        ParamValues init = initState(mode).values;
+        gg::core::keepRingLengths(state.values, init);
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
             for (const LayerParam p :
                  {LayerParam::ScanSpeed, LayerParam::ScanEdge, LayerParam::ScanTrack})
             {
                 const auto i = at(gg::core::layerSlot(p, layer));
-                CHECK(init.values[i] ==
-                      gg::core::paramMeta(gg::core::layerSlot(p, layer), mode).defaultVal);
-                CHECK(init.values[i] == 0.0f);
+                CHECK(init[i] == 0.0f);
             }
         }
     }

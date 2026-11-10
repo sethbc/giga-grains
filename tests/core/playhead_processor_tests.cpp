@@ -9,6 +9,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -17,6 +22,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "LayersFixture.h"
+#include "Render.h"
+#include "RenderSpec.h"
 #include "gg/core/MathDet.h"
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamMap.h"
@@ -514,11 +521,11 @@ TEST_CASE("scan track's tracked speed is clamped to 64x", "[core][playhead]")
     }
 }
 
-TEST_CASE("the voice scan's positions follow the closed form", "[core][playhead]")
+TEST_CASE("the voice scan wraps by the closed form", "[core][playhead]")
 {
-    // inst-scan-voice's setup (layer A Voice, Scan Speed 0.5 = 1x, Wrap, Position 0, three notes
-    // 0.75 s apart) over the fixture's 1 s sample, so the scan wraps: each voice's grain i starts
-    // at scanFold((onset_i - start_v) / rate x R / (F - 1), 0, 1, Wrap) of the sample.
+    // The wrap path: layer A Voice, Scan Speed 0.5 = 1x, Wrap, Position 0, three notes 0.75 s
+    // apart over the fixture's 1 s sample, so the scan wraps: each voice's grain i starts at
+    // scanFold((onset_i - start_v) / (F - 1), 0, 1, Wrap) of the sample (R = the render's rate).
     auto p = make(Mode::Instrument);
     p->setBase(slotA(LayerParam::ScanSpeed), 0.5f);
     p->setBase(slotA(LayerParam::ScanEdge), 0.0f);
@@ -542,10 +549,64 @@ TEST_CASE("the voice scan's positions follow the closed form", "[core][playhead]
         CHECK(grains.front().onsetSample == starts[v]);
         for (const gg::GrainSpec &g : grains)
         {
-            const double x =
-                (onsetOf(g) - static_cast<double>(starts[v])) / kRate * kRate / (kFrames - 1.0);
+            const double x = (onsetOf(g) - static_cast<double>(starts[v])) / (kFrames - 1.0);
             const double fraction = gg::scanFold(0.0 + x, 0.0, 1.0, gg::ScanEdge::Wrap);
             CHECK_THAT(g.startPos / (kFrames - 1.0), WithinAbs(fraction, 1e-9));
         }
     }
+}
+
+namespace
+{
+/// The number after `"key":` in an event-log line.
+double fieldOf(const std::string &line, const std::string &key)
+{
+    const std::string needle = "\"" + key + "\":";
+    const auto at = line.find(needle);
+    REQUIRE(at != std::string::npos);
+    return std::strtod(line.c_str() + at + needle.size(), nullptr);
+}
+} // namespace
+
+TEST_CASE("the golden inst-scan-voice's grains follow the closed form", "[core][playhead]")
+{
+    // Renders tests/golden/cases/inst-scan-voice.json itself (4 s sweep, Size, three notes, Scan
+    // Speed 0.5 = 1x, Wrap) in process, with only Spray and Distribution set to 0 (the case
+    // leaves Spray at its default, whose offsets the closed form doesn't include). Each voice
+    // starts at Position 0, so grain i of voice v is at scanFold((onset_i - start_v) / (F - 1)),
+    // F the sample's 192000 frames; the holds (2.5 s) never wrap on a 4 s sample.
+    const auto path = std::filesystem::path{GG_GOLDEN_DIR} / "cases" / "inst-scan-voice.json";
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.good());
+    std::string json{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const std::string key = "\"params\": {";
+    const auto at = json.find(key);
+    REQUIRE(at != std::string::npos);
+    json.insert(at + key.size(), "\"Spray\": 0.0, \"Distribution\": 0.0, ");
+    std::string error;
+    const auto spec = gg::render::parseRenderSpec(json, error);
+    INFO(error);
+    REQUIRE(spec.has_value());
+    std::vector<std::string> lines;
+    gg::render::render(*spec, &lines);
+    REQUIRE(lines.size() > 100);
+    constexpr double kFrames = 192000.0;
+    const int64_t starts[3] = {12000, 48000, 84000};
+    int seen[3] = {0, 0, 0};
+    for (const std::string &line : lines)
+    {
+        const auto v = static_cast<size_t>(fieldOf(line, "v"));
+        REQUIRE(v < 3);
+        const double onset = fieldOf(line, "onset") + fieldOf(line, "frac");
+        if (seen[v]++ == 0)
+        {
+            CHECK(onset == static_cast<double>(starts[v])); // the note's own boundary
+        }
+        const double x = (onset - static_cast<double>(starts[v])) / (kFrames - 1.0);
+        const double fraction = gg::scanFold(0.0 + x, 0.0, 1.0, gg::ScanEdge::Wrap);
+        CHECK_THAT(fieldOf(line, "pos") / (kFrames - 1.0), WithinAbs(fraction, 1e-9));
+    }
+    CHECK(seen[0] > 20);
+    CHECK(seen[1] > 20);
+    CHECK(seen[2] > 20);
 }
