@@ -179,7 +179,7 @@ bool anyTimeVarying(const ModRoutes &routes) noexcept
 }
 
 // sameCloud compares every field of CloudParams: a field added there must be added there too.
-static_assert(sizeof(CloudParams) == 120, "CloudParams changed: update sameCloud");
+static_assert(sizeof(CloudParams) == 128, "CloudParams changed: update sameCloud");
 
 /// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
 /// spared a value that would change a bit).
@@ -191,7 +191,7 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
     return same(a.densityHz, b.densityHz) && same(a.distribution, b.distribution) &&
            same(a.grainDurationSec, b.grainDurationSec) && same(a.position, b.position) &&
            same(a.spray, b.spray) && same(a.pitchSemitones, b.pitchSemitones) &&
-           same(a.stereo, b.stereo) &&
+           same(a.stereo, b.stereo) && same(a.pan, b.pan) &&
            std::bit_cast<uint32_t>(a.gain) == std::bit_cast<uint32_t>(b.gain) &&
            same(a.texture, b.texture) && a.quality == b.quality &&
            a.sprayInSeconds == b.sprayInSeconds &&

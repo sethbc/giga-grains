@@ -1989,3 +1989,37 @@ TEST_CASE("the pool size is ProcessorConfig::grainCapacity", "[core][layers][bud
     CHECK(p.droppedGrainEvents() == 0);
     CHECK(stealsPrecedeTheirSpawns(log));
 }
+
+TEST_CASE("A Pan reaches layer A's grains only", "[core][layers]")
+{
+    constexpr int64_t kFrames = 24000;
+    const Stereo input = noise(kFrames, 0.5f, 43);
+    Processor p({kRate, 4096, 47, Mode::Fx});
+    wetOnly(p);
+    p.setBase(ParamSlot::LayerBOn, 1.0f);
+    p.setBase(ParamSlot::Stereo, 0.0f);
+    p.setBase(layerSlot(LayerParam::Stereo, 1), 0.0f);
+    p.setBase(layerSlot(LayerParam::Pan, 0), 0.5f);
+    p.setBase(layerSlot(LayerParam::Pan, 1), 0.0f);
+    Log log;
+    p.setEventSink(&Log::record, &log);
+    Stereo out = silence(kFrames);
+    render(p, &input, 0, kFrames, {512}, {}, out, &log);
+    int a = 0;
+    int b = 0;
+    for (const Log::Event &e : log.events)
+    {
+        if (e.layer == 0)
+        {
+            ++a;
+            CHECK(e.grain.pan == 0.5f);
+        }
+        else if (e.layer == 1)
+        {
+            ++b;
+            CHECK(e.grain.pan == 0.0f);
+        }
+    }
+    CHECK(a > 5);
+    CHECK(b > 5);
+}

@@ -133,6 +133,7 @@ CloudParams toCloudParams(const ParamValues &effective, Mode mode, uint8_t layer
     p.spray = 2.0 / 255.0 * (exp2Det(8.0 * param(LayerParam::Spray)) - 1.0);
     p.pitchSemitones = param(LayerParam::Pitch);
     p.stereo = param(LayerParam::Stereo);
+    p.pan = param(LayerParam::Pan);
     p.texture = param(LayerParam::Texture);
     p.pitchSpreadSemitones = param(LayerParam::PitchSpread);
     p.sizeSpreadOctaves = param(LayerParam::SizeSpread);
