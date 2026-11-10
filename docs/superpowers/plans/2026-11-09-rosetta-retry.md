@@ -76,11 +76,11 @@
 
 **Files:**
 - Create: `docs/spikes/m3-rosetta-compare-probe.md`
-- Modify: `INTENT.md` (§23), `CLAUDE.md` (the "x86_64 slice under Rosetta" paragraph), `docs/releasing.md` ("The Rosetta kernel test fails on the macOS leg"), `docs/m3-carry-over.md` (rows 234, 403)
+- Modify: `INTENT.md` (§23), `AGENTS.md` (the "x86_64 slice under Rosetta" paragraph), `docs/releasing.md` ("The Rosetta kernel test fails on the macOS leg"), `docs/m3-carry-over.md` (rows 234, 403)
 
 - [ ] **Step 1: The spike.** The probe's full source (`git show row403-probe:scripts/row403-probe.cpp`) in a fenced block, how it ran, and the results: run 42687277007; `fresh` 572 and `reuse` 531 float-compare misfires in 377,588,640,000 and 379,253,856,000 compares; the 80 reported all held right operands with rescan bad 0; `sse` 0 in 2,008,571,904,000; all nine shard runs passed that time. The limits: no native arm64 control; `sse` compared by integer bits, so only the float compare is implicated; row 234's `sameBits` and event-log failures are inferred, not proven.
 - [ ] **Step 2: INTENT §23**, the next free row number: the director's ruling of 2026-11-09, amending #75: the runner's float compares misfire, row 403 closed, the step's retry and its limits. Dated.
-- [ ] **Step 3: `CLAUDE.md` and `docs/releasing.md`:** the step retries a failed case once and lists it; a run red after that is a real failure, so don't re-run it hoping.
+- [ ] **Step 3: `AGENTS.md` and `docs/releasing.md`:** the step retries a failed case once and lists it; a run red after that is a real failure, so don't re-run it hoping.
 - [ ] **Step 4: Carry-over.** Row 403 closed (the runner's fault, the probe, the ruling). Row 234: the probe's finding, what stays inferred, and that the retry now absorbs it. Add the two occurrences of row 403 at runs 42381691057 and 42390128189, and sub-project 1's parked minors: the Cloud-choke wording, stale `NoteEvents.h` comments, choke-then-full-table-replacement, missing multi-block and `[rt]` choke tests.
 - [ ] **Step 5: Commit** the five files.
 

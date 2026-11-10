@@ -59,7 +59,7 @@ escaped for Catch2's test spec is the builder's.
 ## Records, in the same change
 
 - INTENT §23: a new row amending #75 (Part II), with the probe's numbers.
-- `CLAUDE.md`'s "x86_64 slice under Rosetta" paragraph; `docs/releasing.md`'s Rosetta entry.
+- `AGENTS.md`'s "x86_64 slice under Rosetta" paragraph; `docs/releasing.md`'s Rosetta entry.
 - Carry-over: row 403 closed, row 234 updated with the probe and the inference.
 - `docs/spikes/m3-rosetta-compare-probe.md`: the probe's source, its method and results, so that the
   throwaway `row403-probe` branch can then be deleted.
