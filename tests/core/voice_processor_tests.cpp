@@ -1346,8 +1346,8 @@ TEST_CASE("an envelope target never moves a Cloud layer", "[core][voice][mod]")
 TEST_CASE("Key to Pan pans each voice", "[core][voice][mod]")
 {
     // E6: Pan is a voice target. At Stereo 0, Key to Pan (Bipolar, depth 1) sets each voice's
-    // Pan to clamp(bipolar(key / 127)). The grains' pan reads it once CloudParams carries it
-    // (EB9's CloudParams::pan); until then the voice's computed Pan is checked.
+    // Pan to clamp(bipolar(key / 127)), and each of its grains draws there (EB9's
+    // CloudParams::pan).
     auto p = voiceProcessor();
     p->setBase(slotA(LayerParam::Stereo), 0.0f);
     p->setRoutes(
@@ -1371,8 +1371,17 @@ TEST_CASE("Key to Pan pans each voice", "[core][voice][mod]")
     CHECK(expected(96) > 0.0f);
     // The layer's Pan doesn't move.
     CHECK(p->effective(slotA(LayerParam::Pan)) == 0.0f);
-    REQUIRE_FALSE(grainsOf(*log, 0, 0).empty());
-    REQUIRE_FALSE(grainsOf(*log, 0, 1).empty());
+    const auto panOf = [&log, &expected](uint32_t ordinal, int key) {
+        const auto grains = grainsOf(*log, 0, ordinal);
+        REQUIRE_FALSE(grains.empty());
+        for (const gg::GrainSpec &g : grains)
+        {
+            INFO("voice " << ordinal << " onset " << g.onsetSample);
+            CHECK(std::bit_cast<uint32_t>(g.pan) == std::bit_cast<uint32_t>(expected(key)));
+        }
+    };
+    panOf(0, 36);
+    panOf(1, 96);
 }
 
 TEST_CASE("Bus Split per voice", "[core][voice][mod]")
