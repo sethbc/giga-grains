@@ -267,8 +267,8 @@ CI run 42687277007 (2026-11-09), at fae0ae4:
 - **Only the float compare is implicated.** `sse` compared its results by integer bits and found
   nothing, so SSE arithmetic is not shown to misfire.
 - **Row 234 is inferred, not proven.** That the same fault explains row 234's `sameBits` failures
-  and extra event-log grains is a likeliness: those tests also compare floats and fail at about
-  the same rate on the same machine. The probe ran none of them.
+  and extra event-log grains is a likeliness: those tests also compare floats, on the same
+  machine. The probe ran none of them.
 - **The rate is one run's.** 1,103 misfires in one run; the figure carries no spread.
 
 ## What changed because of it
