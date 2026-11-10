@@ -67,7 +67,7 @@ double sineRmsError(const SampleBuffer &out, double hz, double from, double to)
 }
 
 /// The process's peak resident memory so far, in bytes; nullopt where it isn't measured
-/// (Windows). Each Catch2 test case runs in a process of its own (CLAUDE.md), so this is the
+/// (Windows). Each Catch2 test case runs in a process of its own (AGENTS.md), so this is the
 /// test's.
 std::optional<uint64_t> peakResidentBytes()
 {

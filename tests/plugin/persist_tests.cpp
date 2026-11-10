@@ -818,7 +818,7 @@ TEST_CASE("a long ring resizes while the audio thread runs", "[plugin][threads][
     // can't fail a correct build. The polls and declines are reported, not asserted; the exact
     // bound is the next test's. Each poll waits for the audio thread to render kPollBlocks blocks;
     // the deadlines and kMaxBlocks are safety bounds only, and reaching one fails. [serial]: its
-    // audio thread keeps real time (CLAUDE.md, a test that measures time).
+    // audio thread keeps real time (AGENTS.md, a test that measures time).
     constexpr int kPolls = 64;
     constexpr int64_t kPollBlocks = 3;
     constexpr int64_t kFillBlocks = int64_t{160} * 48000 / kBlock;
@@ -1005,7 +1005,7 @@ TEST_CASE("a resize lands with kAdoptCopyFrames written since its copy and not a
 TEST_CASE("params.flush adopts no ring: the offer waits whole for the next process call",
           "[plugin]")
 {
-    // The program manager's ruling (CLAUDE.md: params.flush stays trivial): a restore offered
+    // The program manager's ruling (AGENTS.md: params.flush stays trivial): a restore offered
     // while active is a ring, a source and values on layer A's exchange; a flush takes none of it,
     // and the next process() call applies it all at its start, the ring held from that call's
     // first sample, so it renders as a restore made before the first call does.
