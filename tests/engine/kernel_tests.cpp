@@ -1354,7 +1354,7 @@ template <> struct FadeReach<Linear> : Reach<Hermite>
 // its residual rate r = rate / d (exact, d a power of two).
 float stretchOfGrain(const gg::GrainRows &rows, uint32_t i, uint32_t d = 1)
 {
-    return specStretch(rows.rate[i] / static_cast<double>(d));
+    return specStretch(std::abs(rows.rate[i]) / static_cast<double>(d));
 }
 
 // Requires the pool to hold grains at stretch 1 and grains stretched to 0.6 or below (residual
@@ -1389,6 +1389,36 @@ std::vector<gg::GrainSpec> atDecimation(std::vector<gg::GrainSpec> specs, uint32
         g.rate *= static_cast<double>(d);
     }
     return specs;
+}
+
+// The specs with every second grain, from row `first`, reversed: its rate negated and its start
+// moved to startPos + rate x durationSamples, so the pool mixes both directions and spans the same
+// reads.
+std::vector<gg::GrainSpec> reversed(std::vector<gg::GrainSpec> specs, std::size_t first = 0)
+{
+    for (std::size_t k = first; k < specs.size(); k += 2)
+    {
+        specs[k].startPos += specs[k].rate * specs[k].durationSamples;
+        specs[k].rate = -specs[k].rate;
+    }
+    return specs;
+}
+
+// Runs the rest of a test case twice, as two sections: forward, then with reversed grains, for
+// which it returns true. For a case with no SECTION of its own (Catch2 enters one leaf per run, so
+// sections of its own would be siblings of these).
+bool reversedSection()
+{
+    bool isReversed = false;
+    SECTION("forward") {}
+    SECTION("reversed") { isReversed = true; }
+    return isReversed;
+}
+
+// The specs as they are, or reversed() in a case's reversed section.
+std::vector<gg::GrainSpec> directed(std::vector<gg::GrainSpec> specs, bool isReversed)
+{
+    return isReversed ? reversed(std::move(specs)) : specs;
 }
 
 // The exact condition under which the SIMD kernel may render output sample t of grain i, reading
@@ -1610,12 +1640,13 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference", "[kernel]", Hermi
     // render's bits (spec §6.3's exact scaling).
     const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 11);
-    const Pool unscaled(randomGrains(21, 500, kNoiseFrames));
+    const bool isReversed = reversedSection();
+    const Pool unscaled(directed(randomGrains(21, 500, kNoiseFrames), isReversed));
     const auto unscaledRender = renderBoth<TestType>(unscaled, src.stereo(), 2, 0, 4096, tables);
     for (const uint32_t d : decimationsOf<TestType>())
     {
         INFO("decimation " << d);
-        const Pool pool(atDecimation(randomGrains(21, 500, kNoiseFrames), d));
+        const Pool pool(atDecimation(directed(randomGrains(21, 500, kNoiseFrames), isReversed), d));
         requireBothStretches(pool.rows(), pool.size(), d);
         {
             INFO("block [0, 4096)");
@@ -1653,6 +1684,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
     // For the sinc, sources of 15 and 16 frames too: one frame short of its 16 taps, and just long
     // enough. The sinc also at decimations 2 and 4, over levels of those frames (Noise's views).
     const Tables &tables = kernelTables();
+    const bool isReversed = reversedSection();
     for (const uint32_t d : decimationsOf<TestType>())
     {
         INFO("decimation " << d);
@@ -1689,6 +1721,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference on sources of 1 to 
                              [](const gg::GrainSpec &a, const gg::GrainSpec &b) {
                                  return a.onsetSample < b.onsetSample;
                              });
+            specs = directed(std::move(specs), isReversed);
             const Pool pool(atDecimation(specs, d));
             requireBothStretches(pool.rows(), pool.size(), d);
             int64_t end = 0;
@@ -1765,6 +1798,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
     // alignment, and compared with one reference call over the whole span.
     const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 13);
+    const bool isReversed = reversedSection();
     const std::vector<double> rates = {0.25, 0.5, 1.0, 1.0 / 0.6, 1.5, 2.0, 3.0, 4.0};
     std::vector<gg::GrainSpec> specs;
     uint64_t k = 0;
@@ -1795,6 +1829,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at the source ends"
             }
         }
     }
+    specs = directed(std::move(specs), isReversed);
     int64_t end = 0;
     for (const gg::GrainSpec &g : specs)
     {
@@ -1848,13 +1883,12 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
     const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 17);
 
-    SECTION("rates 1/16 and 16")
-    {
+    const auto extremeRates = [&](double sign) {
         for (const uint32_t d : decimationsOf<TestType>())
         {
             INFO("decimation " << d);
             const Pool pool(
-                atDecimation(randomGrains(23, 500, kNoiseFrames, {1.0 / 16.0, 16.0}), d));
+                atDecimation(randomGrains(23, 500, kNoiseFrames, {sign / 16.0, sign * 16.0}), d));
             requireBothStretches(pool.rows(), pool.size(), d);
             auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(d), 2, 0, 4096, tables);
             REQUIRE(anyNonZero(ref.ch[0]));
@@ -1871,10 +1905,11 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
                 REQUIRE(sameBits(s.ch[1], r.ch[1]));
             }
         }
-    }
+    };
+    SECTION("rates 1/16 and 16") { extremeRates(1.0); }
+    SECTION("reversed, rates -1/16 and -16") { extremeRates(-1.0); }
 
-    SECTION("a 3,600 s grain at 768 kHz")
-    {
+    const auto longGrain = [&](double sign) {
         constexpr double kDuration = 3600.0 * 768000.0;
         REQUIRE(kDuration == 2764800000.0);
         constexpr int64_t kOnset = 1000;
@@ -1885,7 +1920,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
         {
             for (const int64_t probe : {kOnset + static_cast<int64_t>(kDuration / 2), end - 4000})
             {
-                for (const double rate : {1.0 / 16.0, 1.0, 16.0})
+                for (const double rate : {sign / 16.0, sign, sign * 16.0})
                 {
                     INFO("decimation " << d << ", probe " << probe << ", rate " << rate);
                     const double e = static_cast<double>(probe - kOnset);
@@ -1933,7 +1968,9 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference at extreme rates an
                 }
             }
         }
-    }
+    };
+    SECTION("a 3,600 s grain at 768 kHz") { longGrain(1.0); }
+    SECTION("reversed, a 3,600 s grain at 768 kHz") { longGrain(-1.0); }
 }
 
 TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output shape", "[kernel]",
@@ -1946,6 +1983,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
     // pass, which a lane the window masks must leave alone, as the reference does.
     const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 19);
+    const bool isReversed = reversedSection();
     std::vector<gg::GrainSpec> specs = randomGrains(25, 64, kNoiseFrames);
     for (uint32_t k = 0; k < specs.size(); ++k)
     {
@@ -1954,6 +1992,7 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference for every output sh
         specs[k].durationSamples = 16.0 + u01(43, 0, k) * 200.0;
     }
     specs[0].onsetFrac = 0.0;
+    specs = directed(std::move(specs), isReversed);
     // The sinc also at decimations 2 and 4, an empty level among them.
     for (const uint32_t d : decimationsOf<TestType>())
     {
@@ -2031,10 +2070,11 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite tap
         }
     }
     src.interleave();
+    const bool isReversed = reversedSection();
     for (const uint32_t d : decimationsOf<TestType>())
     {
         INFO("decimation " << d);
-        const Pool pool(atDecimation(randomGrains(27, 500, kNoiseFrames), d));
+        const Pool pool(atDecimation(directed(randomGrains(27, 500, kNoiseFrames), isReversed), d));
         requireBothStretches(pool.rows(), pool.size(), d);
         auto [ref, simd] = renderBoth<TestType>(pool, src.stereo(d), 2, 0, 4096, tables);
         REQUIRE(anyNaN(ref.ch[0]));
@@ -2053,6 +2093,60 @@ TEMPLATE_TEST_CASE("simd sample kernel matches the reference with non-finite tap
             REQUIRE(sameOrBothNaN(s.ch[0], r.ch[0]));
             REQUIRE(sameOrBothNaN(s.ch[1], r.ch[1]));
         }
+    }
+}
+
+TEMPLATE_TEST_CASE("the sample run estimate solves its bounds for either sign",
+                   "[kernel][grainshape]", Hermite, Linear, Sinc)
+{
+    // The bounds sampleSimdRun starts stepping from are solved, not the whole call: within 4
+    // samples of the exact run, outside it, for a forward and a reversed grain alike, so the
+    // stepping is a few tests per end at any call length.
+    namespace detail = gg::kernels::detail;
+    for (const uint32_t d : decimationsOf<TestType>())
+    {
+        INFO("decimation " << d);
+        const Pool pool(atDecimation(reversed(randomGrains(21, 500, kNoiseFrames)), d));
+        const gg::GrainRows &rows = pool.rows();
+        int64_t forward = 0;
+        int64_t backward = 0;
+        const auto requireSolved = [&](int64_t from, int64_t to) {
+            for (uint32_t i = 0; i < pool.size(); ++i)
+            {
+                const int64_t first = std::max(from, rows.onsetSample[i]);
+                const int64_t last = std::min(to, rows.endSample[i]);
+                if (first >= last)
+                {
+                    continue;
+                }
+                const detail::Run run =
+                    detail::sampleSimdRun<TestType>(rows, i, kNoiseFrames, d, first, last);
+                if (run.begin == run.end)
+                {
+                    continue;
+                }
+                const detail::Run estimate =
+                    detail::sampleRunEstimate<TestType>(rows, i, kNoiseFrames, d, first, last);
+                INFO("grain " << i << ", rate " << rows.rate[i] << ", [" << first << ", " << last
+                              << "), run [" << run.begin << ", " << run.end << "), estimate ["
+                              << estimate.begin << ", " << estimate.end << ")");
+                REQUIRE(estimate.begin >= run.begin - 4);
+                REQUIRE(estimate.begin <= run.begin);
+                REQUIRE(estimate.end <= run.end + 4);
+                REQUIRE(estimate.end >= run.end);
+                ++(rows.rate[i] < 0.0 ? backward : forward);
+            }
+        };
+        requireSolved(0, 4096);
+        for (uint64_t k = 0; k < 200; ++k)
+        {
+            const int64_t from = -4000 + static_cast<int64_t>(u01(31, 0, k) * 22000.0);
+            const int64_t to = from + static_cast<int64_t>(u01(31, 1, k) * 512.0);
+            INFO("call " << k << ", [" << from << ", " << to << ")");
+            requireSolved(from, to);
+        }
+        REQUIRE(forward > 1000);
+        REQUIRE(backward > 1000);
     }
 }
 
@@ -3595,8 +3689,9 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
     const Tables &tables = kernelTables();
     constexpr int64_t kLength = 12500;
 
-    SECTION("sample source")
-    {
+    // `direction` turns the specs into the pool's: stealsFor's kinds go by row, so its second half
+    // of the reversed pool, the other rows, reverses the kinds the first leaves forward.
+    const auto sampleSource = [&](auto direction) {
         const Noise src(kNoiseFrames, 91);
         // 120 grains, an onset every 50 samples, 1,000 to 6,000 samples long, at rates 2^[−2, 2],
         // reading inside the source except every tenth, which reads across its end.
@@ -3621,6 +3716,7 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
             });
             REQUIRE(gg::grainEndSample(specs.back()) <= kLength);
         }
+        specs = direction(std::move(specs));
         const std::vector<Steal> steals = stealsFor(specs, 95);
         const Pool pool(specs, steals);
         const gg::GrainRows &rows = pool.rows();
@@ -3666,7 +3762,7 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                 const double invDuration = 1.0 / g.durationSamples;
                 const gg::EnvelopeShape env = gg::envelopeShape(g.texture, g.durationSamples);
                 const ChannelGains gains = channelGains(g, shape.outputs);
-                const float stretch = specStretch(g.rate);
+                const float stretch = specStretch(std::abs(g.rate));
                 for (int64_t t = g.onsetSample; t < end; ++t)
                 {
                     const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
@@ -3728,6 +3824,19 @@ TEMPLATE_TEST_CASE("a stolen grain fades through the reference and the simd kern
                 requireExactRuns<TestType>(scaled, kNoiseFrames, d, from, to);
             }
         }
+    };
+    SECTION("sample source")
+    {
+        sampleSource([](std::vector<gg::GrainSpec> specs) { return specs; });
+    }
+    SECTION("reversed")
+    {
+        sampleSource([](std::vector<gg::GrainSpec> specs) { return reversed(std::move(specs)); });
+    }
+    SECTION("reversed, the other half")
+    {
+        sampleSource(
+            [](std::vector<gg::GrainSpec> specs) { return reversed(std::move(specs), 1); });
     }
 
     SECTION("live ring")
@@ -3897,10 +4006,13 @@ TEMPLATE_TEST_CASE("a grain cut at its source's edge fades through the reference
     // the edge's end and curve). Every sample is the spec's loop with both raised cosines
     // written out, the steal's then the edge's, bit for bit; the SIMD kernels' output (the AVX2
     // table's too, where there is one) is the reference's, in one call and in 200 random ones, at
-    // each of the reader's decimations, their runs ending at the earlier fade's start.
+    // each of the reader's decimations, their runs ending at the earlier fade's start. The reversed
+    // section mirrors every grain: a negative rate, reading across frame 0 at the same `cross` and
+    // cut there, for every steal kind above.
     const Tables &tables = kernelTables();
     constexpr int64_t kLength = 12500;
     const Noise src(kNoiseFrames, 131);
+    const bool isReversed = reversedSection();
     const auto last = static_cast<double>(kNoiseFrames - 1);
     std::vector<gg::GrainSpec> specs;
     for (uint32_t k = 0; k < 120; ++k)
@@ -3914,8 +4026,8 @@ TEMPLATE_TEST_CASE("a grain cut at its source's edge fades through the reference
             .index = k,
             .onsetSample = 50 * static_cast<int64_t>(k),
             .onsetFrac = frac,
-            .startPos = last - rate * (cross - frac),
-            .rate = rate,
+            .startPos = isReversed ? rate * (cross - frac) : last - rate * (cross - frac),
+            .rate = isReversed ? -rate : rate,
             .durationSamples = duration,
             .texture = k % 3 == 1 ? 0.0 : u01(133, 6, k),
             .gain = 0.25f + 0.75f * static_cast<float>(u01(133, 4, k)),
@@ -4016,7 +4128,7 @@ TEMPLATE_TEST_CASE("a grain cut at its source's edge fades through the reference
             const double invDuration = 1.0 / g.durationSamples;
             const gg::EnvelopeShape env = gg::envelopeShape(g.texture, g.durationSamples);
             const ChannelGains gains = channelGains(g, shape.outputs);
-            const float stretch = specStretch(g.rate);
+            const float stretch = specStretch(std::abs(g.rate));
             for (int64_t t = g.onsetSample; t < cut.end; ++t)
             {
                 const double e = static_cast<double>(t - g.onsetSample) - g.onsetFrac;
@@ -4042,7 +4154,7 @@ TEMPLATE_TEST_CASE("a grain cut at its source's edge fades through the reference
                     w = w * edge;
                 }
                 const double pos = g.startPos + g.rate * e;
-                REQUIRE(pos <= last); // nothing is read past the last frame
+                REQUIRE((isReversed ? pos >= 0.0 : pos <= last)); // nothing is read past the edge
                 for (int c = 0; c < shape.outputs; ++c)
                 {
                     expected.ch[c][static_cast<std::size_t>(t)] +=
@@ -4209,15 +4321,17 @@ std::vector<gg::GrainSpec> avx2ApartGrains()
 
 // The AVX2 sample check's pools at decimation d: the reader's random grains, the same three in
 // four stolen, the cut grains (each cut at its edge in level-0 frames of the unscaled specs, the
-// same sample for the scaled ones), and the grains apart.
+// same sample for the scaled ones), and the grains apart; each pool reversed() when isReversed
+// (a reversed grain of the cut pool is cut at frame 0, if at all).
 struct Avx2SamplePools
 {
-    explicit Avx2SamplePools(uint32_t d)
-        : plain(atDecimation(randomGrains(103, 300, kNoiseFrames), d)),
-          stolen(atDecimation(randomGrains(103, 300, kNoiseFrames), d),
+    explicit Avx2SamplePools(uint32_t d, bool isReversed = false)
+        : plain(atDecimation(directed(randomGrains(103, 300, kNoiseFrames), isReversed), d)),
+          stolen(atDecimation(directed(randomGrains(103, 300, kNoiseFrames), isReversed), d),
                  stealsFor(atDecimation(randomGrains(103, 300, kNoiseFrames), d), 105)),
-          edged(atDecimation(avx2CutGrains(), d), edgesOf(avx2CutGrains(), kNoiseFrames), {}),
-          apart(atDecimation(avx2ApartGrains(), d))
+          edged(atDecimation(directed(avx2CutGrains(), isReversed), d),
+                edgesOf(directed(avx2CutGrains(), isReversed), kNoiseFrames), {}),
+          apart(atDecimation(directed(avx2ApartGrains(), isReversed), d))
     {
     }
     Pool plain;
@@ -4294,15 +4408,21 @@ template <class R> void requireAvx2SamplePreconditions()
 // source shape into two outputs and one, in one call and in 24 random ones; and the grains apart,
 // onsets on samples, into −0. The AVX2 table's output is the SSE table's and the reference's, bit
 // for bit, and the 8-wide interior renders most of it (requireAvx2SamplePreconditions, also
-// checked here).
-template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatch &avx2)
+// checked here). With reversedPool, every pool is reversed(), and the count is taken here (the
+// preconditions pin the forward pools).
+template <class R>
+void requireAvx2SampleBits(const Dispatch &sse, const Dispatch &avx2, bool reversedPool = false)
 {
-    requireAvx2SamplePreconditions<R>();
+    if (!reversedPool)
+    {
+        requireAvx2SamplePreconditions<R>();
+    }
     const Tables &tables = kernelTables();
     const Noise src(kNoiseFrames, 101);
+    int64_t wide = 0;
     for (const uint32_t d : decimationsOf<R>())
     {
-        const Avx2SamplePools pools(d);
+        const Avx2SamplePools pools(d, reversedPool);
         for (const Pool *pool : {&pools.plain, &pools.stolen, &pools.edged})
         {
             for (const Avx2Shape &shape : avx2Shapes(src, d))
@@ -4323,6 +4443,7 @@ template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatc
                     renderAll<R>(Kernel::Ref, *pool, shape.source, ref, from, to, tables);
                     renderAllWith<R>(sse, *pool, shape.source, a, from, to, tables);
                     renderAllWith<R>(avx2, *pool, shape.source, b, from, to, tables);
+                    wide += wideSamples<R>(*pool, shape.source, from, to, 8);
                     REQUIRE(anyNonZero(b.ch[0]) == anyNonZero(ref.ch[0]));
                     for (int c = 0; c < 2; ++c)
                     {
@@ -4345,6 +4466,8 @@ template <class R> void requireAvx2SampleBits(const Dispatch &sse, const Dispatc
             }
         }
     }
+    INFO("8-wide samples " << wide);
+    REQUIRE(wide > 1000000);
 }
 
 // The AVX2 live check's pools: grains of every kind (liveGrains), the same three in four stolen,
@@ -4519,6 +4642,9 @@ TEST_CASE("the avx2 kernels match the sse kernels bit for bit", "[kernel]")
         requireAvx2SampleBits<Hermite>(sse, *avx2);
         requireAvx2SampleBits<Linear>(sse, *avx2);
         requireAvx2SampleBits<Sinc>(sse, *avx2);
+        requireAvx2SampleBits<Hermite>(sse, *avx2, true);
+        requireAvx2SampleBits<Linear>(sse, *avx2, true);
+        requireAvx2SampleBits<Sinc>(sse, *avx2, true);
     }
     SECTION("the live ring")
     {

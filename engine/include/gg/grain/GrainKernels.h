@@ -738,34 +738,12 @@ struct Run
     int64_t end;
 };
 
-/// The run of grain i's samples in [first, last) that the SIMD sample kernel renders, reading a
-/// level of `frames` frames at `decimation` (a uint32_t or UnitDecimation): exactly the samples t
-/// before the grain's steal (t < fadeStart, so every fading sample goes through the reference, spec
-/// §6.5, and so does the rest of a grain stolen without a fade: at most kStealFade per stolen
-/// grain) whose window phase e × invDuration is in [0, 1] and whose read position posL(t) in the
-/// level's frames has every tap inside [0, frames), so kBefore <= posL < frames − kAfter. Requires
-/// first < last.
-///
-/// Folding the phase range into the run (accepted ruling, Task 6) keeps HannTable::at's range
-/// check out of the interior's lanes: a grain's first sample (e = −onsetFrac, phase < 0 unless
-/// onsetFrac is 0) and any sample past its window go through the reference instead, a few
-/// samples per grain.
-///
-/// e and the phase never decrease with t, and posL is monotone in t (non-decreasing when rate >
-/// 0): each is t's integer offset converted, then a subtraction, a product by a constant and a
-/// sum, all rounded monotonically, and posL is that scaled exactly by invDec. So each condition
-/// holds on an interval of t, and so does their conjunction. The bounds come from inverting the
-/// definitions, widened by 2 samples against rounding; then each end steps inward while the exact
-/// per-sample test fails, so the run holds only samples the test admits, and all of them. A rate
-/// that isn't positive, or a non-finite inversion, leaves the bounds at [first, last) and the
-/// stepping finds the run (or none), testing every sample: bounded by last − first, but no longer a
-/// few tests per end. The engine never makes such a row: every grain's rate is the pitch ratio,
-/// exp2Det of a pitch clamped to ±48 semitones, times the quotient of two finite, positive sample
-/// rates (Engine::sampleGrain), so it is finite and positive for any sample rates short of about
-/// 2^1000 apart.
+/// Where sampleSimdRun starts stepping from: [first, last), cut at the grain's fade, narrowed to
+/// the run's bounds solved for the rate's sign and widened by 2 samples, or left whole for a rate
+/// of 0 or NaN. See sampleSimdRun for the conditions the bounds invert.
 template <class Reader, DecimationLike Dec>
-Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimation, int64_t first,
-                  int64_t last) noexcept SST_CPPUTILS_NONBLOCKING
+Run sampleRunEstimate(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimation,
+                      int64_t first, int64_t last) noexcept SST_CPPUTILS_NONBLOCKING
 {
     GG_FP_CONTRACT_OFF
     last = std::min(last, rows.fadeStart[i]);
@@ -777,22 +755,15 @@ Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimat
     const double onsetFrac = rows.onsetFrac[i];
     const double startPos = rows.startPos[i];
     const double rate = rows.rate[i];
-    const double invDuration = rows.invDuration[i];
     const auto invDec = invDecimation(decimation);
     const auto lo = static_cast<double>(Reader::kBefore);
     const auto hi = static_cast<double>(frames - Reader::kAfter);
-    // The reference's e, phase and posL at t, and the SIMD condition on them.
-    const auto simdable = [&](int64_t t) noexcept {
-        GG_FP_CONTRACT_OFF
-        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
-        const double phase = e * invDuration;
-        const double pos = (startPos + rate * e) * invDec;
-        return phase >= 0.0 && phase <= 1.0 && pos >= lo && pos < hi;
-    };
 
     // In n = t − onsetSample: the phase is in [0, 1] for n in [onsetFrac, onsetFrac + duration],
     // and posL in [lo, hi) for n in [onsetFrac + (lo − startL) / rateL, onsetFrac + (hi −
-    // startL) / rateL), with startL and rateL the start and rate scaled by invDec, exactly.
+    // startL) / rateL), with startL and rateL the start and rate scaled by invDec, exactly. A
+    // negative rate swaps the two: dividing by it turns posL < hi into n > onsetFrac + (hi −
+    // startL) / rateL and posL >= lo into n <= onsetFrac + (lo − startL) / rateL.
     const double startL = startPos * invDec;
     const double rateL = rate * invDec;
     const double nFirst = static_cast<double>(first - onsetSample);
@@ -804,6 +775,13 @@ Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimat
         nBegin = std::ceil(std::max(onsetFrac, onsetFrac + (lo - startL) / rateL)) - 2.0;
         nEnd = std::ceil(std::min(onsetFrac + rows.durationSamples[i],
                                   onsetFrac + (hi - startL) / rateL)) +
+               2.0;
+    }
+    else if (rateL < 0.0)
+    {
+        nBegin = std::ceil(std::max(onsetFrac, onsetFrac + (hi - startL) / rateL)) - 2.0;
+        nEnd = std::ceil(std::min(onsetFrac + rows.durationSamples[i],
+                                  onsetFrac + (lo - startL) / rateL)) +
                2.0;
     }
     // Clamp into [nFirst, nLast], NaN included, before converting.
@@ -823,17 +801,67 @@ Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimat
     {
         nEnd = nBegin;
     }
-    int64_t begin = std::clamp(onsetSample + static_cast<int64_t>(nBegin), first, last);
-    int64_t end = std::clamp(onsetSample + static_cast<int64_t>(nEnd), begin, last);
-    while (begin < end && !simdable(begin))
-    {
-        ++begin;
-    }
-    while (end > begin && !simdable(end - 1))
-    {
-        --end;
-    }
+    const int64_t begin = std::clamp(onsetSample + static_cast<int64_t>(nBegin), first, last);
+    const int64_t end = std::clamp(onsetSample + static_cast<int64_t>(nEnd), begin, last);
     return {begin, end};
+}
+
+/// The run of grain i's samples in [first, last) that the SIMD sample kernel renders, reading a
+/// level of `frames` frames at `decimation` (a uint32_t or UnitDecimation): exactly the samples t
+/// before the grain's steal (t < fadeStart, so every fading sample goes through the reference, spec
+/// §6.5, and so does the rest of a grain stolen without a fade: at most kStealFade per stolen
+/// grain) whose window phase e × invDuration is in [0, 1] and whose read position posL(t) in the
+/// level's frames has every tap inside [0, frames), so kBefore <= posL < frames − kAfter. Requires
+/// first < last.
+///
+/// Folding the phase range into the run (accepted ruling, Task 6) keeps HannTable::at's range
+/// check out of the interior's lanes: a grain's first sample (e = −onsetFrac, phase < 0 unless
+/// onsetFrac is 0) and any sample past its window go through the reference instead, a few
+/// samples per grain.
+///
+/// e and the phase never decrease with t, and posL is monotone in t, non-increasing for a negative
+/// rate: each is t's integer offset converted, then a subtraction, a product by a constant and a
+/// sum, all rounded monotonically, and posL is that scaled exactly by invDec. So each condition
+/// holds on an interval of t, and so does their conjunction. The bounds come from inverting the
+/// definitions, widened by 2 samples against rounding (sampleRunEstimate); then each end steps
+/// inward while the exact per-sample test fails, so the run holds only samples the test admits, and
+/// all of them. A rate of 0 or NaN, or a non-finite inversion, leaves the bounds at [first, last)
+/// and the stepping finds the run (or none), testing every sample: bounded by last − first, but no
+/// longer a few tests per end. The engine never makes such a row: every grain's rate is the pitch
+/// ratio, exp2Det of a pitch clamped to ±48 semitones, times the quotient of two finite, positive
+/// sample rates (Engine::sampleGrain), and perhaps negated, so it is finite and not 0 for any
+/// sample rates short of about 2^1000 apart.
+template <class Reader, DecimationLike Dec>
+Run sampleSimdRun(const GrainRows &rows, uint32_t i, int64_t frames, Dec decimation, int64_t first,
+                  int64_t last) noexcept SST_CPPUTILS_NONBLOCKING
+{
+    GG_FP_CONTRACT_OFF
+    Run run = sampleRunEstimate<Reader>(rows, i, frames, decimation, first, last);
+    const int64_t onsetSample = rows.onsetSample[i];
+    const double onsetFrac = rows.onsetFrac[i];
+    const double startPos = rows.startPos[i];
+    const double rate = rows.rate[i];
+    const double invDuration = rows.invDuration[i];
+    const auto invDec = invDecimation(decimation);
+    const auto lo = static_cast<double>(Reader::kBefore);
+    const auto hi = static_cast<double>(frames - Reader::kAfter);
+    // The reference's e, phase and posL at t, and the SIMD condition on them.
+    const auto simdable = [&](int64_t t) noexcept {
+        GG_FP_CONTRACT_OFF
+        const double e = static_cast<double>(t - onsetSample) - onsetFrac;
+        const double phase = e * invDuration;
+        const double pos = (startPos + rate * e) * invDec;
+        return phase >= 0.0 && phase <= 1.0 && pos >= lo && pos < hi;
+    };
+    while (run.begin < run.end && !simdable(run.begin))
+    {
+        ++run.begin;
+    }
+    while (run.end > run.begin && !simdable(run.end - 1))
+    {
+        --run.end;
+    }
+    return run;
 }
 
 /// dst[0..3] += y in the lanes where mask is set; the other lanes keep their bits exactly. A blend,
