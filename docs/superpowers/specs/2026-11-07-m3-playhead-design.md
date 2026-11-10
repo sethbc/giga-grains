@@ -433,7 +433,7 @@ A new Catch2 tag `[playhead]` (the CTest label `playhead`), listed in CLAUDE.md'
   offsets not saved; no patch-version bump.
 - **§20** (the roadmap): M3's row names sub-project 3b, and says tempo-locked Scan Speed and the
   lock to the transport are sub-project 7's Scan Sync (H13); M4's row doesn't change.
-- **§23:** one row for this sub-project (the next free number at merge; #97 on this branch), with
+- **§23:** one row for this sub-project (the next free number at merge; #98 on this branch), with
   H0 to H13 recorded as Claude's calls, confirmed by the director's review of 2026-11-09 (H13 as
   amended there).
 - The program design's §8 gains row 3b and §10 its open items (none left: this spec settles them).

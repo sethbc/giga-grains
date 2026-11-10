@@ -201,7 +201,7 @@ endif ()
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/libs/catch2/extras)
 include(Catch)
 # A case tagged [serial] measures time (or memory) and must not run beside the others: it is
-# discovered on its own, with RUN_SERIAL (CLAUDE.md, "Tests run in parallel").
+# discovered on its own, with RUN_SERIAL (AGENTS.md, "Tests run in parallel").
 catch_discover_tests(gg-tests TEST_SPEC "~[serial]" ADD_TAGS_AS_LABELS)
 catch_discover_tests(gg-tests TEST_SPEC "[serial]~[crawl48]" ADD_TAGS_AS_LABELS
         PROPERTIES RUN_SERIAL TRUE)
@@ -362,7 +362,7 @@ endforeach ()
 # ctest (replaying CTest 3.31's and 4.4's recorded output) in a fake source tree, and
 # scripts/worktree-setup.sh in scratch git repositories, all under the build tree; and the
 # release pipeline's scripts (scripts/release/) against scratch files. Not on Windows, where the
-# scripts' bash (Git Bash) is unverified (CLAUDE.md).
+# scripts' bash (Git Bash) is unverified (AGENTS.md).
 if (NOT WIN32)
     find_program(GG_BASH bash REQUIRED)
     add_test(NAME scripts_check_and_worktree_setup
