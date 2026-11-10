@@ -101,6 +101,11 @@
 ///   amount 0 to 1, the press counter; mutatePreset in PresetSource.h; the listening pack's Mutate
 ///   ladder, spec §11), whose output a spec's "preset" then renders. A bad amount or counter, or a
 ///   file that isn't a preset, exits 2.
+/// - Instrument and FX mode take "tuning", optional (M3 tuning spec §5.5; TuningSpec): a Scala
+/// scale
+///   and keyboard mapping, each inline ("scl", "kbm") or a file ("sclFile", "kbmFile"). The
+///   order is the state's, then the preset's, then the spec's, each replacing the one before; a
+///   refused spec tuning exits 2, a state's or preset's only warns. --save-state writes it as TUNE.
 /// - Instrument and FX mode also take M2 sub-project 2's keys (its spec §6.10), each optional: a
 ///   saved session to restore, timed ring operations and the memory cap (see OperationSpec and
 ///   the members of InstrumentSpec and FxSpec):
@@ -394,6 +399,20 @@ struct TransportSpec
     friend bool operator==(const TransportSpec &, const TransportSpec &) = default;
 };
 
+/// "tuning" (instrument and FX mode; M3 tuning spec §5.5): a Scala scale and keyboard mapping, each
+/// given as inline text ("scl", "kbm") or as a file ("sclFile", "kbmFile": resolved like a file
+/// source's path, so relative to the spec's directory or --media-dir), never both of a pair; at
+/// least one of the four. A file's text is read as bytes and kept with its name in the saved state
+/// (TUNE); inline text has an empty name. The texts are at most gg::core::kMaxTuningTextBytes, and
+/// tuning-library must accept the pair (else the render is bad input). The spec's tuning replaces
+/// a state's or a preset's.
+struct TuningSpec
+{
+    std::optional<std::string> sclText, sclFile, kbmText, kbmFile;
+
+    friend bool operator==(const TuningSpec &, const TuningSpec &) = default;
+};
+
 /// An instrument render: what the plugin's host would feed Giga Grains, with `sample` loaded.
 /// Values are as in FxSpec, but in the instrument's metadata (Position is 0–1 of the sample on a
 /// Sample layer, its default; on a Live or Resample layer, seconds behind the head, up to
@@ -432,6 +451,8 @@ struct InstrumentSpec
     /// A's sample is then the state's or the preset's (render() refuses a preset naming none),
     /// and `sample` is unused.
     bool noSample{false};
+    /// "tuning": the Scala tuning, or none (12-TET, or the state's or preset's).
+    std::optional<TuningSpec> tuning;
 
     friend bool operator==(const InstrumentSpec &, const InstrumentSpec &) = default;
 };
@@ -476,6 +497,8 @@ struct FxSpec
     /// "memoryCapMiB": the per-instance memory cap, kMemoryCapMinMiB to kMemoryCapMaxMiB, or
     /// nothing for the state's (kMemoryCapDefaultMiB without a state).
     std::optional<uint32_t> memoryCapMiB;
+    /// "tuning": the Scala tuning, or none (12-TET, or the state's or preset's).
+    std::optional<TuningSpec> tuning;
 
     friend bool operator==(const FxSpec &, const FxSpec &) = default;
 };

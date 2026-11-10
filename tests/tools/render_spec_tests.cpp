@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <new>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -3358,4 +3359,137 @@ TEST_CASE("render spec refuses bad voice keys", "[render]")
     CHECK(rejection(withControl(R"({"time": 1.0, "kind": "cc7", "value": 1.0})")) ==
           "controls[0].kind must be modWheel, aftertouch, pitchBend, sustain, timbre or "
           "polyPressure");
+}
+
+TEST_CASE("render spec reads a tuning", "[render][tuning]")
+{
+    using gg::render::TuningSpec;
+    const auto text = [](std::string s) { return std::optional<std::string>{std::move(s)}; };
+
+    auto j = instrumentJson();
+    CHECK_FALSE(parseJson(j).instrument.tuning.has_value());
+    j["tuning"] = {{"scl", "! a\nb\n 1\n!\n 2/1\n"}};
+    {
+        const auto t = parseJson(j).instrument.tuning;
+        REQUIRE(t.has_value());
+        CHECK(t->sclText == text("! a\nb\n 1\n!\n 2/1\n"));
+        CHECK_FALSE(t->sclFile.has_value());
+        CHECK_FALSE(t->kbmText.has_value());
+        CHECK_FALSE(t->kbmFile.has_value());
+    }
+    j["tuning"] = {{"sclFile", "bp.scl"}, {"kbmFile", "bp.kbm"}};
+    {
+        const auto t = parseJson(j).instrument.tuning;
+        REQUIRE(t.has_value());
+        CHECK(t->sclFile == text("bp.scl"));
+        CHECK(t->kbmFile == text("bp.kbm"));
+        CHECK_FALSE(t->sclText.has_value());
+    }
+    j["tuning"] = {{"scl", "x"}, {"kbmFile", "k.kbm"}};
+    {
+        const auto t = parseJson(j).instrument.tuning;
+        REQUIRE(t.has_value());
+        CHECK(t->sclText == text("x"));
+        CHECK(t->kbmFile == text("k.kbm"));
+    }
+    j["tuning"] = {{"sclFile", "a.scl"}, {"kbm", "k"}};
+    CHECK(parseJson(j).instrument.tuning == TuningSpec{.sclText = std::nullopt,
+                                                       .sclFile = text("a.scl"),
+                                                       .kbmText = text("k"),
+                                                       .kbmFile = std::nullopt});
+    // The FX takes it too.
+    auto fx = fxFileJson();
+    fx["tuning"] = {{"kbm", "! m\n0\n0\n127\n60\n69\n432.0\n0\n"}};
+    CHECK(parseJson(fx).fx.tuning.has_value());
+}
+
+TEST_CASE("render spec refuses a bad tuning", "[render][tuning]")
+{
+    const auto with = [](nlohmann::json tuning) {
+        auto j = instrumentJson();
+        j["tuning"] = std::move(tuning);
+        return j;
+    };
+    CHECK(rejection(with({{"scl", "a"}, {"sclFile", "a.scl"}})) ==
+          "tuning: give scl or sclFile, not both");
+    CHECK(rejection(with({{"kbm", "a"}, {"kbmFile", "a.kbm"}})) ==
+          "tuning: give kbm or kbmFile, not both");
+    CHECK(rejection(with(nlohmann::json::object())) ==
+          "tuning: give at least one of scl, sclFile, kbm, kbmFile");
+    CHECK(rejection(with({{"sclfile", "a.scl"}})) == "unknown key tuning.sclfile");
+    CHECK(rejection(with({{"scl", 5}})) == "tuning.scl must be a string");
+    CHECK(rejection(with({{"sclFile", ""}})) == "tuning.sclFile must not be empty");
+    CHECK(rejection(with(nlohmann::json::array())) == "tuning must be a JSON object");
+
+    // Sample mode has no tuning (the existing unknown-key message).
+    auto sample = nlohmann::json::parse(readCase("sparse-sine"));
+    sample["tuning"] = {{"scl", "x"}};
+    CHECK(rejection(sample) == "unknown key tuning");
+}
+
+TEST_CASE("resolvePaths makes a tuning's files relative to the base directory", "[render][tuning]")
+{
+    auto j = instrumentJson();
+    const auto abs = (std::filesystem::path(GG_TEST_OUTPUT_DIR) / "k.kbm").string();
+    j["tuning"] = {{"sclFile", "bp.scl"}, {"kbmFile", abs}};
+    RenderSpec spec = parseJson(j);
+    gg::render::resolvePaths(spec, "/media");
+    REQUIRE(spec.instrument.tuning.has_value());
+    CHECK(spec.instrument.tuning->sclFile == (std::filesystem::path("/media") / "bp.scl").string());
+    CHECK(spec.instrument.tuning->kbmFile == abs);
+}
+
+TEST_CASE("resolveTuningSpec reads files and names them", "[render][tuning]")
+{
+    using gg::render::BadInput;
+    using gg::render::TuningSpec;
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::path{GG_TEST_OUTPUT_DIR} / "render-tuning-resolve";
+    fs::create_directories(dir);
+    const auto write = [&](const std::string &name, const std::string &bytes) {
+        std::ofstream out(dir / name, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+    write("five.scl", "! five\nfive\n 1\n!\n 2/1\n");
+    write("big.scl", std::string(65537, 'x'));
+    write("empty.kbm", "");
+
+    // A file keeps its bytes and its name; inline text has an empty name.
+    {
+        TuningSpec t;
+        t.sclFile = "five.scl";
+        t.kbmText = "inline kbm";
+        const auto files = gg::render::resolveTuningSpec(t, dir, std::nullopt);
+        CHECK(files.scl == "! five\nfive\n 1\n!\n 2/1\n");
+        CHECK(files.sclName == "five.scl");
+        CHECK(files.kbm == "inline kbm");
+        CHECK(files.kbmName.empty());
+    }
+    // A relative file is the specDir's, or the mediaDir's when it is given; absolute is as it is.
+    {
+        TuningSpec t;
+        t.sclFile = "five.scl";
+        CHECK(gg::render::resolveTuningSpec(t, "/nowhere", dir).sclName == "five.scl");
+        t.sclFile = utf8(dir / "five.scl");
+        CHECK(gg::render::resolveTuningSpec(t, "/nowhere", std::nullopt).sclName == "five.scl");
+    }
+    // A file that is missing, or over 64 KiB, is bad input naming the path.
+    {
+        TuningSpec t;
+        t.sclFile = "missing.scl";
+        try
+        {
+            gg::render::resolveTuningSpec(t, dir, std::nullopt);
+            FAIL("no BadInput");
+        }
+        catch (const BadInput &e)
+        {
+            CHECK_THAT(std::string(e.what()), ContainsSubstring("missing.scl"));
+        }
+        t.sclFile = "big.scl";
+        CHECK_THROWS_AS(gg::render::resolveTuningSpec(t, dir, std::nullopt), BadInput);
+        TuningSpec inlineBig;
+        inlineBig.kbmText = std::string(65537, 'y');
+        CHECK_THROWS_AS(gg::render::resolveTuningSpec(inlineBig, dir, std::nullopt), BadInput);
+    }
 }

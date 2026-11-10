@@ -721,3 +721,189 @@ TEST_CASE("mutatePreset refuses a bad amount and a file that isn't a preset", "[
               .empty());
     CHECK_THAT(error, Catch::Matchers::ContainsSubstring("isn't a preset file"));
 }
+
+namespace
+{
+/// The Bohlen-Pierce scale: 13 steps of the tritave.
+const char *const kBohlenPierce = "! bp.scl\nBohlen-Pierce\n 13\n!\n 27/25\n 25/21\n 9/7\n 7/5\n "
+                                  "75/49\n 5/3\n 9/5\n 49/25\n 15/7\n 7/3\n 63/25\n 25/9\n 3/1\n";
+
+/// An instrument spec over a sine with one note off the middle of the keyboard.
+nlohmann::json tuningSpecJson()
+{
+    return nlohmann::json::parse(R"({
+        "mode": "instrument", "sampleRate": 48000, "durationSeconds": 0.5, "blockSize": 128,
+        "seed": 1,
+        "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 1.0, "amplitude": 0.5},
+        "params": {"Density": 5.0},
+        "notes": [{"time": 0.05, "key": 64, "duration": 0.3}]})");
+}
+
+std::vector<std::string> eventsOf(const nlohmann::json &j,
+                                  const gg::render::RenderOptions &options = {})
+{
+    std::vector<std::string> events;
+    gg::render::render(parseSpec(j), &events, options);
+    return events;
+}
+} // namespace
+
+TEST_CASE("the packer writes a source's tuning", "[render][tuning]")
+{
+    const PresetSource source = parseFixture("inst-tuning-test.json");
+    REQUIRE(source.tuning.has_value());
+    REQUIRE(source.tuning->sclText.has_value());
+    const std::string bytes = pack(source);
+
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    REQUIRE(gg::core::readPreset(bytes, Mode::Instrument, info, state));
+    REQUIRE(state.tuning.has_value());
+    CHECK(state.tuning->scl == *source.tuning->sclText);
+    CHECK(state.tuning->sclName.empty());
+    CHECK(state.tuning->kbm.empty());
+    CHECK(state.tuning->kbmName.empty());
+
+    // A source with no tuning packs none.
+    gg::core::SessionState plain;
+    REQUIRE(
+        gg::core::readPreset(pack(parseFixture("inst-test.json")), Mode::Instrument, info, plain));
+    CHECK_FALSE(plain.tuning.has_value());
+}
+
+TEST_CASE("the packer reads a tuning's files from the source's directory", "[render][tuning]")
+{
+    const auto dir = scratch("pack-tuning-files");
+    const std::string scl = "! five.scl\nfive\n 5\n!\n 200.0\n 400.0\n 700.0\n 900.0\n 1200.0\n";
+    writeBytes(dir / "five.scl", scl);
+    auto j = nlohmann::json::parse(readText(fixture("inst-test.json")));
+    j["tuning"] = {{"sclFile", "five.scl"}};
+    std::string error;
+    const auto source = gg::render::parsePresetSource(j.dump(), error);
+    REQUIRE(source.has_value());
+
+    const std::string bytes = gg::render::packPreset(*source, std::nullopt, error, dir);
+    INFO(error);
+    REQUIRE_FALSE(bytes.empty());
+    gg::core::PresetInfo info;
+    gg::core::SessionState state;
+    REQUIRE(gg::core::readPreset(bytes, Mode::Instrument, info, state));
+    REQUIRE(state.tuning.has_value());
+    CHECK(state.tuning->scl == scl);
+    CHECK(state.tuning->sclName == "five.scl");
+
+    // A file that isn't there, and a scale tuning-library refuses, don't pack.
+    j["tuning"] = {{"sclFile", "nope.scl"}};
+    const auto missing = gg::render::parsePresetSource(j.dump(), error);
+    REQUIRE(missing.has_value());
+    CHECK(gg::render::packPreset(*missing, std::nullopt, error, dir).empty());
+    CHECK_THAT(error, ContainsSubstring("nope.scl"));
+    j["tuning"] = {{"scl", "! none\n!\nno notes\n 0\n"}};
+    const auto bad = gg::render::parsePresetSource(j.dump(), error);
+    REQUIRE(bad.has_value());
+    CHECK(gg::render::packPreset(*bad, std::nullopt, error, dir).empty());
+    CHECK_THAT(error, ContainsSubstring("tuning"));
+}
+
+TEST_CASE("mutate keeps a preset's tuning", "[render][mutate][tuning]")
+{
+    const std::string bytes = pack(parseFixture("inst-tuning-test.json"));
+    std::string error;
+    const std::string mutated = gg::render::mutatePreset(bytes, 0.4f, 1, error);
+    INFO(error);
+    REQUIRE_FALSE(mutated.empty());
+    CHECK(mutated != bytes);
+    gg::core::PresetInfo before, after;
+    gg::core::SessionState in, out;
+    REQUIRE(gg::core::readPreset(bytes, Mode::Instrument, before, in));
+    REQUIRE(gg::core::readPreset(mutated, Mode::Instrument, after, out));
+    REQUIRE(in.tuning.has_value());
+    CHECK(out.tuning == in.tuning);
+}
+
+TEST_CASE("a spec tuning replaces a preset's", "[render][tuning]")
+{
+    const auto dir = scratch("spec-tuning-replaces");
+    writeBytes(dir / "tuned.ggpreset", pack(parseFixture("inst-tuning-test.json")));
+    // The same preset without its tuning, for the reference render with the spec's alone.
+    auto plainJ = nlohmann::json::parse(readText(fixture("inst-tuning-test.json")));
+    plainJ.erase("tuning");
+    std::string error;
+    const auto plain = gg::render::parsePresetSource(plainJ.dump(), error);
+    REQUIRE(plain.has_value());
+    writeBytes(dir / "plain.ggpreset", pack(*plain));
+
+    auto withPreset = [&](const char *preset) {
+        auto j = tuningSpecJson();
+        j["preset"] = utf8(dir / preset);
+        return j;
+    };
+    // The preset's 19-EDO alone moves the grains off 12-TET's.
+    const auto twelve = eventsOf(withPreset("plain.ggpreset"));
+    const auto edo19 = eventsOf(withPreset("tuned.ggpreset"));
+    REQUIRE_FALSE(twelve.empty());
+    CHECK(edo19 != twelve);
+
+    // The spec's Bohlen-Pierce replaces it: the same grains as the plain preset with BP.
+    auto bpOverTuned = withPreset("tuned.ggpreset");
+    bpOverTuned["tuning"] = {{"scl", kBohlenPierce}};
+    auto bpOverPlain = withPreset("plain.ggpreset");
+    bpOverPlain["tuning"] = {{"scl", kBohlenPierce}};
+    const auto bp = eventsOf(bpOverPlain);
+    CHECK(bp != twelve);
+    CHECK(bp != edo19);
+    CHECK(eventsOf(bpOverTuned) == bp);
+}
+
+TEST_CASE("a spec's tuning is refused as bad input, a state's or preset's only warned about",
+          "[render][tuning]")
+{
+    auto bad = tuningSpecJson();
+    bad["tuning"] = {{"scl", "! none\n!\nno notes\n 0\n"}};
+    CHECK_THAT(badInputOf(bad), ContainsSubstring("tuning"));
+    CHECK_THAT(badInputOf(bad), ContainsSubstring("Invalid SCL note count."));
+
+    // A preset whose TUNE the build can't parse: a 12-TET render, as if it had no tuning.
+    const auto dir = scratch("bad-preset-tuning");
+    gg::core::SessionState state = gg::core::initState(Mode::Instrument);
+    state.tuning = gg::core::TuningFiles{"! none\n!\nno notes\n 0\n", "", "", ""};
+    gg::core::PresetInfo info = parseFixture("inst-tuning-test.json").info;
+    writeBytes(dir / "bad.ggpreset", gg::core::encodePreset(info, state));
+    auto j = tuningSpecJson();
+    j["preset"] = utf8(dir / "bad.ggpreset");
+    const auto plainEvents = eventsOf(tuningSpecJson());
+    CHECK(eventsOf(j) == plainEvents);
+}
+
+TEST_CASE("a render saves its tuning in the state, by name for a file", "[render][tuning]")
+{
+    const auto dir = scratch("save-tuning");
+    const std::string scl = "! five.scl\nfive\n 5\n!\n 200.0\n 400.0\n 700.0\n 900.0\n 1200.0\n";
+    writeBytes(dir / "five.scl", scl);
+    // A file: the state keeps its bytes and its name. Inline text: empty names.
+    for (const bool inlineText : {false, true})
+    {
+        INFO("inline " << inlineText);
+        auto j = tuningSpecJson();
+        j["tuning"] = inlineText ? nlohmann::json{{"scl", scl}}
+                                 : nlohmann::json{{"sclFile", utf8(dir / "five.scl")}};
+        const auto out = dir / (inlineText ? "inline.ggst" : "file.ggst");
+        gg::render::RenderOptions options;
+        options.saveStatePath = utf8(out);
+        gg::render::render(parseSpec(j), nullptr, options);
+        gg::core::SessionState state;
+        REQUIRE(gg::core::decodeState(readText(out), Mode::Instrument, state));
+        REQUIRE(state.tuning.has_value());
+        CHECK(state.tuning->scl == scl);
+        CHECK(state.tuning->sclName == (inlineText ? "" : "five.scl"));
+        CHECK(state.tuning->kbm.empty());
+    }
+    // No tuning, no TUNE.
+    const auto none = dir / "none.ggst";
+    gg::render::RenderOptions noneOptions;
+    noneOptions.saveStatePath = utf8(none);
+    gg::render::render(parseSpec(tuningSpecJson()), nullptr, noneOptions);
+    gg::core::SessionState state;
+    REQUIRE(gg::core::decodeState(readText(none), Mode::Instrument, state));
+    CHECK_FALSE(state.tuning.has_value());
+}

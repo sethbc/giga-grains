@@ -1,0 +1,24 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 0.25,
+  "blockSize": 128,
+  "seed": 1,
+  "sample": {
+    "kind": "sine",
+    "frequencyHz": 220,
+    "seconds": 0.5,
+    "amplitude": 0.5
+  },
+  "notes": [
+    {
+      "time": 0.02,
+      "key": 62,
+      "duration": 0.15
+    }
+  ],
+  "tuning": {
+    "scl": "! five.scl\nfive\n 5\n!\n 200.0\n 400.0\n 700.0\n 900.0\n 1200.0\n",
+    "kbm": "! misfit.kbm\n5\n0\n127\n60\n60\n261.6255653005986\n7\n0\n1\n2\n3\n4\n"
+  }
+}

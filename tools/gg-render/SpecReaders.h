@@ -156,6 +156,18 @@ std::optional<uint8_t> layerOfLetter(std::string_view text);
 /// "mod": routes, each slot named once, with the parameter names of `mode`'s product. See
 /// RouteSpec.
 std::vector<RouteSpec> readMod(const json &j, gg::core::Mode mode);
+
+/// "tuning": a TuningSpec (see RenderSpec.h), the scl and kbm each inline or a file, never both of
+/// a pair, at least one of the four.
+TuningSpec readTuning(const json &j);
 } // namespace gg::render::detail
+
+namespace gg::render
+{
+/// Parses a "tuning" value (TuningSpec). On failure returns nullopt and sets `error` to the message
+/// ("tuning: give scl or sclFile, not both", "tuning: give at least one of scl, sclFile, kbm,
+/// kbmFile", "unknown key tuning.x", ...). Shared with the preset source's "tuning".
+std::optional<TuningSpec> parseTuningSpec(const nlohmann::json &j, std::string &error);
+} // namespace gg::render
 
 #endif // GG_RENDER_SPECREADERS_H

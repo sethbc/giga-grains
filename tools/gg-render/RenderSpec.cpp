@@ -774,6 +774,10 @@ void readProcessorKeys(const Object &o, const RenderSpec &spec, gg::core::Mode m
     {
         out.memoryCapMiB = readMemoryCap(o);
     }
+    if (o.has("tuning"))
+    {
+        out.tuning = readTuning(o.member("tuning"));
+    }
 }
 
 /// The instrument keys of a spec whose sampleRate and durationSeconds are already read.
@@ -864,14 +868,14 @@ Object topLevel(const json &j, RenderMode mode)
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "sample", "preset",
                  "params", "automation", "notes", "samples", "mod", "controls", "transport",
-                 "state", "operations", "memoryCapMiB"}};
+                 "state", "operations", "memoryCapMiB", "tuning"}};
     case RenderMode::Fx:
         return {j,
                 "the spec",
                 "",
                 {"mode", "sampleRate", "durationSeconds", "blockSize", "seed", "input", "channels",
                  "preset", "params", "automation", "notes", "samples", "mod", "controls",
-                 "transport", "state", "operations", "memoryCapMiB"}};
+                 "transport", "state", "operations", "memoryCapMiB", "tuning"}};
     case RenderMode::Sample:
         break;
     }
@@ -1051,7 +1055,55 @@ std::vector<RouteSpec> readMod(const json &j, gg::core::Mode mode)
     }
     return routes;
 }
+
+TuningSpec readTuning(const json &j)
+{
+    const Object o(j, "tuning", "tuning.", {"scl", "sclFile", "kbm", "kbmFile"});
+    TuningSpec t;
+    const auto text = [&](std::string_view key) -> std::optional<std::string> {
+        return o.has(key) ? std::optional<std::string>{o.string(key)} : std::nullopt;
+    };
+    const auto file = [&](std::string_view key) -> std::optional<std::string> {
+        auto path = text(key);
+        if (path && path->empty())
+        {
+            throw SpecError(fmt::format("tuning.{} must not be empty", key));
+        }
+        return path;
+    };
+    t.sclText = text("scl");
+    t.sclFile = file("sclFile");
+    t.kbmText = text("kbm");
+    t.kbmFile = file("kbmFile");
+    if (t.sclText && t.sclFile)
+    {
+        throw SpecError("tuning: give scl or sclFile, not both");
+    }
+    if (t.kbmText && t.kbmFile)
+    {
+        throw SpecError("tuning: give kbm or kbmFile, not both");
+    }
+    if (!t.sclText && !t.sclFile && !t.kbmText && !t.kbmFile)
+    {
+        throw SpecError("tuning: give at least one of scl, sclFile, kbm, kbmFile");
+    }
+    return t;
+}
 } // namespace detail
+
+std::optional<TuningSpec> parseTuningSpec(const nlohmann::json &j, std::string &error)
+{
+    error.clear();
+    try
+    {
+        return readTuning(j);
+    }
+    catch (const SpecError &e)
+    {
+        error = e.what();
+    }
+    return std::nullopt;
+}
 
 std::optional<gg::core::ParamSlot> paramSlotNamed(std::string_view name)
 {
@@ -1122,6 +1174,19 @@ void resolvePaths(RenderSpec &spec, const std::string &baseDir)
     paths.push_back(&spec.preset);
     paths.push_back(&spec.instrument.statePath);
     paths.push_back(&spec.fx.statePath);
+    for (auto *tuning : {&spec.instrument.tuning, &spec.fx.tuning})
+    {
+        if (*tuning)
+        {
+            for (auto *file : {&(*tuning)->sclFile, &(*tuning)->kbmFile})
+            {
+                if (*file)
+                {
+                    paths.push_back(&**file);
+                }
+            }
+        }
+    }
     for (std::string *text : paths)
     {
         if (text->empty())

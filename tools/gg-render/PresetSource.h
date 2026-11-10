@@ -36,6 +36,9 @@
 /// - "params" and "mod" are read by the render spec's own readers (RenderSpec.cpp), with the
 ///   product's parameter names, so a name the product displays is the only way to address a
 ///   parameter, and a wrong one is an error.
+/// - "tuning" (optional) is the render spec's: `{"scl": text}`, `{"sclFile": path}`, `{"kbm": …}`
+///   or `{"kbmFile": …}` (RenderSpec.h's TuningSpec); a file is read by packPreset, relative to the
+///   source's own directory, and TUNE keeps its bytes and name.
 /// - "samples" maps layer letters ("A" to "D") to content-relative paths (UTF-8, non-empty),
 ///   resolved against --content-dir.
 namespace gg::render
@@ -52,6 +55,8 @@ struct PresetSource
     std::vector<RouteSpec> mod;
     /// Layers' samples by layer (0..3 for "A" to "D"), in layer order: content-relative paths.
     std::vector<std::pair<uint8_t, std::string>> samples;
+    /// The preset's Scala tuning (TUNE), or none.
+    std::optional<TuningSpec> tuning;
 
     friend bool operator==(const PresetSource &, const PresetSource &) = default;
 };
@@ -75,8 +80,11 @@ std::optional<PresetSource> parsePresetSource(const std::string &json, std::stri
 /// --content-dir"), a reference that isn't gg::media::isContentRelativePath ("isn't a valid
 /// content-relative path"), one with no file under it ("not found"), or a file that doesn't
 /// decode. A source never sets a ring parameter: parsePresetSource refuses one.
+/// A source's tuning goes into the preset as TUNE (resolveTuningSpec in Render.h: `sourceDir` is
+/// the base of its relative file paths), and a pair tuning-library refuses is an error.
 std::string packPreset(const PresetSource &source,
-                       const std::optional<std::filesystem::path> &contentDir, std::string &error);
+                       const std::optional<std::filesystem::path> &contentDir, std::string &error,
+                       const std::filesystem::path &sourceDir = {});
 
 /// `gg-render --mutate-preset` (spec §11, the listening pack's Mutate ladder): the preset file
 /// `bytes`, of either product, with its values moved by one Mutate press of the plugin's,
