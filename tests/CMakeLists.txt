@@ -12,6 +12,7 @@ add_executable(gg-tests
         core/diffuser_tests.cpp
         core/exchange_tests.cpp
         core/fx_processor_tests.cpp
+        core/halfband_tests.cpp
         core/layers_tests.cpp
         core/limiter_tests.cpp
         core/mod_matrix_tests.cpp
