@@ -339,6 +339,15 @@ md_t layerMeta(LayerParam p, Mode mode)
     case LayerParam::Bus2Resonance:
         return fresh().asPercent().withDefault(0.0f);
 
+    // M3 sub-project 9's spec: the voice filter, a bus filter's type and cutoff and the percents.
+    case LayerParam::VoiceFilter:
+        return busFilterType();
+    case LayerParam::VoiceCutoff:
+        return busCutoff();
+    case LayerParam::VoiceResonance:
+    case LayerParam::VoiceKeyTrack:
+        return fresh().asPercent().withDefault(0.0f);
+
     default:
         break; // the steps, above; LayerParam::Count isn't a parameter
     }

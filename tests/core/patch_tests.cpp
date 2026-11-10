@@ -7,13 +7,13 @@
 // §6.9: 48 per layer, A to D, and nine globals; 218 in all), M2 sub-project 2's five ring
 // parameters per layer (its spec §6.3), M2 sub-project 3's Quality, per layer, and Budget (its
 // spec §6.8), and the Extremes' eight per layer and eight globals (M2 sub-project 4's spec §6.7;
-// and M3 sub-project 1's Mode per layer and three MIDI globals; 63 per layer, 290 in all), and
-// their versioned XML state, through gg-core's public API (gg/core/ParamIds.h,
-// gg/core/PatchState.h) and its tinyxml-free internal core/src/PatchXml.h, for each product's patch
-// XML. This file never includes sst-plugininfra or tinyxml (ruling M1-l). The IDs, names, ranges
-// and defaults are spelled out literally, from Global Constraints' parameter table, so a change to
-// gg/core/ParamIds.h or ParamIds.cpp fails these tests. CLAP parameter IDs are frozen at the first
-// public release and append-only (INTENT §18).
+// and M3 sub-project 1's Mode per layer and three MIDI globals; 67 per layer, 306 in all, with M3
+// sub-project 9's four voice filter parameters), and their versioned XML state, through gg-core's
+// public API (gg/core/ParamIds.h, gg/core/PatchState.h) and its tinyxml-free internal
+// core/src/PatchXml.h, for each product's patch XML. This file never includes sst-plugininfra or
+// tinyxml (ruling M1-l). The IDs, names, ranges and defaults are spelled out literally, from Global
+// Constraints' parameter table, so a change to gg/core/ParamIds.h or ParamIds.cpp fails these
+// tests. CLAP parameter IDs are frozen at the first public release and append-only (INTENT §18).
 
 #include <algorithm>
 #include <array>
@@ -299,8 +299,8 @@ std::string handState(std::string_view params, std::string_view version = "2",
 
 TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
 {
-    STATIC_REQUIRE(kParamCount == 290);
-    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 290>>);
+    STATIC_REQUIRE(kParamCount == 306);
+    STATIC_REQUIRE(std::is_same_v<ParamValues, std::array<float, 306>>);
     STATIC_REQUIRE(std::is_same_v<std::underlying_type_t<ParamSlot>, uint16_t>);
     STATIC_REQUIRE(std::is_same_v<decltype(gg::core::kFeedbackMax), const float>);
     STATIC_REQUIRE(gg::core::kFeedbackMax == 0.95f);
@@ -367,7 +367,8 @@ TEST_CASE("param ids, names, ranges and defaults are pinned", "[core]")
             CHECK((gg::core::paramMeta(slot, mode).type ==
                    sst::basic_blocks::params::ParamMetaData::INT) == stepped);
         }
-        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3);
+        // + each layer's Voice Filter type (M3 sub-project 9).
+        CHECK(steppedCount == 4 * 10 + 1 + 4 + 3 + 4 + 3 + 4);
     }
 
     // Each layer parameter's CLAP module names its layer; a global's is empty.
@@ -466,11 +467,11 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     {
         INFO("scope " << scope);
         CHECK(reservedUsed[scope] ==
-              (scope == 0
-                   ? std::vector<uint32_t>{0x50u, 0x60u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u,
-                                           0x67u}
-                   : std::vector<uint32_t>{0x40u, 0x41u, 0x42u, 0x43u, 0x44u, 0x50u, 0x60u, 0x61u,
-                                           0x62u, 0x63u, 0x64u, 0x65u, 0x66u, 0x67u}));
+              (scope == 0 ? std::vector<uint32_t>{0x50u, 0x60u, 0x61u, 0x62u, 0x63u, 0x64u, 0x65u,
+                                                  0x66u, 0x67u}
+                          : std::vector<uint32_t>{0x40u, 0x41u, 0x42u, 0x43u, 0x44u, 0x50u, 0x60u,
+                                                  0x61u, 0x62u, 0x63u, 0x64u, 0x65u, 0x66u, 0x67u,
+                                                  0x74u, 0x75u, 0x76u, 0x77u}));
     }
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::Quality) == 0x010050u);
     STATIC_REQUIRE(gg::core::paramId(ParamSlot::B_Quality) == 0x020050u);
@@ -490,7 +491,8 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
             const clap_id id = scope << 16 | index;
             INFO("id " << id);
             const auto slot = gg::core::slotForId(id);
-            CHECK(slot.has_value() == (index <= 0x67));
+            CHECK(slot.has_value() ==
+                  (index <= 0x67 || (scope >= 1 && index >= 0x74 && index <= 0x77)));
             if (slot)
             {
                 CHECK(kTable[static_cast<size_t>(*slot)].id == id);
@@ -502,7 +504,7 @@ TEST_CASE("the id table has the next free indices and the reserved blocks", "[co
     using gg::core::LayerParam;
     using gg::core::LayerRef;
     STATIC_REQUIRE(gg::core::kLayers == 4);
-    STATIC_REQUIRE(gg::core::kLayerParamCount == 63);
+    STATIC_REQUIRE(gg::core::kLayerParamCount == 67);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Position) == 0x01u);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Diffusion) == 0x0Bu);
     STATIC_REQUIRE(gg::core::layerParamIndex(LayerParam::Source) == 0x0Cu);
@@ -724,8 +726,9 @@ TEST_CASE("the next free indices are unchanged", "[core]")
         {
             const clap_id id = scope << 16 | index;
             INFO("id " << id);
-            const bool ours =
-                (scope >= 1 && index <= 0x44) || index == 0x50 || (index >= 0x60 && index <= 0x67);
+            const bool ours = (scope >= 1 && index <= 0x44) || index == 0x50 ||
+                              (index >= 0x60 && index <= 0x67) ||
+                              (scope >= 1 && index >= 0x74 && index <= 0x77);
             CHECK(gg::core::slotForId(id).has_value() == ours);
         }
     }
@@ -772,6 +775,71 @@ TEST_CASE("a version 2 state without the ring parameters loads them at their def
         CHECK(bitsOf(l[ParamSlot::LoopLength]) == bitsOf(0.0f));
         CHECK(l.migratedFromVersion == 0u);
     }
+}
+
+TEST_CASE("the voice filter's indices are reserved in every layer scope", "[core]")
+{
+    // M3 sub-project 9's spec: 0x74 to 0x77 in scopes 1 to 4, none in scope 0.
+    for (clap_id scope = 0; scope <= 4; ++scope)
+    {
+        for (uint32_t index : {0x73u, 0x74u, 0x75u, 0x76u, 0x77u, 0x78u})
+        {
+            INFO("scope " << scope << ", index " << index);
+            CHECK(gg::core::detail::isReservedIndexInUse(scope, index) ==
+                  (scope >= 1 && index >= 0x74u && index <= 0x77u));
+        }
+    }
+    STATIC_REQUIRE(gg::core::layerParamIndex(gg::core::LayerParam::VoiceFilter) == 0x74u);
+    STATIC_REQUIRE(gg::core::layerParamIndex(gg::core::LayerParam::VoiceKeyTrack) == 0x77u);
+    STATIC_REQUIRE(gg::core::slotForId(0x010074) == ParamSlot::VoiceFilter);
+    STATIC_REQUIRE(gg::core::slotForId(0x040077) == ParamSlot::D_VoiceKeyTrack);
+}
+
+TEST_CASE("a patch without the voice filter's values loads their defaults", "[core]")
+{
+    // A state saved before M3 sub-project 9 has no voice filter rows (no version bump): they load
+    // at their defaults, Off, 1 kHz, 0 and 0, in every layer and in either product.
+    using gg::core::LayerParam;
+    constexpr std::array<LayerParam, 4> kVoiceFilter{
+        LayerParam::VoiceFilter, LayerParam::VoiceCutoff, LayerParam::VoiceResonance,
+        LayerParam::VoiceKeyTrack};
+    ParamValues saved = defaults();
+    saved[static_cast<size_t>(ParamSlot::Size)] = -1.0f;
+    saved[static_cast<size_t>(ParamSlot::B_Pitch)] = 7.0f;
+    std::string state = toStateXml(saved, 3, kFxRoutes);
+    for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+    {
+        for (const LayerParam p : kVoiceFilter)
+        {
+            const auto tag = R"(<p id=")" +
+                             std::to_string(gg::core::paramId(gg::core::layerSlot(p, layer))) +
+                             R"(" )";
+            const auto from = state.find(tag);
+            REQUIRE(from != std::string::npos);
+            const auto to = state.find("/>", from);
+            REQUIRE(to != std::string::npos);
+            state.erase(from, to + 2 - from);
+            REQUIRE(state.find(tag) == std::string::npos);
+        }
+    }
+    REQUIRE(state.find(R"(version="2")") != std::string::npos);
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        INFO((mode == Mode::Fx ? "FX" : "instrument"));
+        Loaded l = distinct();
+        REQUIRE(l.load(state, mode));
+        CHECK(l.valueBits() == Loaded{saved, 3, 0}.valueBits());
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            CHECK(l[gg::core::layerSlot(LayerParam::VoiceFilter, layer)] == 0.0f);
+            CHECK(bitsOf(l[gg::core::layerSlot(LayerParam::VoiceCutoff, layer)]) ==
+                  bitsOf(9.965784284662087f));
+            CHECK(l[gg::core::layerSlot(LayerParam::VoiceResonance, layer)] == 0.0f);
+            CHECK(l[gg::core::layerSlot(LayerParam::VoiceKeyTrack, layer)] == 0.0f);
+        }
+        CHECK(l.migratedFromVersion == 0u);
+    }
+    CHECK(gg::core::kPatchVersion == 2u);
 }
 
 TEST_CASE("the state lists every param in slot order", "[core]")

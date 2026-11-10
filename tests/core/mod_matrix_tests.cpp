@@ -524,8 +524,8 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
     // Mode and the three MIDI settings (M3 sub-project 1) are no target: none is counted here.
     // 14 layer parameters, four of M2 sub-project 2's five ring parameters (not Ring Length),
     // sub-project 3's Quality and the Extremes' 8, Level and Layer A On, Mix, Space's seven but
-    // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals.
-    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8);
+    // Diffusion, Morph X and Y, Budget, and the Extremes' 8 globals, and M3 sub-project 9's four.
+    CHECK(valid == 14 + 4 + 1 + 8 + 2 + 1 + 7 + 2 + 1 + 8 + 4);
     CHECK_FALSE(isValidTarget(ParamSlot::B_LoopLength));
 
     CHECK(isLayerTarget(ParamSlot::Position));
@@ -763,5 +763,19 @@ TEST_CASE("factory routes 44 to 48 are voice only and slots 1 to 12 are unchange
         {
             CHECK(bits(got[s]) == bits(expected[s]));
         }
+    }
+}
+
+TEST_CASE("the voice filter's four are route targets but not voice targets", "[core][mod]")
+{
+    // M3 sub-project 9: layer A's slots are layer targets (B to D's are reached through
+    // targetLayer); none is a voice target yet (the voice filter's wiring flips two, later).
+    for (const LayerParam p : {LayerParam::VoiceFilter, LayerParam::VoiceCutoff,
+                               LayerParam::VoiceResonance, LayerParam::VoiceKeyTrack})
+    {
+        CHECK(isValidTarget(layerSlot(p, 0)));
+        CHECK_FALSE(isValidTarget(layerSlot(p, 1)));
+        CHECK(isLayerTarget(layerSlot(p, 0)));
+        CHECK_FALSE(isVoiceTarget(layerSlot(p, 0)));
     }
 }

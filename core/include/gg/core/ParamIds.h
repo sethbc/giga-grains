@@ -23,7 +23,8 @@ struct ParamMetaData;
 /// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), M2 sub-project 3's
 /// Quality, per layer, and Budget (its spec §6.8), and the Extremes' eight per layer and eight
 /// globals (M2 sub-project 4's spec §6.7), and M3 sub-project 1's Mode per layer and three MIDI
-/// settings (its spec §4.1): 63 per layer and 290 in all. Their slots, CLAP IDs and
+/// settings (its spec §4.1): 67 per layer and 306 in all (M3 sub-project 9's four voice filter
+/// parameters per layer, its spec). Their slots, CLAP IDs and
 /// metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
@@ -37,7 +38,7 @@ enum class Mode
     Fx,         ///< The input feeds the live ring and the dry side of the Mix.
 };
 
-/// The 63 parameters of a layer (M3 sub-project 1's Mode, its spec §4.1; M2 sub-project 1's spec
+/// The 67 parameters of a layer (M3 sub-project 1's Mode, its spec §4.1; M2 sub-project 1's spec
 /// §6.9, M2 sub-project 2's five ring parameters in its reserved block, its spec §6.3, M2
 /// sub-project 3's Quality in its, its spec §6.8, and sub-project 4's eight in its, its spec §6.7),
 /// one row each, in index order: `X(name, index, "Display Name")`. A layer parameter's CLAP ID is
@@ -119,7 +120,7 @@ enum class Mode
 /// layer's interpolation tier, stepped 0 Eco, 1 Normal, 2 HQ (gg::Tier).
 #define GG_LAYER_PARAMS_M2_ENGINE(X) X(Quality, 0x50, "Quality")
 /// M2 sub-project 4's (its spec §6.7), in its reserved block: Smear, the bus split and the two
-/// buses' filters. 0x68 to 0x7F stay unused.
+/// buses' filters. 0x68 to 0x73 and 0x78 to 0x7F stay unused (0x74 to 0x77 are sub-project 9's).
 #define GG_LAYER_PARAMS_M2_EXTREMES(X)                                                             \
     X(Smear, 0x60, "Smear")                                                                        \
     X(BusSplit, 0x61, "Bus Split")                                                                 \
@@ -129,16 +130,26 @@ enum class Mode
     X(Bus2Filter, 0x65, "Bus 2 Filter")                                                            \
     X(Bus2Cutoff, 0x66, "Bus 2 Cutoff")                                                            \
     X(Bus2Resonance, 0x67, "Bus 2 Resonance")
+/// M3 sub-project 9's (the per-voice filter; its spec), in sub-project 4's block after the buses'
+/// filters: the type (as a bus filter's), the cutoff (as a bus's), the resonance and the key
+/// tracking. 0x68 to 0x73 and 0x78 to 0x7F stay unused.
+#define GG_LAYER_PARAMS_M3_VOICEFILTER(X)                                                          \
+    X(VoiceFilter, 0x74, "Voice Filter")                                                           \
+    X(VoiceCutoff, 0x75, "Voice Cutoff")                                                           \
+    X(VoiceResonance, 0x76, "Voice Resonance")                                                     \
+    X(VoiceKeyTrack, 0x77, "Voice Key Track")
 #define GG_LAYER_PARAMS(X)                                                                         \
     GG_LAYER_PARAMS_M1(X)                                                                          \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
-    GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
+    GG_LAYER_PARAMS_M2_SOURCES(X)                                                                  \
+    GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X) GG_LAYER_PARAMS_M3_VOICEFILTER(X)
 /// The rows after layer A's eleven M1 ones: layer A's new slots, in order.
 #define GG_LAYER_PARAMS_SINCE_M1(X)                                                                \
     GG_LAYER_PARAMS_M2(X)                                                                          \
     GG_LAYER_PARAMS_M3(X)                                                                          \
-    GG_LAYER_PARAMS_M2_SOURCES(X) GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X)
+    GG_LAYER_PARAMS_M2_SOURCES(X)                                                                  \
+    GG_LAYER_PARAMS_M2_ENGINE(X) GG_LAYER_PARAMS_M2_EXTREMES(X) GG_LAYER_PARAMS_M3_VOICEFILTER(X)
 
 /// One layer's parameter, whichever layer: its value is its row's position in GG_LAYER_PARAMS, and
 /// its index in the layer's scope is the row's index column (layerParamIndex).
@@ -154,7 +165,7 @@ enum class LayerParam : uint8_t
 inline constexpr uint8_t kLayers = 4;
 
 /// The parameters per layer.
-inline constexpr size_t kLayerParamCount = 63;
+inline constexpr size_t kLayerParamCount = 67;
 static_assert(static_cast<size_t>(LayerParam::Count) == kLayerParamCount);
 
 /// The indices a scope can hold: 0x00 (reserved) to 0x7F, the top of wave 2's reserved blocks
@@ -228,10 +239,10 @@ GG_LAYER_PARAMS(GG_LAYER_PARAM_INDEX_CHECK)
 /// appended with new IDs.
 ///
 /// The 28 M1 slots come first, in their order (layer A's eleven M1 parameters among them, under
-/// their M1 names), then layer A's 52 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
-/// Mode, sub-project 2's five, sub-project 3's Quality and sub-project 4's eight), then layers B, C
-/// and D in full
-/// (`B_Position` ... `D_Bus2Resonance`, 63 each, in row order), then the nine new globals (M2
+/// their M1 names), then layer A's 56 new parameters (M2 sub-project 1's 37, M3 sub-project 1's
+/// Mode, sub-project 2's five, sub-project 3's Quality, sub-project 4's eight and M3 sub-project
+/// 9's four), then layers B, C and D in full
+/// (`B_Position` ... `D_VoiceKeyTrack`, 67 each, in row order), then the nine new globals (M2
 /// sub-project 1's spec §6.9), Budget (M2 sub-project 3's spec §6.8) and the Extremes' eight
 /// globals (M2 sub-project 4's spec §6.7). A layer row appended to GG_LAYER_PARAMS moves the later
 /// layers' slots, never an ID.
@@ -409,7 +420,7 @@ enum class LfoShape : uint8_t
 
 namespace detail
 {
-/// The first slot of layer A's new parameters, and of layer B's 63.
+/// The first slot of layer A's new parameters, and of layer B's 67.
 inline constexpr size_t kLayerANewFirst = static_cast<size_t>(ParamSlot::Source);
 inline constexpr size_t kLayerBFirst = static_cast<size_t>(ParamSlot::B_Position);
 inline constexpr size_t kLayersEnd = static_cast<size_t>(ParamSlot::MorphX);
@@ -516,12 +527,14 @@ inline constexpr auto kGlobalSlots = [] {
 // The reserved blocks' indices in use: 0x40-0x44, M2 sub-project 2's, in the layer scopes (Ring
 // Length, Loop, Loop Length, Overdub, Splice); 0x50, M2 sub-project 3's, in every scope (Quality
 // in the layer scopes, Budget in scope 0); and 0x60 to 0x67, M2 sub-project 4's, in every scope
-// (its eight layer rows, and the delay's and the limiter's eight globals in scope 0). A wave-2 row
-// adds its index here.
+// (its eight layer rows, and the delay's and the limiter's eight globals in scope 0); and 0x74 to
+// 0x77, M3 sub-project 9's, in the layer scopes (its four voice filter rows). A wave-2 row adds its
+// index here.
 inline constexpr bool isReservedIndexInUse(clap_id scope, uint32_t index) noexcept
 {
     const bool sources = scope >= 1 && index >= 0x40u && index <= 0x44u;
-    return sources || index == 0x50u || (index >= 0x60u && index <= 0x67u);
+    const bool voiceFilter = scope >= 1 && index >= 0x74u && index <= 0x77u;
+    return sources || voiceFilter || index == 0x50u || (index >= 0x60u && index <= 0x67u);
 }
 static_assert([] {
     for (const clap_id id : kParamIds)

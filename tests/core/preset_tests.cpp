@@ -247,10 +247,12 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 15447);
-    CHECK(sha256Of(ptch) == "252fd91eccd37cf3fed3ff550e00a6b11feac948914c80b7dee970a986eb11bc");
-    CHECK(session.size() == 15556);
-    CHECK(sha256Of(session) == "79706b53e86d6f2390d709fab76b219dc93e5fab3cdedca751151027d3182f59");
+    // Retaken for M3 sub-project 9's sixteen parameters (A to D Voice Filter, Cutoff, Resonance and
+    // Key Track), 828 bytes (15,447, 252fd91e...; 15,556, 79706b53...).
+    CHECK(ptch.size() == 16275);
+    CHECK(sha256Of(ptch) == "af23a308b08500210fd5dfc86ed7a3739fac7d8adfd7bed5849d798adbad5b26");
+    CHECK(session.size() == 16384);
+    CHECK(sha256Of(session) == "1efe746373c8fcf5539efd8667ef839d59b7ebbdceb90471c72a3f414bdedf43");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -522,12 +524,13 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 17655);
-    CHECK(sha256Of(fxBytes) == "5337a57bc546f56960c233796bf1c6cef26547c632db1563054ad02fc36e1355");
+    // M3 sub-project 9's sixteen parameters: +828 bytes (17,655, 5337a57b...; 17,656, 81fb0c52...).
+    CHECK(fxBytes.size() == 18483);
+    CHECK(sha256Of(fxBytes) == "b42f5a02fe002bc26334cd6648a5739910fb9b8060318fb0e9ab9763664b4af2");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 17656);
+    CHECK(instBytes.size() == 18484);
     CHECK(sha256Of(instBytes) ==
-          "81fb0c5209bb7ff0fd75b80cfba4aa1164decd13c13cca6f6f01758f9e92df2e");
+          "e4661e51b08e9ee0aea452740a1eb803e828459faf675de51079f4dd08f67fd3");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());

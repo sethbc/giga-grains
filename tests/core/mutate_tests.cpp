@@ -7,6 +7,7 @@
 // from (seed, counter).
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -290,7 +291,8 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     };
     for (const LayerParam p :
          {LayerParam::Mode, LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
-          LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice})
+          LayerParam::LoopLength, LayerParam::Overdub, LayerParam::Splice, LayerParam::VoiceFilter,
+          LayerParam::VoiceCutoff, LayerParam::VoiceResonance, LayerParam::VoiceKeyTrack})
     {
         for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
         {
@@ -302,7 +304,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 62 + 4 + 3);
+    REQUIRE(expectedStructural.count() == 62 + 4 + 3 + 16);
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -327,7 +329,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 175);
+    CHECK(bOn.count() == 191);
     LockSet unlocked = ~bOn;
     CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
@@ -368,7 +370,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 228);
+    CHECK(bOff.count() == 244);
     CHECK((bOff & ~bOn).count() == 53);
 
     // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".
@@ -563,4 +565,59 @@ TEST_CASE("mutate draws are keyed by CLAP ID", "[core][mutate]")
             CHECK(mutated(in, locks, 0.5f, kSeed, counter, mode)[s] == expected);
         }
     }
+}
+
+TEST_CASE("mutate's default locks hold the voice filter's four", "[core][mutate]")
+{
+    // M3 sub-project 9: a layer's Voice Filter, Cutoff, Resonance and Key Track are held by the
+    // default locks, in every layer, like Mode and Quality; a press leaves them.
+    constexpr std::array<LayerParam, 4> kVoiceFilter{
+        LayerParam::VoiceFilter, LayerParam::VoiceCutoff, LayerParam::VoiceResonance,
+        LayerParam::VoiceKeyTrack};
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        ParamValues in = defaults(mode);
+        for (uint8_t layer = 0; layer < kLayers; ++layer)
+        {
+            in[idx(layerOnSlot(layer))] = 1.0f;
+        }
+        const LockSet locks = defaultMutateLocks(in, mode);
+        for (uint8_t layer = 0; layer < kLayers; ++layer)
+        {
+            for (const LayerParam p : kVoiceFilter)
+            {
+                CHECK(locks.test(idx(layerSlot(p, layer))));
+            }
+        }
+        const ParamValues out = mutated(in, locks, 1.0f, kSeed, 3u, mode);
+        for (uint8_t layer = 0; layer < kLayers; ++layer)
+        {
+            for (const LayerParam p : kVoiceFilter)
+            {
+                const auto s = idx(layerSlot(p, layer));
+                CHECK(std::bit_cast<uint32_t>(out[s]) == std::bit_cast<uint32_t>(in[s]));
+            }
+        }
+    }
+}
+
+TEST_CASE("appending the voice filter's four moves no other slot's mutate draw", "[core][mutate]")
+{
+    // Draws are keyed by CLAP ID, so a press with nothing locked moves every other slot exactly as
+    // it did before the four existed: the FNV-1a hash of those slots' output bits (in slot order,
+    // the four skipped) for the FX's defaults, seed kSeed, press 7 and amount 1, taken from the
+    // tree before M3 sub-project 9.
+    const Mode mode = Mode::Fx;
+    const ParamValues out = mutated(defaults(mode), LockSet{}, 1.0f, kSeed, 7u, mode);
+    uint64_t h = 1469598103934665603ull;
+    for (size_t s = 0; s < kParamCount; ++s)
+    {
+        const uint32_t index = gg::core::paramId(static_cast<ParamSlot>(s)) & 0xFFFFu;
+        if (index >= 0x74u && index <= 0x77u)
+        {
+            continue;
+        }
+        h = (h ^ std::bit_cast<uint32_t>(out[s])) * 1099511628211ull;
+    }
+    CHECK(h == 1442767902050642873ull);
 }

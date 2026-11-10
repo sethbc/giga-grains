@@ -53,6 +53,11 @@ LockSet buildStructuralLocks() noexcept
         lock(layerSlot(LayerParam::Quality, layer));
         // M3 sub-project 1: Mode is structure, as Source is.
         lock(layerSlot(LayerParam::Mode, layer));
+        // M3 sub-project 9: the voice filter's four are held in every layer.
+        lock(layerSlot(LayerParam::VoiceFilter, layer));
+        lock(layerSlot(LayerParam::VoiceCutoff, layer));
+        lock(layerSlot(LayerParam::VoiceResonance, layer));
+        lock(layerSlot(LayerParam::VoiceKeyTrack, layer));
     }
     // The MIDI settings are the instance's, not the sound's (M3 sub-project 1's spec §4.1).
     lock(ParamSlot::Mpe);

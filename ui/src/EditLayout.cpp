@@ -78,15 +78,20 @@ constexpr std::array kRows{
     edit(ParamSlot::Diffusion, Panel::Space, 1),
     edit(ParamSlot::Feedback, Panel::Space, 2),
     edit(ParamSlot::Level, Panel::Space, 3),
-    // Filter: the bus split, then each bus's filter on a line of its own (M2 sub-project 4;
-    // ruling VW-T19b, one wrapped row until PR 2).
-    edit(ParamSlot::BusSplit, Panel::Filter, 0),
-    editLine(ParamSlot::Bus1Filter, Panel::Filter, 1),
-    edit(ParamSlot::Bus1Cutoff, Panel::Filter, 2),
-    edit(ParamSlot::Bus1Resonance, Panel::Filter, 3),
-    editLine(ParamSlot::Bus2Filter, Panel::Filter, 4),
-    edit(ParamSlot::Bus2Cutoff, Panel::Filter, 5),
-    edit(ParamSlot::Bus2Resonance, Panel::Filter, 6),
+    // Filter: the voice filter's line first (M3 sub-project 9, F13), then the bus split and each
+    // bus's filter on a line of its own (M2 sub-project 4; ruling VW-T19b, one wrapped row until
+    // PR 2).
+    editLine(ParamSlot::VoiceFilter, Panel::Filter, 0),
+    edit(ParamSlot::VoiceCutoff, Panel::Filter, 1),
+    edit(ParamSlot::VoiceResonance, Panel::Filter, 2),
+    edit(ParamSlot::VoiceKeyTrack, Panel::Filter, 3),
+    editLine(ParamSlot::BusSplit, Panel::Filter, 4),
+    editLine(ParamSlot::Bus1Filter, Panel::Filter, 5),
+    edit(ParamSlot::Bus1Cutoff, Panel::Filter, 6),
+    edit(ParamSlot::Bus1Resonance, Panel::Filter, 7),
+    editLine(ParamSlot::Bus2Filter, Panel::Filter, 8),
+    edit(ParamSlot::Bus2Cutoff, Panel::Filter, 9),
+    edit(ParamSlot::Bus2Resonance, Panel::Filter, 10),
     // The modulators.
     edit(ParamSlot::Lfo1Rate, Panel::Lfo1, 0),
     edit(ParamSlot::Lfo1Shape, Panel::Lfo1, 1),

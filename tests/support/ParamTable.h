@@ -172,6 +172,15 @@ inline constexpr std::array<ParamRow, 8> kLayerAExtremesRows{{
     {0x010066, "A Bus 2 Cutoff", kBusCutoffMin, kBusCutoffMax, kBusCutoffDefault, false},
     {0x010067, "A Bus 2 Resonance", 0.0f, 1.0f, 0.0f, false},
 }};
+// Layer A's four voice filter parameters (M3 sub-project 9's spec), in its reserved block at 0x74
+// to 0x77, after the Extremes' eight: the type (as a bus filter's), the cutoff in log2 Hz as a
+// bus's, the resonance and the key tracking in percent.
+inline constexpr std::array<ParamRow, 4> kLayerAVoiceFilterRows{{
+    {0x010074, "A Voice Filter", 0.0f, 4.0f, 0.0f, true},
+    {0x010075, "A Voice Cutoff", kBusCutoffMin, kBusCutoffMax, kBusCutoffDefault, false},
+    {0x010076, "A Voice Resonance", 0.0f, 1.0f, 0.0f, false},
+    {0x010077, "A Voice Key Track", 0.0f, 1.0f, 0.0f, false},
+}};
 // The parameters that are neither automatable nor modulatable: every layer's Ring Length, which the
 // main thread resizes (M2 sub-project 2's spec §5, §6.3).
 // The three MIDI globals are fixed too (M3 sub-project 1's spec §4.1).
@@ -214,7 +223,7 @@ inline constexpr std::array<ParamRow, 3> kMidiGlobalRows{{
     {0x000024, "Bend Range", 0.0f, 24.0f, 2.0f, true},
 }};
 
-// All 290 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// All 306 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -260,6 +269,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         {
             push(r.id, r.name, r);
         }
+        for (const ParamRow &r : kLayerAVoiceFilterRows)
+        {
+            push(r.id, r.name, r);
+        }
         std::vector<ParamRow> layerA;
         for (clap_id index = 0x01; index <= 0x0B; ++index)
         {
@@ -274,6 +287,7 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
         layerA.insert(layerA.end(), kLayerASourcesRows.begin(), kLayerASourcesRows.end());
         layerA.insert(layerA.end(), kLayerAEngineRows.begin(), kLayerAEngineRows.end());
         layerA.insert(layerA.end(), kLayerAExtremesRows.begin(), kLayerAExtremesRows.end());
+        layerA.insert(layerA.end(), kLayerAVoiceFilterRows.begin(), kLayerAVoiceFilterRows.end());
         expect(layerA.size() == gg::core::kLayerParamCount);
         for (const char letter : {'B', 'C', 'D'})
         {

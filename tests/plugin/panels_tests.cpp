@@ -425,7 +425,7 @@ TEST_CASE("every Edit panel shows, Filter with the buses, and Step has sixteen s
         ++visible;
         if (panel->panel() == gg::ui::Panel::Filter)
         {
-            CHECK(panel->controls().size() == 7);
+            CHECK(panel->controls().size() == 11);
         }
         if (panel->panel() == gg::ui::Panel::Step)
         {

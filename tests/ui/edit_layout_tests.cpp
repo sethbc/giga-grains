@@ -154,12 +154,14 @@ TEST_CASE("the panel order is the spec's", "[ui]")
     CHECK(gg::ui::slotsIn(Panel::Space, 1) ==
           std::vector<ParamSlot>{ParamSlot::B_Stereo, ParamSlot::B_Diffusion, ParamSlot::B_Feedback,
                                  ParamSlot::LevelB});
-    // The bus split, then each bus on a line of its own (M2 sub-project 4; PR 2).
+    // The voice filter's four first (M3 sub-project 9, F13), then the bus split and each bus on a
+    // line of its own (M2 sub-project 4; PR 2).
     CHECK(gg::ui::slotsIn(Panel::Filter, 2) ==
-          std::vector<ParamSlot>{ParamSlot::C_BusSplit, ParamSlot::C_Bus1Filter,
-                                 ParamSlot::C_Bus1Cutoff, ParamSlot::C_Bus1Resonance,
-                                 ParamSlot::C_Bus2Filter, ParamSlot::C_Bus2Cutoff,
-                                 ParamSlot::C_Bus2Resonance});
+          std::vector<ParamSlot>{
+              ParamSlot::C_VoiceFilter, ParamSlot::C_VoiceCutoff, ParamSlot::C_VoiceResonance,
+              ParamSlot::C_VoiceKeyTrack, ParamSlot::C_BusSplit, ParamSlot::C_Bus1Filter,
+              ParamSlot::C_Bus1Cutoff, ParamSlot::C_Bus1Resonance, ParamSlot::C_Bus2Filter,
+              ParamSlot::C_Bus2Cutoff, ParamSlot::C_Bus2Resonance});
     CHECK(std::string(gg::ui::panelName(Panel::Ring)) == "Ring");
     CHECK(std::string(gg::ui::panelName(Panel::Delay)) == "Delay");
     CHECK(std::string(gg::ui::panelName(Panel::Limiter)) == "Limiter");
@@ -204,15 +206,17 @@ TEST_CASE("the ring parameters are the Ring panel's", "[ui]")
     CHECK(gg::ui::slotsIn(Panel::Ring, gg::core::kLayers).empty());
 }
 
-TEST_CASE("the Filter panel breaks before each bus", "[ui]")
+TEST_CASE("the Filter panel breaks before the voice filter, the split and each bus", "[ui]")
 {
     for (std::size_t i = 0; i < gg::core::kParamCount; ++i)
     {
         const auto slot = static_cast<ParamSlot>(i);
         INFO(nameOf(slot));
         const auto ref = gg::core::layerOf(slot);
+        // M3 sub-project 9 (F13): the voice filter's line leads, the split has one of its own.
         const bool busStart =
-            ref && (ref->param == LayerParam::Bus1Filter || ref->param == LayerParam::Bus2Filter);
+            ref && (ref->param == LayerParam::VoiceFilter || ref->param == LayerParam::BusSplit ||
+                    ref->param == LayerParam::Bus1Filter || ref->param == LayerParam::Bus2Filter);
         REQUIRE(gg::ui::placementOf(slot).has_value());
         CHECK(gg::ui::placementOf(slot)->breakBefore == busStart);
     }
