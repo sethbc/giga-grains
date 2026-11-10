@@ -146,6 +146,14 @@ constexpr std::array kRows{
     fx(ParamSlot::Mpe, Panel::Midi, 0),
     fx(ParamSlot::MpeBendRange, Panel::Midi, 1),
     fx(ParamSlot::BendRange, Panel::Midi, 2),
+    // The scene controls (M3 sub-project 10's spec §4.1): the FX view's panel after MIDI.
+    fx(ParamSlot::Scene, Panel::Scenes, 0),
+    fx(ParamSlot::SceneB, Panel::Scenes, 1),
+    fx(ParamSlot::SceneMorph, Panel::Scenes, 2),
+    fx(ParamSlot::ScenePunch, Panel::Scenes, 3),
+    fx(ParamSlot::SceneStore, Panel::Scenes, 4),
+    fx(ParamSlot::SceneQuantize, Panel::Scenes, 5),
+    fx(ParamSlot::SceneGlide, Panel::Scenes, 6),
     // The Perform view: the strip's On switches (Layer B On to D On through A's), the pad, the
     // macros.
     Row{ParamSlot::LayerAOn, View::Perform, Panel::Strip, 0, kNone},
@@ -161,8 +169,9 @@ constexpr std::array kRows{
     Row{ParamSlot::Macro8, View::Perform, Panel::Macros, 7, kNone},
 };
 
-// One row per layer parameter, per-layer global (Level, Layer On) and other global: 62 + 2 + 27.
-static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 30);
+// One row per layer parameter, per-layer global (Level, Layer On) and other global: 63 + 2 + 37
+// (the globals: 30 and M3 sub-project 10's seven scene controls).
+static_assert(kRows.size() == gg::core::kLayerParamCount + 2 + 30 + 7);
 
 /// A slot as the table keys it, with its layer: layer A's slot and the layer for a layer
 /// parameter or a per-layer global; the slot itself and layer 0 for any other.
@@ -306,6 +315,8 @@ const char *panelName(Panel panel) noexcept
         return "Limiter";
     case Panel::Midi:
         return "MIDI";
+    case Panel::Scenes:
+        return "Scenes";
     case Panel::Count:
         break;
     }

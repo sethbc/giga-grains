@@ -42,7 +42,9 @@ struct ParamRow
 };
 
 /// One parameter's expected metadata, at its slot in paramTable(). `automatable`: its CLAP flags
-/// carry AUTOMATABLE and MODULATABLE, as every parameter's do but kFixedIds'.
+/// carry AUTOMATABLE, as every parameter's do but kFixedIds'. `modulatable`: they carry MODULATABLE
+/// too, as every automatable parameter's do but the scene controls' (M3 sub-project 10's spec
+/// §4.1).
 struct ExpectedParamRow
 {
     clap_id id;
@@ -52,6 +54,7 @@ struct ExpectedParamRow
     float def;
     bool stepped;
     bool automatable;
+    bool modulatable;
 };
 
 /// The top of every layer's Position (M2 sub-project 2's spec §6.3): log2(300 × 255 / 16 + 1) / 8,
@@ -214,7 +217,21 @@ inline constexpr std::array<ParamRow, 3> kMidiGlobalRows{{
     {0x000024, "Bend Range", 0.0f, 24.0f, 2.0f, true},
 }};
 
-// All 290 in slot order: the rows above, with layers B to D generated from layer A's rows in index
+// M3 sub-project 10's seven scene controls (its spec §4.1), the last slots, at 0x51 to 0x57 (in
+// Budget's block): automatable, not modulatable. Scene and Scene B are stepped 0 to 8 (None, 1 to
+// 8), Scene Quantize stepped 0 to 4, Scene Morph a percentage, Scene Punch and Scene Store
+// switches and Scene Glide 0 to 16 s.
+inline constexpr std::array<ParamRow, 7> kSceneGlobalRows{{
+    {0x000051, "Scene", 0.0f, 8.0f, 0.0f, true},
+    {0x000052, "Scene B", 0.0f, 8.0f, 0.0f, true},
+    {0x000053, "Scene Morph", 0.0f, 1.0f, 0.0f, false},
+    {0x000054, "Scene Punch", 0.0f, 1.0f, 0.0f, true},
+    {0x000055, "Scene Quantize", 0.0f, 4.0f, 0.0f, true},
+    {0x000056, "Scene Glide", 0.0f, 16.0f, 0.0f, false},
+    {0x000057, "Scene Store", 0.0f, 1.0f, 0.0f, true},
+}};
+
+// All 297 in slot order: the rows above, with layers B to D generated from layer A's rows in index
 // order (the M1 ones found by ID), each with its letter for "A" and its scope for 1. Built on the
 // first call.
 inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
@@ -234,7 +251,9 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             expect(slot < gg::core::kParamCount);
             const bool automatable =
                 std::find(kFixedIds.begin(), kFixedIds.end(), id) == kFixedIds.end();
-            t[slot++] = {id, std::move(name), r.min, r.max, r.def, r.stepped, automatable};
+            const bool scene = id >= 0x000051 && id <= 0x000057;
+            t[slot++] = {id,    std::move(name), r.min,       r.max,
+                         r.def, r.stepped,       automatable, automatable && !scene};
         };
         for (const ParamRow &r : kM1Rows)
         {
@@ -293,6 +312,10 @@ inline const std::array<ExpectedParamRow, gg::core::kParamCount> &paramTable()
             push(r.id, r.name, r);
         }
         for (const ParamRow &r : kMidiGlobalRows)
+        {
+            push(r.id, r.name, r);
+        }
+        for (const ParamRow &r : kSceneGlobalRows)
         {
             push(r.id, r.name, r);
         }

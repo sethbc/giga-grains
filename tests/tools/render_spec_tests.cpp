@@ -1098,7 +1098,10 @@ TEST_CASE("instrument specs name the instrument's macros", "[render]")
     CHECK_THAT(rejection(fx), EndsWith("Level B, Level C, Level D, Budget, Delay Amount, "
                                        "Delay Time, Delay Feedback, Delay Damping, "
                                        "Delay Ping-pong, Limiter Mode, Limiter Ceiling, "
-                                       "Limiter Release, MPE, MPE Bend Range, Bend Range"));
+                                       "Limiter Release, MPE, MPE Bend Range, Bend Range, "
+                                       // M3 sub-project 10's seven scene controls
+                                       "Scene, Scene B, Scene Morph, Scene Punch, "
+                                       "Scene Quantize, Scene Glide, Scene Store"));
     instrument["params"] = {{"Macro Mix", 1.0}};
     CHECK_THAT(rejection(instrument),
                StartsWith("unknown key params.Macro Mix: the parameters are "));

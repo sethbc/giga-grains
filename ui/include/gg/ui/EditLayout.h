@@ -27,7 +27,7 @@ enum class View : uint8_t
 /// the FX view's; Strip (the layers' On switches), Pad (the morph) and Macros are the Perform
 /// view's. Ring, Delay and Limiter came with M2 sub-project 6's PR 2, appended, so the earlier
 /// panels keep their values; Midi (MPE, MPE Bend Range, Bend Range; the FX view's) came with M3
-/// sub-project 1.
+/// sub-project 1, and Scenes (the seven scene controls; the FX view's) with sub-project 10.
 enum class Panel : uint8_t
 {
     Source,
@@ -52,6 +52,7 @@ enum class Panel : uint8_t
     Delay,
     Limiter,
     Midi,
+    Scenes,
     Count
 };
 

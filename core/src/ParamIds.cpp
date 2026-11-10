@@ -538,9 +538,81 @@ std::array<md_t, kParamCount> buildTable(Mode mode)
                                    .withDefault(2.0f)
                                    .withLinearScaleFormatting("st")
                                    .withFlags(CLAP_PARAM_IS_STEPPED);
+    // M3 sub-project 10's scene controls (its spec §4.1), the same in both products: automatable,
+    // not modulatable. Scene and Scene B pick one of eight scenes (0 is None); Quantize is the
+    // grid a recall waits for.
+    const auto sceneChoice = [&](ParamSlot slot, const char *name) {
+        return base(slot)
+            .withName(name)
+            .asInt()
+            .withRange(0.f, 8.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting({{0, "None"},
+                                         {1, "1"},
+                                         {2, "2"},
+                                         {3, "3"},
+                                         {4, "4"},
+                                         {5, "5"},
+                                         {6, "6"},
+                                         {7, "7"},
+                                         {8, "8"}})
+            .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
+    };
+    at(ParamSlot::Scene) = sceneChoice(ParamSlot::Scene, "Scene");
+    at(ParamSlot::SceneB) = sceneChoice(ParamSlot::SceneB, "Scene B");
+    at(ParamSlot::SceneMorph) = base(ParamSlot::SceneMorph)
+                                    .withName("Scene Morph")
+                                    .asPercent()
+                                    .withDefault(0.0f)
+                                    .withFlags(CLAP_PARAM_IS_AUTOMATABLE);
+    at(ParamSlot::ScenePunch) = base(ParamSlot::ScenePunch)
+                                    .withName("Scene Punch")
+                                    .asOnOffBool()
+                                    .withDefault(0.0f)
+                                    .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
+    at(ParamSlot::SceneQuantize) =
+        base(ParamSlot::SceneQuantize)
+            .withName("Scene Quantize")
+            .asInt()
+            .withRange(0.f, 4.f)
+            .withDefault(0.0f)
+            .withUnorderedMapFormatting(
+                {{0, "Off"}, {1, "Beat"}, {2, "Bar"}, {3, "2 Bars"}, {4, "4 Bars"}})
+            .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
+    // seconds, 0 to 16, linear.
+    at(ParamSlot::SceneGlide) = base(ParamSlot::SceneGlide)
+                                    .withName("Scene Glide")
+                                    .asFloat()
+                                    .withRange(0.f, 16.f)
+                                    .withDefault(0.0f)
+                                    .withLinearScaleFormatting("s")
+                                    .withFlags(CLAP_PARAM_IS_AUTOMATABLE);
+    at(ParamSlot::SceneStore) = base(ParamSlot::SceneStore)
+                                    .withName("Scene Store")
+                                    .asOnOffBool()
+                                    .withDefault(0.0f)
+                                    .withFlags(CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED);
     return t;
 }
 } // namespace
+
+bool isSceneSlot(ParamSlot slot) noexcept
+{
+    // Built once, on the first call: the automatable slots (the FX's flags, which a test pins
+    // equal the instrument's), less Budget and the seven controls.
+    static const std::array<bool, kParamCount> table = [] {
+        std::array<bool, kParamCount> t{};
+        for (size_t i = 0; i < kParamCount; ++i)
+        {
+            const auto s = static_cast<ParamSlot>(i);
+            t[i] = (paramMeta(s, Mode::Fx).flags & CLAP_PARAM_IS_AUTOMATABLE) != 0 &&
+                   s != ParamSlot::Budget && !isSceneControl(s);
+        }
+        return t;
+    }();
+    const auto i = static_cast<size_t>(slot);
+    return i < kParamCount && table[i];
+}
 
 const char *paramModule(ParamSlot slot) noexcept
 {

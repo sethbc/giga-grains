@@ -25,6 +25,7 @@ add_executable(gg-tests
         core/preset_tests.cpp
         core/processor_tests.cpp
         core/publish_tests.cpp
+        core/scenes_tests.cpp
         core/session_state_tests.cpp
         core/settings_tests.cpp
         core/source_tests.cpp

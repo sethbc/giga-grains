@@ -218,6 +218,20 @@ TEST_CASE("the Filter panel breaks before each bus", "[ui]")
     }
 }
 
+TEST_CASE("the Scenes panel holds the seven scene controls in the FX view", "[ui]")
+{
+    // M3 sub-project 10's spec §4.1: the FX view's Scenes panel, after MIDI.
+    CHECK(gg::ui::slotsIn(Panel::Scenes, 0) ==
+          std::vector<ParamSlot>{ParamSlot::Scene, ParamSlot::SceneB, ParamSlot::SceneMorph,
+                                 ParamSlot::ScenePunch, ParamSlot::SceneStore,
+                                 ParamSlot::SceneQuantize, ParamSlot::SceneGlide});
+    CHECK(std::string(gg::ui::panelName(Panel::Scenes)) == "Scenes");
+    for (const ParamSlot slot : gg::ui::slotsIn(Panel::Scenes, 0))
+    {
+        CHECK(gg::ui::placementOf(slot)->view == View::Fx);
+    }
+}
+
 TEST_CASE("Mode sits beside Source and the MIDI settings are the FX view's", "[ui]")
 {
     // M3 sub-project 1's spec §4.1: each layer's Mode follows its Source in the Source panel.

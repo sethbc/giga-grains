@@ -23,7 +23,8 @@ struct ParamMetaData;
 /// globals, M2 sub-project 2's five ring parameters per layer (its spec §6.3), M2 sub-project 3's
 /// Quality, per layer, and Budget (its spec §6.8), and the Extremes' eight per layer and eight
 /// globals (M2 sub-project 4's spec §6.7), and M3 sub-project 1's Mode per layer and three MIDI
-/// settings (its spec §4.1): 63 per layer and 290 in all. Their slots, CLAP IDs and
+/// settings (its spec §4.1), and M3 sub-project 10's seven scene controls (its spec §4.1): 63 per
+/// layer and 297 in all. Their slots, CLAP IDs and
 /// metadata. Both products expose the same list, so
 /// they share one state format (INTENT §2); only Position's metadata (sub-project 3's spec §6.8),
 /// Source's default and Macro 8's name differ between them, and the instrument's plugin hides Mix
@@ -306,6 +307,15 @@ enum class ParamSlot : uint16_t
     Mpe,
     MpeBendRange,
     BendRange,
+    // M3 sub-project 10's scene controls (its spec §4.1): automatable, not modulatable, in Budget's
+    // reserved block (isSceneControl).
+    Scene,
+    SceneB,
+    SceneMorph,
+    ScenePunch,
+    SceneQuantize,
+    SceneGlide,
+    SceneStore,
     Count
 };
 
@@ -362,9 +372,9 @@ inline constexpr uint32_t kNextFreeLayerIndex = 0x32, kNextFreeGlobalIndex = 0x2
 
 /// The indices reserved in every scope for M2's wave 2 (spec §6.9): 0x40-0x4F for sub-project 2,
 /// 0x50-0x5F for sub-project 3 and 0x60-0x7F for sub-project 4. No parameter of sub-project 1
-/// takes one; sub-project 2's five take 0x40-0x44 of each layer scope (its spec §6.3),
-/// sub-project 3's Quality and Budget take 0x50, and sub-project 4's take 0x60-0x67 (its spec
-/// §6.7; a static_assert below pins them).
+/// takes one (M3 sub-project 10's seven scene controls take 0x51-0x57 of scope 0); sub-project 2's
+/// five take 0x40-0x44 of each layer scope (its spec §6.3), sub-project 3's Quality and Budget take
+/// 0x50, and sub-project 4's take 0x60-0x67 (its spec §6.7; a static_assert below pins them).
 inline constexpr uint32_t kReservedIndexBegin = 0x40, kReservedIndexEnd = 0x7F;
 
 /// A layer's Source kind: what its grains read (M2 sub-project 1's spec §6.9). Layer A's
@@ -496,6 +506,14 @@ inline constexpr std::array<clap_id, kParamCount> kParamIds{
     0x000022, // Mpe
     0x000023, // MpeBendRange
     0x000024, // BendRange
+    // M3 sub-project 10's scene controls (its spec §4.1), in Budget's block.
+    0x000051, // Scene
+    0x000052, // SceneB
+    0x000053, // SceneMorph
+    0x000054, // ScenePunch
+    0x000055, // SceneQuantize
+    0x000056, // SceneGlide
+    0x000057, // SceneStore
 };
 
 /// Scope 0's slots by index, 0x00 to 0x7F, so that wave 2's reserved blocks work as in the layer
@@ -516,12 +534,13 @@ inline constexpr auto kGlobalSlots = [] {
 // The reserved blocks' indices in use: 0x40-0x44, M2 sub-project 2's, in the layer scopes (Ring
 // Length, Loop, Loop Length, Overdub, Splice); 0x50, M2 sub-project 3's, in every scope (Quality
 // in the layer scopes, Budget in scope 0); and 0x60 to 0x67, M2 sub-project 4's, in every scope
-// (its eight layer rows, and the delay's and the limiter's eight globals in scope 0). A wave-2 row
-// adds its index here.
+// (its eight layer rows, and the delay's and the limiter's eight globals in scope 0); and 0x51 to
+// 0x57 of scope 0, M3 sub-project 10's seven scene controls. A wave-2 row adds its index here.
 inline constexpr bool isReservedIndexInUse(clap_id scope, uint32_t index) noexcept
 {
     const bool sources = scope >= 1 && index >= 0x40u && index <= 0x44u;
-    return sources || index == 0x50u || (index >= 0x60u && index <= 0x67u);
+    const bool scenes = scope == 0 && index >= 0x51u && index <= 0x57u;
+    return sources || scenes || index == 0x50u || (index >= 0x60u && index <= 0x67u);
 }
 static_assert([] {
     for (const clap_id id : kParamIds)
@@ -643,6 +662,22 @@ constexpr bool isMidiSetting(ParamSlot slot) noexcept
     return slot == ParamSlot::Mpe || slot == ParamSlot::MpeBendRange ||
            slot == ParamSlot::BendRange;
 }
+
+/// Whether `slot` is one of the seven scene controls (M3 sub-project 10's spec §4.1: Scene, Scene
+/// B, Scene Morph, Scene Punch, Scene Quantize, Scene Glide, Scene Store): the instance's
+/// performance controls, which no scene holds, no route targets and Mutate locks. False for
+/// ParamSlot::Count.
+constexpr bool isSceneControl(ParamSlot slot) noexcept
+{
+    return slot >= ParamSlot::Scene && slot <= ParamSlot::SceneStore;
+}
+
+/// Whether a scene holds `slot` (spec §4.2): every parameter that is automatable in `paramMeta`
+/// (both products' flags agree), but Budget (its quota is the instance's, spec §4.2) and the seven
+/// scene controls. So not the three MIDI settings or any layer's Ring Length, neither of which is
+/// automatable. False for ParamSlot::Count. Not constexpr: the first call builds its table from
+/// the metadata (warm it once off the audio thread).
+bool isSceneSlot(ParamSlot slot) noexcept;
 
 /// Layer `layer`'s Level (0 to 3: Level, Level B, Level C, Level D); ParamSlot::Count out of
 /// range.

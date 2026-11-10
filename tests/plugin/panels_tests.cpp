@@ -963,7 +963,8 @@ TEST_CASE("the FX view shows its panels in chain order", "[plugin]")
         {
             titles.emplace_back(gg::ui::panelName(panel->panel()));
         }
-        CHECK(titles == std::vector<std::string>{"Delay", "Reverb", "Limiter", "Output", "MIDI"});
+        CHECK(titles ==
+              std::vector<std::string>{"Delay", "Reverb", "Limiter", "Output", "MIDI", "Scenes"});
         const auto output = std::find_if(panels.begin(), panels.end(), [](auto *p) {
             return p->panel() == gg::ui::Panel::Output;
         });
@@ -1015,7 +1016,7 @@ TEST_CASE("the FX view lays out any panel list", "[plugin]")
                 }
             }
         }
-        CHECK(visible == 5);
+        CHECK(visible == 6); // + M3 sub-project 10's Scenes
         return {viewport, content};
     };
 
@@ -1029,7 +1030,7 @@ TEST_CASE("the FX view lays out any panel list", "[plugin]")
     // Every control the view holds lies inside the content, so scrolling reaches it.
     std::vector<gg::ui::ParamControl *> controls;
     collect(*content, controls);
-    CHECK(controls.size() == 20); // the FX's 5 + 7 + 3 + 2 + 3 (MIDI)
+    CHECK(controls.size() == 27); // the FX's 5 + 7 + 3 + 2 + 3 (MIDI) + 7 (Scenes)
     for (const gg::ui::ParamControl *control : controls)
     {
         INFO(control->getComponentID());

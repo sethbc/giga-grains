@@ -287,6 +287,13 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
         ParamSlot::Mpe,
         ParamSlot::MpeBendRange,
         ParamSlot::BendRange,
+        ParamSlot::Scene,
+        ParamSlot::SceneB,
+        ParamSlot::SceneMorph,
+        ParamSlot::ScenePunch,
+        ParamSlot::SceneQuantize,
+        ParamSlot::SceneGlide,
+        ParamSlot::SceneStore,
     };
     for (const LayerParam p :
          {LayerParam::Mode, LayerParam::Quality, LayerParam::RingLength, LayerParam::Loop,
@@ -302,7 +309,8 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     {
         expectedStructural.set(idx(s));
     }
-    REQUIRE(expectedStructural.count() == 62 + 4 + 3);
+    REQUIRE(expectedStructural.count() ==
+            62 + 4 + 3 + 7); // + M3 sub-project 10's seven scene controls
     for (const ParamSlot s : kMacroSlots)
     {
         CHECK(expectedStructural.test(idx(s)));
@@ -327,7 +335,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     const LockSet bOn = defaultMutateLocks(values, Mode::Fx);
     CHECK(offLayerLocks(values) == (layerLocks(2) | layerLocks(3)));
     CHECK(bOn == (expectedStructural | layerLocks(2) | layerLocks(3)));
-    CHECK(bOn.count() == 175);
+    CHECK(bOn.count() == 175 + 7); // the seven scene controls
     LockSet unlocked = ~bOn;
     CHECK(unlocked.count() == 115);
     for (const ParamSlot s :
@@ -368,7 +376,7 @@ TEST_CASE("mutate's default locks are the structure and the off layers", "[core]
     values[idx(ParamSlot::LayerBOn)] = 0.0f;
     const LockSet bOff = defaultMutateLocks(values, Mode::Fx);
     CHECK(bOff == (bOn | layerLocks(1)));
-    CHECK(bOff.count() == 228);
+    CHECK(bOff.count() == 228 + 7); // the seven scene controls
     CHECK((bOff & ~bOn).count() == 53);
 
     // Layer A off locks its 62, the M1 slots among them; Layer On is read as "below 0.5".

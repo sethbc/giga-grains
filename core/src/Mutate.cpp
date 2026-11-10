@@ -58,6 +58,12 @@ LockSet buildStructuralLocks() noexcept
     lock(ParamSlot::Mpe);
     lock(ParamSlot::MpeBendRange);
     lock(ParamSlot::BendRange);
+    // The scene controls are performance, not sound (M3 sub-project 10's spec §4.1).
+    for (size_t s = static_cast<size_t>(ParamSlot::Scene);
+         s <= static_cast<size_t>(ParamSlot::SceneStore); ++s)
+    {
+        lock(static_cast<ParamSlot>(s));
+    }
     // Every layer's five ring parameters: capture and memory (sub-project 2), which a preset load
     // keeps too (isRingParam). Ring Length would never move anyway (SP-M8, below).
     for (size_t s = 0; s < kParamCount; ++s)

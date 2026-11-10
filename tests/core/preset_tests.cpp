@@ -244,13 +244,15 @@ TEST_CASE("a session state's bytes are pinned", "[core][preset]")
     // parameters (eight per layer, the delay's five and the limiter's three) add forty <p>
     // elements, 2,047 bytes, to sub-project 2's merge's (13,048, 6e2115f1...; 13,157,
     // 5573ae15...). Retaken once more for M3 sub-project 1's seven parameters (A to D Mode, MPE,
-    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...).
+    // MPE Bend Range and Bend Range), 352 bytes (15,095, 765ee8fb...; 15,204, b66606a7...), and
+    // once more for M3 sub-project 10's seven scene controls, 336 bytes (15,783, 76aa508c...;
+    // 15,892, 3b1bfa91...).
     const std::string session = encodeState(someState());
     const std::string ptch = *stateChunkPayload(session, "PTCH");
-    CHECK(ptch.size() == 15447);
-    CHECK(sha256Of(ptch) == "252fd91eccd37cf3fed3ff550e00a6b11feac948914c80b7dee970a986eb11bc");
-    CHECK(session.size() == 15556);
-    CHECK(sha256Of(session) == "79706b53e86d6f2390d709fab76b219dc93e5fab3cdedca751151027d3182f59");
+    CHECK(ptch.size() == 15783);
+    CHECK(sha256Of(ptch) == "76aa508cd67ac3c35b68145f36f1bf3b009397b7227653231b779e67275aa1c5");
+    CHECK(session.size() == 15892);
+    CHECK(sha256Of(session) == "3b1bfa916a5ee4668f7c7f7cfd4b9021e1cc67eb944c4c57cdaddc0d09f980cc");
 }
 
 TEST_CASE("a name read back is cut at 255 bytes and at a NUL", "[core][preset]")
@@ -522,12 +524,12 @@ TEST_CASE("initState is every default and the factory routes", "[core][preset]")
     CHECK(fx.values[at(ParamSlot::LayerBOn)] == 0.0f);
     CHECK(fx.routes == factoryRoutes(Mode::Fx));
     const std::string fxBytes = encodeState(fx);
-    CHECK(fxBytes.size() == 17655);
-    CHECK(sha256Of(fxBytes) == "5337a57bc546f56960c233796bf1c6cef26547c632db1563054ad02fc36e1355");
+    CHECK(fxBytes.size() == 17991); // + M3 sub-project 10's seven scene controls
+    CHECK(sha256Of(fxBytes) == "869f57efac7792cb937467a70173f5317042ac086833f607d1d13b710a87a221");
     const std::string instBytes = encodeState(initState(Mode::Instrument));
-    CHECK(instBytes.size() == 17656);
+    CHECK(instBytes.size() == 17992);
     CHECK(sha256Of(instBytes) ==
-          "81fb0c5209bb7ff0fd75b80cfba4aa1164decd13c13cca6f6f01758f9e92df2e");
+          "928e1bdbc638dece59963415c01ca886a0bb18739ec7dfe060a7a79f97780c7c");
     CHECK(fx.name == "Init");
     CHECK_FALSE(fx.preset.has_value());
     CHECK_FALSE(fx.samples[0].has_value());

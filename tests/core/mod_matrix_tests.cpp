@@ -513,7 +513,7 @@ TEST_CASE("invalid targets are refused", "[core][mod]")
             ref && ((ref->param >= LayerParam::Lfo1Rate && ref->param <= LayerParam::Step16) ||
                     ref->param == LayerParam::RingLength || ref->param == LayerParam::Mode);
         const bool expected = !gg::core::isMacro(slot) && !control &&
-                              !gg::core::isMidiSetting(slot) &&
+                              !gg::core::isMidiSetting(slot) && !gg::core::isSceneControl(slot) &&
                               (ref ? ref->layer == 0
                                    : !gg::core::perLayerGlobalLayer(slot) ||
                                          slot == ParamSlot::Level || slot == ParamSlot::LayerAOn);

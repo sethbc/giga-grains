@@ -303,7 +303,7 @@ TEST_CASE("plugin exposes every param", "[plugin]")
     const auto *params = plugin.params();
     REQUIRE(params != nullptr);
     REQUIRE(params->count(plugin.clap()) == kParamCount);
-    REQUIRE(params->count(plugin.clap()) == 290);
+    REQUIRE(params->count(plugin.clap()) == 297); // M3 sub-project 10's seven scene controls
 
     for (uint32_t i = 0; i < kParamCount; ++i)
     {
@@ -335,7 +335,8 @@ TEST_CASE("plugin exposes every param", "[plugin]")
         // stepped, and the instrument hides Mix and Dry to Reverb, which have no dry signal to act
         // on. Feedback is shown in both (M2 sub-project 1's spec §6.4).
         clap_param_info_flags flags =
-            expected.automatable ? CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE : 0u;
+            (expected.automatable ? uint32_t{CLAP_PARAM_IS_AUTOMATABLE} : 0u) |
+            (expected.modulatable ? uint32_t{CLAP_PARAM_IS_MODULATABLE} : 0u);
         if (expected.stepped)
         {
             flags |= CLAP_PARAM_IS_STEPPED;

@@ -35,13 +35,14 @@ inline constexpr uint32_t kMutateLayer = 0xFFFFFFFFu;
 inline constexpr uint32_t kMutateStream = 0xFFFFFFFFu;
 inline constexpr uint32_t kMutatePickStream = 0xFFFFFFFEu;
 
-/// D3's fixed set, "the structure stays, the sound moves" (69 slots): Mix, Level and Level B to D,
+/// D3's fixed set, "the structure stays, the sound moves" (76 slots): Mix, Level and Level B to D,
 /// Layer A to D On, every layer's Source, Freeze and Step Length, the eight macros, Morph X and Y,
 /// Reverb Amount and Dry to Reverb; and wave 2's structure by section (spec §6.9, group 2): every
 /// layer's Quality and five ring parameters (isRingParam: Ring Length, Loop, Loop Length, Overdub,
 /// Splice), Budget, Delay Amount and the limiter's Mode, Ceiling and Release; and M3 sub-project
 /// 1's (spec §4.1) every layer's Mode and the three MIDI settings (MPE, MPE Bend Range, Bend
-/// Range). The same in both products (the instrument's hidden Mix and Dry to Reverb never move).
+/// Range); and M3 sub-project 10's seven scene controls. The same in both products (the
+/// instrument's hidden Mix and Dry to Reverb never move).
 LockSet structuralLocks(Mode mode) noexcept;
 
 /// Every parameter of each layer whose Layer On value is below 0.5 (or NaN).

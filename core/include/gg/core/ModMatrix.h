@@ -145,7 +145,8 @@ constexpr bool isModulatorControl(LayerParam p) noexcept
 /// modulators' own controls (isModulatorControl, in every layer) and Ring Length, which is
 /// neither automatable nor modulatable (M2 sub-project 2's spec §6.3: the main thread resizes the
 /// ring from its base value, so a route to it would do nothing), nor Mode or the three MIDI
-/// settings (M3 sub-project 1's spec §4.1: structure and the instance's, not sound). Every other
+/// settings (M3 sub-project 1's spec §4.1: structure and the instance's, not sound), nor any of the
+/// seven scene controls (M3 sub-project 10's spec §4.1). Every other
 /// layer parameter is one, wave 2's included (the program manager's ruling PM-1, 2026-10-30; M2
 /// sub-project 3's spec §6.1). A per-layer kind is named by layer A's slot (Level and Layer A On
 /// for the per-layer globals), so layers B to D's slots, Level B to D and Layer B to D On are
@@ -161,7 +162,7 @@ constexpr bool isValidTarget(ParamSlot target) noexcept
         return ref->layer == 0 && !isModulatorControl(ref->param) &&
                ref->param != LayerParam::RingLength && ref->param != LayerParam::Mode;
     }
-    if (isMidiSetting(target))
+    if (isMidiSetting(target) || isSceneControl(target))
     {
         return false;
     }
