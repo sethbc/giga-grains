@@ -223,8 +223,8 @@ constexpr std::array<LayerParam, 12> kVoiceTargets{
 };
 
 /// What a layer's voice-parameter generation is keyed on (updateVoices): the voice targets, the
-/// Source, Bus Split and Level.
-constexpr size_t kVoiceKeySlots = kVoiceTargets.size() + 3;
+/// Source, Bus Split, Level and Clock.
+constexpr size_t kVoiceKeySlots = kVoiceTargets.size() + 4;
 
 /// Whether the note state holds the note (its gate open or the pedal holding it).
 bool heldState(NoteTable::State s) noexcept
@@ -923,6 +923,11 @@ void Processor::stepVoices(int64_t c) noexcept
     }
 }
 
+double Processor::notePitch(const NoteTable::Note &n) const noexcept
+{
+    return (static_cast<double>(n.key) - 60.0) + bendSemitones(n) + static_cast<double>(n.tuning);
+}
+
 double Processor::bendSemitones(const NoteTable::Note &n) const noexcept
 {
     // M3 Voice spec §4.5, B7.
@@ -974,6 +979,7 @@ void Processor::updateVoices() noexcept
         keySlots[kVoiceTargets.size() + 1] =
             static_cast<size_t>(layerSlot(LayerParam::BusSplit, L));
         keySlots[kVoiceTargets.size() + 2] = levelIndex;
+        keySlots[kVoiceTargets.size() + 3] = static_cast<size_t>(layerSlot(LayerParam::Clock, L));
         std::array<float, 3 * kVoiceKeySlots> key{};
         static_assert(sizeof(key) == sizeof(l.voiceKey));
         static_assert(sizeof(std::array<float, kVoiceTargets.size() + 1>) ==
@@ -1038,7 +1044,7 @@ void Processor::updateVoices() noexcept
             }
             offsets[kVoiceTargets.size()] = voiceOffsets_[levelIndex];
             voiceOffsets_[levelIndex] = 0.0f;
-            const double pitchIn = (static_cast<double>(note.key) - 60.0) + bend + tuning;
+            const double pitchIn = notePitch(note);
             const float volume = std::clamp(note.volume, 0.0f, 4.0f);
             const bool same =
                 cache.valid && cache.generation == l.voiceGeneration &&
@@ -1072,6 +1078,8 @@ void Processor::updateVoices() noexcept
                 }
                 const float levelOffset = offsets[kVoiceTargets.size()];
                 CloudParams cloud = toCloudParams(voiceScratch_, config_.mode, L, material);
+                const double pitchRefreshHz =
+                    exp2Det(static_cast<double>(voiceScratch_[keySlots[0]])); // Density
                 // Back to the layer's values for the next voice.
                 for (size_t i = 0; i < touchedCount; ++i)
                 {
@@ -1082,6 +1090,23 @@ void Processor::updateVoices() noexcept
                 cloud.pitchSemitones = std::isnan(pitch)
                                            ? 0.0
                                            : std::clamp(pitch, -kVoicePitchLimit, kVoicePitchLimit);
+                if (clockOf(effective_[keySlots[kVoiceTargets.size() + 3]]) == gg::Clock::Pitch)
+                {
+                    // Clock Pitch (M3 pitch-sync spec §4.4): f0 from the note, Pitch the read
+                    // rate alone, Density the refresh rate, the gain from the length in periods.
+                    const double shifted = static_cast<double>(effective_[pitchSlot]) +
+                                           static_cast<double>(pitchOffset);
+                    cloud.clock = gg::Clock::Pitch;
+                    cloud.densityHz = noteFrequencyHz(pitchIn);
+                    cloud.pitchSemitones =
+                        std::isnan(shifted)
+                            ? 0.0
+                            : std::clamp(shifted, -kVoicePitchLimit, kVoicePitchLimit);
+                    cloud.refreshHz = pitchRefreshHz;
+                    cloud.gain = static_cast<float>(
+                        1.0 /
+                        std::sqrt(std::max(1.0, cloud.grainDurationSec * kPeriodsPerSizeSecond)));
+                }
                 // Level and the voice's offset clamped together to Level's range; exact in
                 // double, so an offset that fits is the offset itself.
                 const auto layerDb = static_cast<double>(effective_[levelIndex]);

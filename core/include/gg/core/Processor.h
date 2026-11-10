@@ -1050,8 +1050,8 @@ class Processor
         LayerMode mode{LayerMode::Cloud};
         VoiceAllocator voices;
         // The layer's inputs to its voices' parameters (updateVoices' key: base, modulation and
-        // offset of 15 slots, and the material) and their generation.
-        std::array<float, 45> voiceKey{};
+        // offset of 16 slots, and the material) and their generation.
+        std::array<float, 48> voiceKey{};
         SourceMode voiceKeyMaterial{SourceMode::Sample};
         bool voiceKeyValid{false};
         uint64_t voiceGeneration{0};
@@ -1176,6 +1176,8 @@ class Processor
     const NoteTable::Note *noteOf(const VoiceAllocator::Voice &v) const noexcept;
     /// Note n's bend in semitones (the class comment's Voices): MPE and the bend ranges.
     double bendSemitones(const NoteTable::Note &n) const noexcept;
+    /// The note's pitch in semitones from C4: (key - 60) + bend + tuning.
+    double notePitch(const NoteTable::Note &n) const noexcept;
     /// Ends every released note no spawning voice plays (EndedNote) and frees it in the table.
     void collectEndedNotes() noexcept SST_CPPUTILS_NONBLOCKING;
     /// Queues n's end.

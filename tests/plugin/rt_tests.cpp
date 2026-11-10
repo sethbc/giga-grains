@@ -1407,6 +1407,72 @@ TEST_CASE("plugin process with voices, expressions, the pedal and note ends does
     REQUIRE_NO_ALLOCATIONS(allocations);
 }
 
+TEST_CASE("process allocates nothing with 16 pitch-sync voices at a top note",
+          "[plugin][rt][pitchsync]")
+{
+    // M3 pitch-sync spec S9: layer A at Mode Voice and Clock Pitch, Size 5 ms, sixteen notes at
+    // keys 112 to 127 (f0 up to the sample rate / 4), a second of audio at block 64, with
+    // params.flush beside it and the Clock flipped back and forth.
+    gg::test::PluginUnderTest plugin(kInstrumentId);
+    REQUIRE(plugin.valid());
+    REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-pitchsync")));
+    const auto a = [](gg::core::LayerParam p) { return gg::core::layerSlot(p, 0); };
+    const std::array<clap_event_param_value, 3> values{{
+        gg::test::paramValue(paramId(a(gg::core::LayerParam::Mode)), 1.0),
+        gg::test::paramValue(paramId(a(gg::core::LayerParam::Clock)), 1.0),
+        gg::test::paramValue(paramId(a(gg::core::LayerParam::Size)), std::log2(0.005)),
+    }};
+    gg::test::InputEvents settings;
+    for (const auto &v : values)
+    {
+        settings.add(&v.header);
+    }
+    plugin.flush(settings.list());
+    REQUIRE(plugin.activate(48000.0, 64));
+    const auto *params = paramsOf(plugin);
+    REQUIRE(params != nullptr);
+
+    std::array<clap_event_note, 16> ons{};
+    gg::test::InputEvents chord;
+    for (int i = 0; i < 16; ++i)
+    {
+        ons[static_cast<std::size_t>(i)] = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 112 + i);
+        chord.add(&ons[static_cast<std::size_t>(i)].header);
+    }
+    const auto toFree = gg::test::paramValue(paramId(a(gg::core::LayerParam::Clock)), 0.0);
+    const auto toPitch = gg::test::paramValue(paramId(a(gg::core::LayerParam::Clock)), 1.0);
+    gg::test::InputEvents free, pitch, none;
+    free.add(&toFree.header);
+    pitch.add(&toPitch.header);
+
+    std::vector<float> outLeft(64), outRight(64);
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+    bool allContinue = true;
+    AllocTripwire::resetCount();
+    {
+        AllocTripwire::Scope armed;
+        allContinue = plugin.process(64, nullptr, outputs, chord.list()) == CLAP_PROCESS_CONTINUE;
+        for (int i = 0; i < 750; ++i)
+        {
+            if (i % 200 == 100)
+            {
+                params->flush(plugin.clap(), (i % 400 == 100 ? free : pitch).list(),
+                              gg::test::discardingOutputEvents());
+            }
+            else if (i % 50 == 0)
+            {
+                params->flush(plugin.clap(), none.list(), gg::test::discardingOutputEvents());
+            }
+            allContinue =
+                allContinue && plugin.process(64, nullptr, outputs) == CLAP_PROCESS_CONTINUE;
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+    CHECK(allContinue);
+    CHECK(std::all_of(outLeft.begin(), outLeft.end(), [](float x) { return std::isfinite(x); }));
+    REQUIRE_NO_ALLOCATIONS(allocations);
+}
+
 TEST_CASE("plugin process with four layers, controls and the pool does not allocate",
           "[plugin][rt]")
 {
