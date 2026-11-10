@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, 2026-11-07, written without the director at his request ("keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input"). Every forced choice is **Claude's provisional call** (H0 to H13, §3), each with the alternatives declined; the builder check's answers are in §3a (HB1 to HB12). The director reviews the calls later; **H1 (what Scan Speed means on a moving ring) and H4 (when a Cloud playhead restarts) are the ones most likely to be overruled** |
+| **Status** | Built (Tasks 1 to 6, 2026-11-07 to 2026-11-09). Drafted 2026-11-07 without the director, at the director's request ("keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input"). Every forced choice was **Claude's provisional call** (H0 to H13, §3), each with the alternatives declined; the builder check's answers are in §3a (HB1 to HB12). **The director reviewed the calls on 2026-11-09 and confirmed H0 to H13, H13 as amended** (tempo-locked scanning is sub-project 7's, Scan Sync, in M3, not M4's). Ruling R9 (below, HB9) was added in the build |
 | **Program** | `docs/superpowers/specs/2026-11-07-m3-program-design.md` (§3's "playable", §4, §8; this sub-project is new, H0) |
 | **Builds on** | sub-project 1, `docs/superpowers/specs/2026-11-07-m3-voice-design.md` (V1 to V7, B1 to B10) and its plan, on `m3-voice` (draft PR #37) |
 | **Branch** | `m3-sp3b-playhead` (from `m3-voice`), worktree `~/src/gg-m3-sp3b-playhead` |
@@ -253,9 +253,16 @@ and its event log byte for byte.
 - **HB8. Sample replacement.** A new sample (`adoptSource`, `setSource`, a capture into the layer)
   changes the geometry's `unitsPerSecond`, so the next piece rebases: the point keeps its fraction
   and moves at the new length's rate.
-- **HB9. A source-mode change** (Sample to Live and back, `applySourceMode`) restarts every
-  stream's playhead: an offset in a fraction of a file and one in seconds of lag don't correspond,
-  so a switch starts reading at Position, as a switch does today.
+- **HB9. A source-mode change** (Sample to Live and back) restarts every stream's playhead: an
+  offset in a fraction of a file and one in seconds of lag don't correspond, so a switch starts
+  reading at Position, as a switch does today. The restart lives in `Engine::process()`'s
+  mode-change branch (`restartPlayheads()`, right after `applySourceMode()`), not in
+  `applySourceMode`, which a ring's resize also calls and which must not restart a scan.
+  **Ruling R9 (Claude's, the build, 2026-11-08):** a Spectral layer restarts the Cloud playhead
+  when its **material kind** changes, a sample loaded or removed so the smear's material goes
+  from a sample to the live ring or back (checked in `process()` against the previous block's
+  `materialRing_`): the point is a file's fraction on one and seconds of lag on the other, the
+  same reason. *Declined:* no restart (the old point would read as the wrong unit).
 - **HB10. Restarts at rest.** In the FX the Cloud stream's onset is forced when the held set goes
   non-empty, as in the instrument, so the FX's restart (H4) needs nothing new. With Scan Speed 0 and
   the playhead never moved, a restart sets x0 = 0 again, so no golden sees it. With Scan Speed

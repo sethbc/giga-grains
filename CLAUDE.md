@@ -58,7 +58,12 @@ AGPL-3.0-or-later.
   and CLAP note expressions, per-voice modulation with the Voice-only routes (factory slots 44
   to 48), 290 parameter slots (four parameters: Mode in each of four layers, plus MPE, MPE Bend
   Range and Bend Range, seven slots), eight voice goldens, and the carry-over in
-  `docs/m3-carry-over.md` (`docs/m2-carry-over.md` is M2's frozen record). M2, M3 and M4 are tagged 0.2.0, 0.3.0
+  `docs/m3-carry-over.md` (`docs/m2-carry-over.md` is M2's frozen record). **M3 sub-project 3b,
+  the playhead, is built** (INTENT §23 #97; branch `m3-sp3b-playhead`; spec
+  `docs/superpowers/specs/2026-11-07-m3-playhead-design.md`): Scan Speed, Scan Edge and Scan Track
+  per layer (a playhead per Cloud stream and per voice; Position is where reading starts), 66
+  parameters per layer and 302 slots on that branch (the sums once the parallel sub-projects
+  merge), seven goldens, and tempo-locked scanning left to sub-project 7's Scan Sync. M2, M3 and M4 are tagged 0.2.0, 0.3.0
   and 0.4.0 as unpublished draft releases; nothing is public and there are no betas before M5,
   whose `0.5.0-beta.N` are the first public releases (§23 #62); v1.0.0 follows M5.
 - **The records:** each sub-project's spec in `docs/superpowers/specs/`, the published benchmark
@@ -414,6 +419,12 @@ runs the tests labeled either. The labels are:
     MIDI-MPE, the pedal, `clap_plugin_as_vst3`, `NOTE_END`, the tripwire with voices); `notes` is
     the note table (identity by ID or pair, the pedal, expression state, the held set equal to
     M2's on M2 sequences);
+  - `playhead` (M3 sub-project 3b): the playhead, in the engine (`scanFold` at each edge, the
+    closed form, the rebase rules, the restarts, the ring's lag, block-size invariance at six
+    block sizes) and the `Processor` (the `8 v^3` law, per-voice Scan Speed routes, Scan Track's
+    ratio, the Cloud's restart, Scan Speed automation at several block sizes, the event log's
+    `pos` against the closed form), the comb case for a slow scan, the preset load and INIT and
+    the tripwire with scanning voices;
   - `mod`: the mod matrix: its routes, curves and factory routes (M1's `macroOffsets` bit for
     bit), the modulation sources, and the `Processor`'s per-cell application; also the editor's
     rings (`tests/ui/rings_tests.cpp`, tagged `[ui][mod]`);
@@ -591,7 +602,7 @@ multiply-add. Keep that step whenever the macOS leg changes.
 
 **The x86_64 slice under Rosetta** (CI's macOS leg; INTENT §23 #75) runs `gg-tests` in three
 Catch2 shards at once (`--order decl --shard-count 3`, so they're disjoint), then the `[serial]`
-cases alone, then all 116 golden cases (the 68 and the 48 preset goldens, whose packed presets
+cases alone, then all 123 golden cases (the 75 and the 48 preset goldens, whose packed presets
 the native `ctest` built) three `gg-render` processes at a time, each with `--content-dir` set to
 the fetched content. On a pull request and a
 push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
@@ -693,7 +704,11 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     bare `"Quality"` means layer A's) and there is a global `"Budget"` (a count of Normal grains,
     256 to 16,384, default 4,096): 223 parameters in all, 283 with M2 sub-project 2's twenty ring
     parameters and M2 sub-project 4's forty, 290 with M3 sub-project 1's four parameters,
-    seven slots (Mode in each of four layers, plus MPE, MPE Bend Range and Bend Range).
+    seven slots (Mode in each of four layers, plus MPE, MPE Bend Range and Bend Range), 302 with
+    M3 sub-project 3b's three parameters, twelve slots (66 per layer): a layer's `"A Scan Speed"`
+    (the CLAP value v in -1 to 1, speed 8 v^3, so 0.5 is 1x), `"A Scan Edge"` (0 Wrap, 1 Bounce, 2
+    Stop) and `"A Scan Track"` (0 Off, 1 On), and B to D's, twelve names, none bare (only layer
+    A's eleven M1 names are).
     Sample mode takes `"quality": "hq"` beside `"eco"` and `"normal"`, and sets no quota.
     Optional `automation` is a time-ordered list of `{"time", "param", "value"}` points in
     seconds, and optional `notes` a time-ordered list of `{"time", "key", "duration",
@@ -814,7 +829,7 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
   into the build tree (see "Setup"), for the cases and tests that read it.
 - **The cases:** each case's spec is in `tests/golden/cases/`, and its expected metrics and event
   log are in `tests/golden/expected/`. Every `*.json` there is a case; a new one gets a test the
-  next time CMake runs. There are 68, and 48 preset goldens beside them (below): 116.
+  next time CMake runs. There are 75, and 48 preset goldens beside them (below): 123.
   - **M0's four,** in sample mode: `sparse-sine` (8 grains a second over a 220 Hz sine),
     `sparse-sine-44k1` (the same source converted to 44.1 kHz), `dense-noise` (400 grains a
     second over noise, up a fifth) and `sweep-stretch` (long grains over a sweep, down an
@@ -980,6 +995,27 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     - V7's headroom (`1 / sqrt(n)` per voice grain) regenerated seven of them (all but
       `inst-voice-release`); every one of the 108 earlier cases' WAV SHA-256 was unchanged: a voice
       change that moves one is a regression.
+  - **M3 sub-project 3b's seven playhead goldens** (the playhead; its spec §4.9), 5.5 to 6.5 s
+    each at block 256, seed 1:
+    - `inst-scan-voice`: layer A Voice over a 4 s sweep sample, Scan Speed 0.5 (1x), Wrap, three
+      notes staggered 0.75 s, each voice playing through from Position on its own;
+    - `inst-scan-stretch`: one held note over `loop-48k.wav`, Scan Speed 0.0625 (1/512x), then
+      -0.25 (-1/8x) from 3 s;
+    - `inst-scan-edges`: one note over a 2 s sweep sample at Scan Speed 0.75 (3.375x), Wrap, then
+      Bounce at 2 s, then Stop at 4 s;
+    - `inst-scan-track`: Scan Track On, Scan Speed 0.5, notes C3, C4 and C5 (0.5x, 1x, 2x);
+    - `inst-scan-cloud`: the instrument at Mode Cloud, Scan Speed 0.5, two phrases with a silent
+      gap: the playhead restarts at the second phrase's first note;
+    - `fx-scan-ring`: layer A Live over a stereo sweep, Freeze at 1 s with Scan Speed -0.5 (Wrap,
+      Bounce from 3 s), unfrozen at 4.5 s with Scan Speed -0.25 and Stop;
+    - `fx-scan-spectral`: layer A Spectral over `loop-48k.wav`, Scan Speed 0.25: the smear's
+      analysis point moves (the log shows Spectral grains only).
+    - Five hide some injected click steps, pinned in the click-injection table with reasons
+      marked "likely" (not isolated by experiment, carry-over row 427): `inst-scan-edges` 13,
+      `inst-scan-stretch` 8, `inst-scan-track` 15, `fx-scan-ring` 15 and `fx-scan-spectral` 11.
+      `inst-scan-voice` and `inst-scan-cloud` catch all 16.
+    - Every one of the 108 M2-era cases and the eight voice goldens renders bit-identically at
+      Scan Speed 0: a playhead change that moves one is a regression.
   - **M2 sub-project 5's 48 preset goldens** (its spec §10; labels `golden` and `presets`), one
     per factory preset, in their own folder: `tests/golden/presets/cases/<fx|inst>-NN-<slug>.json`,
     expected files in `tests/golden/presets/expected/`, tests `golden_preset_<case>`, each 6 s
