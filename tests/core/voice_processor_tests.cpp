@@ -1414,6 +1414,83 @@ TEST_CASE("Bus Split per voice", "[core][voice][mod]")
     CHECK(p->effective(slotA(LayerParam::BusSplit)) == 0.0f);
 }
 
+TEST_CASE("an own-envelope voice takes an envelope automation one cell late", "[core][voice][mod]")
+{
+    // Ruling R10 (M3 expression plan P2's amendment). A boundary runs commit, step, update: a
+    // voice with no envelope routes of its own steps at c with the layer's envelope parameters
+    // as in effect at c, while one with its own (Velocity to Env 1 Attack) steps with its cached
+    // copy, which the update at c refreshes. So a base change at c reaches its envelope at
+    // c + one cell: exactly what an ordinary voice gets from the same change a cell later.
+    constexpr int64_t kChange = 12032; // no grain's onset falls in the cell from here
+    constexpr float kFrom = -1.0f;     // the attack in effect before the change, 0.5 s
+    constexpr float kTo = 0.0f;        // and after it, 1 s
+    const auto run = [](bool ownEnv, int64_t at) {
+        auto p = voiceProcessor();
+        const float depth = ownEnv ? 1.0f : 0.0f; // own: the route gives back what the base lacks
+        p->setBase(slotA(LayerParam::Env1Attack), kFrom - depth);
+        p->setRoutes(ownEnv
+                         ? routesWith(voiceRoute(ModSource::Velocity, ParamSlot::Env1Attack, depth))
+                         : routesWith(ModRoute{}));
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f);
+        s.param(at, slotA(LayerParam::Env1Attack), static_cast<double>(kTo - depth));
+        Stereo out;
+        render(*p, s, 0, 24000, {256}, out, nullptr, log.get());
+        const auto grains = log->layer(0);
+        CHECK(std::none_of(grains.begin(), grains.end(), [](const gg::GrainSpec &g) {
+            return g.onsetSample >= kChange && g.onsetSample < kChange + 2 * kGrid;
+        }));
+        return linesOf(*log, 0);
+    };
+    const auto own = run(true, kChange);
+    const auto ordinary = run(false, kChange);
+    REQUIRE(own.size() > 20);
+    CHECK(own == run(false, kChange + kGrid)); // the ordinary voice's, a cell later
+    CHECK(own != ordinary);                    // and so not the ordinary voice's at the same cell
+    // Before the change the two are the same voice.
+    const auto before = [](std::vector<std::string> lines) {
+        lines.resize(16); // onsets 0 to 11,250
+        return lines;
+    };
+    CHECK(before(own) == before(ordinary));
+}
+
+TEST_CASE("an own-envelope voice is block size invariant", "[core][voice][mod][determinism]")
+{
+    // R10's cached copy runs on the grid, so a voice with its own envelope routes, under a
+    // layer-level envelope automation between boundaries and a release, is the same at any
+    // host block size.
+    const auto run = [](uint32_t block) {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Attack), -2.0f);
+        p->setBase(slotA(LayerParam::Env1Release), -2.0f);
+        ModRoutes routes = routesWith(voiceRoute(ModSource::Velocity, ParamSlot::Env1Attack, 1.0f));
+        routes[14] = voiceRoute(ModSource::ReleaseVelocity, ParamSlot::Env1Release, 1.0f);
+        p->setRoutes(routes);
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f);
+        s.param(5001, slotA(LayerParam::Env1Attack), -1.5);
+        s.param(9000, slotA(LayerParam::Env1Decay), -1.0);
+        s.param(16001, slotA(LayerParam::Env1Release), -1.0);
+        s.notes.push_back({14000, {0, NoteEventType::Off, 0, 60, 0.0f, -1, 1.0f}});
+        Stereo out;
+        render(*p, s, 0, 36000, {block}, out, nullptr, log.get());
+        return std::make_pair(std::move(log), std::move(out));
+    };
+    const auto [log, out] = run(4096);
+    REQUIRE(log->layer(0).size() > 20);
+    for (const uint32_t block : {1u, 32u, 64u})
+    {
+        INFO("block " << block);
+        const auto [otherLog, other] = run(block);
+        CHECK(gg::test::layers::sameBits(other.left, out.left));
+        CHECK(gg::test::layers::sameBits(other.right, out.right));
+        CHECK(otherLog->layer(0) == log->layer(0));
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // M3 expression spec E10, EB12 (Task 10): the steal by budget.
 
