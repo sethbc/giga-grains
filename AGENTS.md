@@ -20,6 +20,9 @@ AGPL-3.0-or-later.
 - **When a task conflicts with INTENT.md, stop.** Propose an INTENT.md amendment; don't diverge
   silently.
 - **The principles in §8 are the tie-breakers** when goals conflict.
+- **M3's live state and resume notes** are in `docs/m3-progress/` (start with its `RESUME.md`;
+  the director, 2026-11-09). Read them before any M3 action, and keep them current there, never
+  only in an ignored folder or a worktree.
 - **Where we are** (INTENT §20, §23 #61, #64, #71, #93, #95): M0 and M1 are done, and so are the installers and
   release pipeline (`docs/superpowers/specs/2026-10-29-release-pipeline-design.md`; the runbook
   is `docs/releasing.md`). **M2 is closed** (2026-11-03) as seven sub-projects in four waves, run by one
