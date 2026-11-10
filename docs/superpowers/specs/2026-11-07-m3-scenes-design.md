@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, 2026-11-07, written without the director's input at his request ("keep building all of the sub-projects as parallel as possible … progress as much as you can without input"). Every forced choice is **Claude's provisional call** (N1 to N15), and so is every builder ruling (NB1 to NB16); the director reviews them later |
+| **Status** | Approved, 2026-11-09. Written 2026-11-07 without the director's input at the director's request ("keep building all of the sub-projects as parallel as possible … progress as much as you can without input"). The forced choices N1 to N15 were Claude's provisional calls; **the director's brainstorming of 2026-11-09 confirmed every one as written** (N2, N3 and N11 by name). The builder rulings NB1 to NB16 stay Claude's |
 | **Program** | `docs/superpowers/specs/2026-11-07-m3-program-design.md` (§3, §9). This sub-project was added to M3 by the director on 2026-11-07 ("no i think this all needs to happen in m3"): gap 8 of the competitor comparison (the Torso S-4's scenes and punch-ins, the GR-MEGA's multi-presets) |
 | **Base** | M3 sub-project 1, the Voice slice (`docs/superpowers/specs/2026-11-07-m3-voice-design.md`; branch `m3-voice`, draft PR #37) |
 | **Branch** | `m3-sp10-scenes` (from `m3-voice` at `18ac47d`) |
