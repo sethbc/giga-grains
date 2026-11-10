@@ -838,6 +838,13 @@ jobs:
       # all for about 16 minutes on the runner's three cores. On a pull request and a push to
       # main the [slow] cases are left out here, as ASan leaves them out; the nightly, a dispatch
       # and a tag run them, and the native arm64 ctest above always does.
+      # This step retries a failed case once, on its own, and nothing else in CI does (INTENT §23
+      # #98): a Rosetta run has failed on a case that passed on the next run of the same commit.
+      # scripts/retry-failed.py reads each run's result (a shard's or the serial run's Catch2 XML
+      # report and exit status 42, or the golden cases gg-render failed with status 1), re-runs
+      # each failed case, lists it as a warning and in the step summary, and fails the step on a
+      # repeat, on any other failure (a crash, a signal, an unreadable report) or on more than
+      # five failures in a run, without retrying those.
       - name: Test the x86_64 slice under Rosetta (macOS)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
         timeout-minutes: 20
@@ -858,6 +865,7 @@ jobs:
           pids=()
           for i in 0 1 2; do
             arch -x86_64 "$tests" "~[serial]$slow" --order decl --shard-count 3 --shard-index "$i" \
+              --reporter console::out=- --reporter "XML::out=$logs/shard-$i.xml" \
               > "$logs/shard-$i.txt" 2>&1 &
             pids+=("$!")
           done
@@ -868,17 +876,32 @@ jobs:
             cat "$logs/shard-$i.txt"
             echo "::endgroup::"
             if [[ $status != 0 ]]; then
-              echo "::error title=Rosetta::gg-tests shard $((i + 1)) of 3 failed (exit $status)"
-              failed=1
+              if ! python3 scripts/retry-failed.py catch2 --report "$logs/shard-$i.xml" --status "$status" \
+                --summary "$GITHUB_STEP_SUMMARY" -- arch -x86_64 "$tests"; then
+                echo "::error title=Rosetta::gg-tests shard $((i + 1)) of 3 failed (exit $status)"
+                failed=1
+              fi
             fi
           done
-          arch -x86_64 "$tests" "[serial]$slow" --allow-running-no-tests || failed=1
+          if arch -x86_64 "$tests" "[serial]$slow" --allow-running-no-tests \
+            --reporter console::out=- --reporter "XML::out=$logs/serial.xml"; then
+            status=0
+          else
+            status=$?
+          fi
+          if [[ $status != 0 ]]; then
+            if ! python3 scripts/retry-failed.py catch2 --report "$logs/serial.xml" --status "$status" \
+              --summary "$GITHUB_STEP_SUMMARY" -- arch -x86_64 "$tests"; then
+              echo "::error title=Rosetta::gg-tests [serial] failed (exit $status)"
+              failed=1
+            fi
+          fi
           out="$build_dir/golden-x86_64"
           arch -x86_64 "$render" --write-media "$out-media"
           export render out
           content="${CONTENT_CACHE_DIR}/content"
-          # golden <spec> <expected dir> <output dir>: one case, as the golden CTest runs it.
-          golden() {
+          # golden_once <spec> <expected dir> <output dir>: one case, as the golden CTest runs it.
+          golden_once() {
             name="$(basename "$1" .json)"
             arch -x86_64 "$render" "$1" \
               --media-dir "$out-media" \
@@ -886,12 +909,28 @@ jobs:
               -o "$3/$name.wav" \
               --spectrogram "$3/$name.png" \
               --compare "$2/$name.metrics.json" \
-              --compare-events "$2/$name.events.jsonl" \
-              || { echo "::error title=Rosetta golden::$name"; return 1; }
+              --compare-events "$2/$name.events.jsonl"
           }
-          export -f golden
+          # golden: golden_once, but a case gg-render failed with status 1 (a comparison failed)
+          # is only recorded in $out/failed-goldens.txt, for the retry below; any other status
+          # (bad input, a crash) is an error now.
+          golden() {
+            if golden_once "$@"; then
+              return 0
+            else
+              gstatus=$?
+            fi
+            if [[ $gstatus == 1 ]]; then
+              echo "$1|$2|$3" >> "$out/failed-goldens.txt"
+              return 0
+            fi
+            echo "::error title=Rosetta golden::$(basename "$1" .json) (exit $gstatus)"
+            return 1
+          }
+          export -f golden_once golden
           export content
           mkdir -p "$out/presets"
+          : > "$out/failed-goldens.txt"
           printf '%s\n' tests/golden/cases/*.json \
             | xargs -P 3 -I {} bash -c 'golden "$1" tests/golden/expected "$out"' _ {} || failed=1
           # The 48 preset goldens: the presets the native ctest packed (presets_built).
@@ -901,6 +940,11 @@ jobs:
               | xargs -P 3 -I {} bash -c 'golden "$1" tests/golden/presets/expected "$out/presets"' _ {} || failed=1
           else
             echo "::error title=Rosetta golden::no packed presets in $build_dir/golden-media/presets (the native ctest's presets_built did not run)"
+            failed=1
+          fi
+          # Each case gg-render failed with status 1 runs once more, on its own.
+          if ! python3 scripts/retry-failed.py list --failures "$out/failed-goldens.txt" --label golden \
+            --summary "$GITHUB_STEP_SUMMARY" -- bash -c 'IFS="|" read -r s e o <<< "$1"; golden_once "$s" "$e" "$o"' _; then
             failed=1
           fi
           exit "$failed"
