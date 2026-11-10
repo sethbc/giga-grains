@@ -103,7 +103,8 @@ float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 constexpr std::array<float, Processor::kFeedbackDelay> kSilence{};
 
 /// Whether a note event's fields are in range (NoteEvent): On needs a channel 0..15 and a key
-/// 0..127, Off also takes −1 for either, AllOff takes a channel 0..15 or −1 and ignores the key.
+/// 0..127, Off and Choke also take −1 for either, AllOff takes a channel 0..15 or −1 and ignores
+/// the key.
 bool validNote(const NoteEvent &n) noexcept
 {
     const auto inRange = [](int16_t v, int16_t lo, int16_t hi) { return v >= lo && v <= hi; };
@@ -112,6 +113,7 @@ bool validNote(const NoteEvent &n) noexcept
     case NoteEventType::On:
         return inRange(n.channel, 0, 15) && inRange(n.key, 0, 127);
     case NoteEventType::Off:
+    case NoteEventType::Choke:
         return inRange(n.channel, -1, 15) && inRange(n.key, -1, 127);
     case NoteEventType::AllOff:
         return inRange(n.channel, -1, 15);
@@ -838,9 +840,25 @@ void Processor::commitVoices(int64_t b) noexcept
         {
             continue;
         }
-        // The group's releases and pedal holds first, so a note-on of the same group steals a
-        // voice this group released rather than a held one (V4).
-        for (VoiceAllocator::Voice &v : l.voices.voices())
+        // A choked note's voices finish at b, with no release: they stop spawning and their
+        // grains play out their windows, as a steal's do. Then the group's releases and pedal
+        // holds, so a note-on of the same group steals a voice this group released rather than a
+        // held one (V4).
+        const std::span<VoiceAllocator::Voice> voices = l.voices.voices();
+        for (size_t slot = 0; slot < voices.size(); ++slot)
+        {
+            VoiceAllocator::Voice &v = voices[slot];
+            const NoteTable::Note *n = v.spawning ? noteOf(v) : nullptr;
+            if (n != nullptr && n->choked)
+            {
+                if (v.told)
+                {
+                    l.engine.finishVoice(static_cast<uint32_t>(slot));
+                }
+                l.voices.finish(static_cast<int>(slot));
+            }
+        }
+        for (VoiceAllocator::Voice &v : voices)
         {
             follow(v);
         }
@@ -851,9 +869,9 @@ void Processor::commitVoices(int64_t b) noexcept
         for (const uint8_t index : noteTable_.startedThisGroup())
         {
             const NoteTable::Note &n = notes[std::min<size_t>(index, notes.size() - 1)];
-            if (n.state == NoteTable::State::Free)
+            if (n.state == NoteTable::State::Free || n.choked)
             {
-                continue;
+                continue; // a note choked in its own group never speaks
             }
             uint32_t ordinal = 0;
             int stolen = -1;
@@ -1316,6 +1334,10 @@ void Processor::applyNote(const NoteEvent &n) noexcept
     {
         // M3 Voice spec B4: the last note-off's release velocity, from its boundary.
         pendingReleaseVelocity_ = unitClamped(n.releaseVelocity);
+    }
+    else if (n.type == NoteEventType::Choke)
+    {
+        pendingReleaseVelocity_ = 0.0f; // as the note-off a choke was before (it has none)
     }
 }
 

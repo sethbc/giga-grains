@@ -587,6 +587,7 @@ void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spaw
     }
     // V7: headroom 1 / sqrt(n), n the spawning voices. Voices start and finish only between
     // process() calls, so n is the same for every block of a call and for any host block size.
+    // With none spawning nothing runs and headroom is unused; the guard only spares 1 / sqrt(0).
     const double headroom = spawning > 0 ? 1.0 / std::sqrt(static_cast<double>(spawning)) : 1.0;
     // The k-way merge (M3 Voice spec §4.3): the pool's ledger and steal cursor need
     // non-decreasing onsets, so each step takes the earliest pending draw in the block by onset
