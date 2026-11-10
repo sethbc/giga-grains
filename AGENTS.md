@@ -537,7 +537,8 @@ runs the tests labeled either. The labels are:
 - `build`: checks of the build system itself: the `asio_guard_*` tests, run on scratch CMake
   projects (`cmake/AsioGuard.cmake`), and `gg-tests`' "the build is C++23" (also `smoke`);
 - `scripts`: `check.sh`, `check-at-rest.sh` and `worktree-setup.sh`, in scratch trees with stub
-  `cmake` and `ctest` and in scratch git repositories, and the release scripts in `scripts/release/`
+  `cmake` and `ctest` and in scratch git repositories, `scripts/retry-failed.py` (CI's Rosetta retry,
+  `tests/scripts/retry_failed_tests.sh`, over a stub `gg-tests`), and the release scripts in `scripts/release/`
   (`tests/scripts/release_scripts_tests.sh`: the tag check, the source tarball and the signing
   keychain, whose checks put a scratch keychain in your search list for a moment and restore
   it) (not on Windows);
@@ -618,6 +619,14 @@ the fetched content. On a pull request and a
 push to `main` it leaves out `[slow]`; the nightly, a dispatch and a tag run it all. To reproduce a
 shard locally: `arch -x86_64 build/mac-universal/tests/gg-tests '~[serial]~[slow]' --order decl
 --shard-count 3 --shard-index 0`.
+
+**That step retries a failed case once** (INTENT §23 #98), and nothing else in CI does: the runner's
+float compares misfire now and then (`docs/spikes/m3-rosetta-compare-probe.md`). `scripts/retry-failed.py`
+reads each run's Catch2 XML report (or the golden cases `gg-render` failed with status 1), re-runs each
+failed case on its own and lists it in the step summary with a `::warning`. A case that passes its
+retry doesn't fail the step. A repeat failure fails it, as does a crash, another status, a missing or
+incomplete report, or more than 5 failures in a run, none of them retried. So a run that is red
+after that is a real failure: don't re-run it hoping.
 
 **Test case names are ASCII only** (tags too). CTest passes a name to `gg-tests` on its command
 line, and on Windows a non-ASCII character there reaches Catch2's narrow `main` through the ANSI

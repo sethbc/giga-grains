@@ -501,14 +501,19 @@ when codesign's message is about the timestamp; any other codesign failure stops
 The bundles are signed while they build, without a retry, so a signing failure in the macOS
 leg's *Build gg-all and gg-products* step means re-running the failed job.
 
-**The Rosetta kernel test fails on the macOS leg.** "live interior is exactly where the fade is
-one - Hermite" (`tests/engine/kernel_tests.cpp`) fails now and then in *Test the x86_64 slice
-under Rosetta* (first seen in run 40920010135, on `main`), and passes on the same code's other
-runs. It is a CI-VM flake, not a regression: re-run the failed job once. A second failure is a
-real one. The same slice's block-size tests ("render block size does not change output", "note
-and file renders do not depend on block size") fail the same way, an off layer logging one extra
-grain at blockSize 1 (carry-over row 234): re-run the failed job once too, and first copy the
-failure's counters into row 234. Its "When" column says what each means: an enable fault
+**The Rosetta step retries a failed case once.** *Test the x86_64 slice under Rosetta* (the macOS
+leg) re-runs each failed Catch2 case, and each golden case `gg-render` failed with status 1, once
+on its own (INTENT §23 #98; `scripts/retry-failed.py`). The runner's float compares misfire about 1
+in 690 million (`docs/spikes/m3-rosetta-compare-probe.md`), which is probably why "live interior is exactly
+where the fade is one - Hermite" and its kin (`tests/engine/kernel_tests.cpp`; first seen in run
+40920010135, on `main`) failed and then passed on the same code. A case that passes its retry is
+listed in the step summary and as a warning, and the step passes: look at the list now and then
+for a pattern. The step fails on a repeat failure, a crash or other status, a missing or incomplete
+report, or more than 5 failures in a run, and none of those is retried. **A run that is red after
+that is a real failure: don't re-run it hoping.** The block-size tests ("render block size does not
+change output", "note and file renders do not depend on block size": an off layer logging one extra
+grain at blockSize 1, carry-over row 234) take the same path; if one fails its retry too, copy the
+failure's counters into row 234 first. Its "When" column says what each means: an enable fault
 "disagreeing with its on ramp" (the machine), one "off the control grid" (a code fault), a grain
 spawned with an engine's gate off (the engine misread its gate), or neither.
 
