@@ -3,7 +3,7 @@
 **The director's list (2026-11-03; INTENT §23 #90):** pins that trail their upstream but stay where
 they are for now, each with what would move it and what to check when it moves. This isn't
 carry-over: nothing here is a defect or a deferred fix, and a row leaves the list when its pin
-moves (or when the pin stops trailing). Every pin is still exact (CLAUDE.md, "Licensing"). Moving
+moves (or when the pin stops trailing). Every pin is still exact (AGENTS.md, "Licensing"). Moving
 one is a change of its own, with that pin's checks and the evidence in its commit.
 
 *Made for M2's close (Task 22), after the clap-wrapper bump to `next` at `4585bc6`

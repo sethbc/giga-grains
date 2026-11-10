@@ -129,7 +129,7 @@ jobs:
           persist-credentials: false
 
       # A pull request that changes only documents (INTENT §23 #77): every changed file under docs/,
-      # or INTENT.md or CLAUDE.md, which nothing builds or tests. Every other Markdown file is an
+      # or INTENT.md or AGENTS.md, which nothing builds or tests. Every other Markdown file is an
       # input: THIRD_PARTY_NOTICES.md is embedded in the editor and compared byte for byte, content/
       # and installer/ READMEs and PROVENANCE.md are staged into the products, the root README.md
       # is checked by a scripts test. A docs-only pull request skips the build legs and the
@@ -144,7 +144,7 @@ jobs:
             files="$(git diff --name-only HEAD^1 HEAD)"
             echo "Changed files:"
             sed 's/^/  /' <<<"$files"
-            if [[ -n "$files" ]] && ! grep -qvE '^(docs/.+|INTENT\.md|CLAUDE\.md)$' <<<"$files"; then
+            if [[ -n "$files" ]] && ! grep -qvE '^(docs/.+|INTENT\.md|AGENTS\.md)$' <<<"$files"; then
               docs_only=true
             fi
           fi

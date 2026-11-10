@@ -112,7 +112,7 @@ AU in Live. Note the host and format of anything that fails.
 
 **First, install the build under review.** The AU in `~/Library/Audio/Plug-Ins/Components` is a
 branch build, installed during validation. Replace it, and the CLAP and VST3, with the release
-build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's install).
+build of the commit you are judging (AGENTS.md, "Validators", shows the AU's install).
 
 - [ ] **The "Space" page in Bitwig.** Both products show a second remote-controls page,
   "Space", after "Cloud": Diffusion, Reverb Amount, Reverb Decay, Reverb Size, Reverb Damping,
