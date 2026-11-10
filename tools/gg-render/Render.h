@@ -194,7 +194,7 @@ struct TimedControl
 std::vector<TimedControl> timedControls(const std::vector<ControlSpec> &controls,
                                         const std::vector<NoteSpec> &notes, double sampleRate);
 
-/// gg-render's exit statuses (CLAUDE.md, "Golden renders").
+/// gg-render's exit statuses (AGENTS.md, "Golden renders").
 inline constexpr int kExitPass = 0;
 inline constexpr int kExitCompareFailed = 1;
 inline constexpr int kExitBadInput = 2;

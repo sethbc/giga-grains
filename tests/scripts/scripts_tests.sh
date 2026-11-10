@@ -25,6 +25,10 @@
 # and the cases changed, new or gone since the previous run; and the preset goldens' folder
 # (tests/golden/presets/cases/), rendered with --content-dir from the packed presets copied into
 # the media folder, their hashes listed as presets/<case> beside the others.
+# check-at-rest.sh runs against a scratch git repository with a stub update-goldens.sh and a stub
+# uname: nothing changed, a changed and a gone case, the expected files it restores and the newer
+# case's it leaves, a failed render, the baseline chosen by platform, and the refusals (usage, no
+# baseline for the platform, no build tree, an uncommitted edit of a baseline case).
 # fetch-content.cmake fetches a scratch zip with the content release's layout by a file:// URL:
 # it extracts it and writes .gg-pin, a second run is "already at" the pin, a pin with the wrong
 # hash fails and leaves no zip, a stale .gg-pin is fetched over, and -DCHECK passes a matching
@@ -311,6 +315,177 @@ check "update-goldens copies the packed presets into the media folder" \
         echo 1)"
 check "update-goldens writes a preset golden's expected files beside its cases" \
     "$([[ -f "$repo/tests/golden/presets/expected/fx-01-p.metrics.json" ]] && echo 0 || echo 1)"
+
+# --- check-at-rest.sh, against a scratch git repository --------------------------------------
+
+# The stub update-goldens.sh rewrites every expected file, as the real one does on a machine whose
+# metrics differ in the last digits, and writes the hashes $FAKE_HASHES names.
+at="$work/at-rest"
+mkdir -p "$at/scripts" "$at/tests/golden/at-rest" "$at/tests/golden/expected" \
+    "$at/tests/golden/presets/expected" "$at/build/dev/golden" "$work/at-bin"
+cat >"$at/scripts/update-goldens.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1" >build/dev/update-goldens-arg
+for f in tests/golden/expected/*.json* tests/golden/presets/expected/*.json*; do
+    echo rewritten >"$f"
+done
+if [[ -n "${FAKE_GOLDENS_FAIL:-}" ]]; then
+    echo "a render broke"
+    exit 3
+fi
+cp "$FAKE_HASHES" build/dev/golden/wav-sha256.txt
+EOF
+chmod +x "$at/scripts/update-goldens.sh"
+cat >"$work/at-bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    -s) echo "${FAKE_UNAME_S:-Linux}" ;;
+    -m) echo "${FAKE_UNAME_M:-x86_64}" ;;
+esac
+EOF
+chmod +x "$work/at-bin/uname"
+for f in tests/golden/expected/a tests/golden/expected/b tests/golden/presets/expected/p; do
+    echo committed >"$at/$f.metrics.json"
+    echo committed >"$at/$f.events.jsonl"
+done
+echo committed >"$at/tests/golden/expected/new-voice.metrics.json"
+printf '%s\n' "aaa a" "bbb b" "ppp presets/p" >"$at/tests/golden/at-rest/linux-x86_64-dev.sha256"
+echo 'build/' >"$at/.gitignore"
+git -C "$at" init -q
+git -C "$at" add .
+git -C "$at" -c user.name=t -c user.email=t@example.com commit -q -m base
+run_at_rest() { # <args...>; sets $out and $status
+    status=0
+    out="$(PATH="$work/at-bin:$PATH" "$src/scripts/check-at-rest.sh" "$@" 2>&1)" || status=$?
+}
+at_hashes() { # <lines...>: the hashes the next run's stub reports
+    printf '%s\n' "$@" >"$work/at-hashes"
+    export FAKE_HASHES="$work/at-hashes"
+}
+committed() { # <file>: 0 when <file> still holds its committed text
+    [[ "$(cat "$at/$1")" == committed ]] && echo 0 || echo 1
+}
+
+at_hashes "aaa a" "bbb b" "ppp presets/p" "vvv new-voice"
+run_at_rest "$at"
+check "check-at-rest, nothing changed: exit 0" "$status"
+check "check-at-rest ends with the count line" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 3, changed: 0, gone: 0" ]] && echo 0 || echo 1)"
+check "check-at-rest renders into build/dev" \
+    "$([[ "$(cat "$at/build/dev/update-goldens-arg")" == build/dev ]] && echo 0 || echo 1)"
+check "check-at-rest restores a baseline case's metrics" \
+    "$(committed tests/golden/expected/a.metrics.json)"
+check "check-at-rest restores a baseline case's events" \
+    "$(committed tests/golden/expected/b.events.jsonl)"
+check "check-at-rest restores a preset case's expected files" \
+    "$(committed tests/golden/presets/expected/p.metrics.json)"
+check "check-at-rest leaves a newer case's render" \
+    "$([[ "$(cat "$at/tests/golden/expected/new-voice.metrics.json")" == rewritten ]] && echo 0 ||
+        echo 1)"
+git -C "$at" checkout -q -- tests/golden
+
+at_hashes "aaa a" "XXX b" "ppp presets/p"
+run_at_rest "$at"
+check "check-at-rest, a changed WAV: exit 1" "$(((status == 1) ? 0 : 1))"
+expect_in "check-at-rest names the changed case" "$out" "CHANGED b"
+expect_not_in "check-at-rest names only the changed case" "$out" "CHANGED a"
+check "check-at-rest counts the change" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 3, changed: 1, gone: 0" ]] && echo 0 || echo 1)"
+
+at_hashes "aaa a" "bbb b"
+run_at_rest "$at"
+check "check-at-rest, a gone case: exit 1" "$(((status == 1) ? 0 : 1))"
+expect_in "check-at-rest names the gone case" "$out" "GONE presets/p"
+check "check-at-rest counts the gone case" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 3, changed: 0, gone: 1" ]] && echo 0 || echo 1)"
+
+FAKE_GOLDENS_FAIL=1 run_at_rest "$at"
+check "check-at-rest, update-goldens fails: exit 1" "$(((status == 1) ? 0 : 1))"
+expect_in "check-at-rest shows the failed run's log" "$out" "a render broke"
+expect_not_in "check-at-rest compares nothing after a failed run" "$out" "baseline cases:"
+check "check-at-rest restores the expected files after a failed run" \
+    "$(committed tests/golden/expected/a.metrics.json)"
+
+at_hashes "aaa a" "bbb b" "ppp presets/p"
+rm -f "$at/build/dev/update-goldens-arg"
+echo "hand edited" >"$at/tests/golden/expected/a.metrics.json"
+run_at_rest "$at"
+check "check-at-rest refuses an uncommitted edit of a baseline case: exit 2" \
+    "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest names the edited file" "$out" "tests/golden/expected/a.metrics.json"
+check "check-at-rest keeps the uncommitted edit" \
+    "$([[ "$(cat "$at/tests/golden/expected/a.metrics.json")" == "hand edited" ]] && echo 0 ||
+        echo 1)"
+check "check-at-rest renders nothing over an uncommitted edit" \
+    "$([[ ! -e "$at/build/dev/update-goldens-arg" ]] && echo 0 || echo 1)"
+git -C "$at" add tests/golden/expected/a.metrics.json
+run_at_rest "$at"
+check "check-at-rest refuses a staged edit of a baseline case: exit 2" \
+    "$(((status == 2) ? 0 : 1))"
+git -C "$at" reset -q
+git -C "$at" checkout -q -- tests/golden
+
+echo "hand edited" >"$at/tests/golden/expected/new-voice.metrics.json"
+run_at_rest "$at"
+check "check-at-rest allows an uncommitted edit of a newer case" "$status"
+git -C "$at" checkout -q -- tests/golden
+
+echo >>"$at/tests/golden/at-rest/linux-x86_64-dev.sha256"
+run_at_rest "$at"
+check "check-at-rest ignores a blank baseline line" "$status"
+check "check-at-rest doesn't count a blank baseline line" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 3, changed: 0, gone: 0" ]] && echo 0 || echo 1)"
+git -C "$at" checkout -q -- tests/golden
+
+cd "$work"
+run_at_rest at-rest
+cd "$src"
+check "check-at-rest takes a relative worktree" "$status"
+git -C "$at" checkout -q -- tests/golden
+
+run_at_rest
+check "check-at-rest, no worktree: exit 2" "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest, no worktree: usage" "$out" "usage:"
+
+rm -f "$at/build/dev/update-goldens-arg"
+FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 run_at_rest "$at"
+check "check-at-rest, a platform with no baseline: exit 2" "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest names the missing platform's baseline" "$out" \
+    "tests/golden/at-rest/darwin-arm64-dev.sha256"
+expect_in "check-at-rest says how to make a baseline" "$out" "build/dev/golden/wav-sha256.txt"
+FAKE_UNAME_M=aarch64 run_at_rest "$at"
+check "check-at-rest, Linux on another CPU has its own baseline: exit 2" \
+    "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest keys the baseline by CPU too" "$out" "linux-aarch64-dev"
+check "check-at-rest renders nothing without a baseline" \
+    "$([[ ! -e "$at/build/dev/update-goldens-arg" ]] && echo 0 || echo 1)"
+
+# A second platform's baseline, whose hashes are not Linux's: the run on that platform uses it.
+echo "mmm a" >"$at/tests/golden/at-rest/darwin-arm64-dev.sha256"
+at_hashes "mmm a" "bbb b" "ppp presets/p"
+FAKE_UNAME_S=Darwin FAKE_UNAME_M=arm64 run_at_rest "$at"
+check "check-at-rest uses this platform's baseline: exit 0" "$status"
+check "check-at-rest counts this platform's baseline" \
+    "$([[ "$(tail -1 <<<"$out")" == "baseline cases: 1, changed: 0, gone: 0" ]] && echo 0 || echo 1)"
+git -C "$at" checkout -q -- tests/golden
+run_at_rest "$at"
+check "check-at-rest on Linux ignores another platform's baseline: exit 1" \
+    "$(((status == 1) ? 0 : 1))"
+expect_in "check-at-rest on Linux compares Linux's hashes" "$out" "CHANGED a"
+rm "$at/tests/golden/at-rest/darwin-arm64-dev.sha256"
+git -C "$at" checkout -q -- tests/golden
+
+mv "$at/build" "$work/at-build"
+run_at_rest "$at"
+check "check-at-rest, no build tree: exit 2" "$(((status == 2) ? 0 : 1))"
+expect_in "check-at-rest, no build tree: says so" "$out" "build/dev"
+mv "$work/at-build" "$at/build"
+
+mv "$at/tests/golden/at-rest/linux-x86_64-dev.sha256" "$work/at-baseline"
+run_at_rest "$at"
+check "check-at-rest, no baseline: exit 2" "$(((status == 2) ? 0 : 1))"
+mv "$work/at-baseline" "$at/tests/golden/at-rest/linux-x86_64-dev.sha256"
 
 # --- fetch-content.cmake, against a local zip -----------------------------------------------
 

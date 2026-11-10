@@ -80,4 +80,4 @@ check every signature.
 The other presets (`release`; the `asan` and `rtsan` sanitizer builds, which build the plugin
 core without its editor or formats; `mac-universal`), the golden renders (`gg-render`), the
 benchmarks (`gg-bench`), the plugin validators and the formatting script are described in
-[`CLAUDE.md`](CLAUDE.md), under "Build and test".
+[`AGENTS.md`](AGENTS.md), under "Build and test".
