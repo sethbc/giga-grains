@@ -72,6 +72,9 @@ struct CloudParams
     /// The share of grains on the layer's second bus (extremes spec §6.3): a grain takes bus 1
     /// when uniform01(u) < busSplit; [0, 1].
     double busSplit{0.0};
+    /// The layer's Pan (M3 EB9), added to each grain's stereo draw, then clamped; [-1, 1]. Exactly
+    /// +-0 skips the add and the clamp.
+    double pan{0.0};
 };
 
 /// One grain as the scheduler draws it, before the source turns it into a GrainSpec. Every
@@ -408,7 +411,10 @@ class CloudScheduler
         const uint8_t bus =
             params_.busSplit > 0.0 && rng::uniform01(key(rng::Field::Bus)) < params_.busSplit ? 1
                                                                                               : 0;
-        const double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
+        double p = params_.stereo * rng::bipolar(key(rng::Field::Pan));
+        // M3 EB9: the layer's Pan places the draw; exactly +-0 skips the add and the clamp.
+        if (params_.pan != 0.0)
+            p = std::clamp(params_.pan + p, -1.0, 1.0);
         // A pan below the smallest normal float is 0, so the value doesn't depend on the
         // flush-to-zero mode. It is +0, never the -0 of stereo 0 times a negative draw.
         const float pan =

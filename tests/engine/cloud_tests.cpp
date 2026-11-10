@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -2129,4 +2130,65 @@ TEST_CASE("spectral mode draws the spray alone behind the smear's head", "[cloud
         }
         REQUIRE(added);
     }
+}
+
+TEST_CASE("pan 0 leaves every draw as it was", "[cloud]")
+{
+    for (const double pan : {0.0, -0.0})
+    {
+        gg::CloudParams p;
+        p.densityHz = 4000.0;
+        p.stereo = 0.7;
+        p.pan = pan;
+        gg::CloudScheduler cloud;
+        cloud.prepare(48000.0);
+        cloud.setParams(p);
+        const auto grains = collect(cloud, 0, 48000, 256);
+        REQUIRE(grains.size() >= 2000);
+        for (std::size_t i = 0; i < 2000; ++i)
+        {
+            const auto &g = grains[i];
+            const auto key = gg::rng::hash({kSeed, 0, 0, gg::rng::Field::Pan, g.index});
+            const float want = static_cast<float>(0.7 * gg::rng::bipolar(key));
+            REQUIRE(std::bit_cast<uint32_t>(g.pan) == std::bit_cast<uint32_t>(want));
+        }
+    }
+}
+
+TEST_CASE("pan adds to the stereo draw and clamps", "[cloud]")
+{
+    gg::CloudParams p;
+    p.densityHz = 200.0;
+    p.stereo = 0.5;
+    p.pan = 0.75;
+    gg::CloudScheduler cloud;
+    cloud.prepare(48000.0);
+    cloud.setParams(p);
+    const auto grains = collect(cloud, 0, 48000, 256);
+    REQUIRE(grains.size() > 100);
+    bool clamped = false;
+    for (const auto &g : grains)
+    {
+        const auto key = gg::rng::hash({kSeed, 0, 0, gg::rng::Field::Pan, g.index});
+        const float want =
+            static_cast<float>(std::clamp(0.75 + 0.5 * gg::rng::bipolar(key), -1.0, 1.0));
+        REQUIRE(g.pan == want);
+        clamped = clamped || want == 1.0f;
+    }
+    REQUIRE(clamped);
+}
+
+TEST_CASE("pan alone places every grain", "[cloud]")
+{
+    gg::CloudParams p;
+    p.densityHz = 200.0;
+    p.stereo = 0.0;
+    p.pan = -0.4;
+    gg::CloudScheduler cloud;
+    cloud.prepare(48000.0);
+    cloud.setParams(p);
+    const auto grains = collect(cloud, 0, 48000, 256);
+    REQUIRE(grains.size() > 100);
+    for (const auto &g : grains)
+        REQUIRE(g.pan == -0.4f);
 }
