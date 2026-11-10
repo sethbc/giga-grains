@@ -90,7 +90,8 @@ run() { # <arg>...
 begin_report() { printf '<Catch2TestRun name="gg-tests">\n' >"$1"; }
 # <file> <xml-escaped name> pass|fail [<expression body>]
 add_case() {
-    local body="${4-<Expression success=\"false\" type=\"CHECK\" filename=\"t.cpp\" line=\"7\"><Original>a == b</Original><Expanded>1 == 2</Expanded></Expression>}"
+    local def='<Expression success="false" type="CHECK" filename="t.cpp" line="7"><Original>a == b</Original><Expanded>1 == 2</Expanded></Expression>'
+    local body="${4-$def}"
     {
         printf '  <TestCase name="%s" tags="[x]">\n' "$2"
         if [[ "$3" == fail ]]; then
