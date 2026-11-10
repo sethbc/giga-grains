@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Status** | Draft, 2026-11-07, written without the director at his request ("keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input"). Every forced choice is **Claude's provisional call** (R0 to R15, §3), each with the alternatives declined; the builder check's rulings are in §3a (RB1 to RB20). The director reviews the calls later; **R3 (one Mod Sync switch per layer, not one per modulator) and R2 (synced rates run on at tempo while the transport is stopped) are the ones most likely to be overruled** |
+| **Status** | Reviewed, 2026-11-09. Written 2026-11-07 without the director, at the director's request ("keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input"), each forced choice as Claude's provisional call (R0 to R15, §3) with the alternatives declined; the builder check's rulings are in §3a (RB1 to RB20). **The director's brainstorming of 2026-11-09 confirmed every call but R3, which the director overruled:** one stepped Sync switch per modulator per layer, in place of the one Mod Sync ladder (R3, amended 2026-11-09, with R11, R12, R14 and every place the ladder appeared) |
 | **Program** | `docs/superpowers/specs/2026-11-07-m3-program-design.md` (§3's "rhythmic" focus, §8, §9); this sub-project is new (R0) |
 | **Why** | The director, 2026-11-07, on the competitor comparison (`competitor-gaps.md`, gap 6): "no i think this all needs to happen in m3". Every hardware granular instrument compared runs its modulators, its delay and its looper in note divisions; ours run in Hz and seconds alone |
-| **Builds on** | sub-project 1, `docs/superpowers/specs/2026-11-07-m3-voice-design.md` (on `m3-voice`, draft PR #37); M2 sub-project 1's transport sources (`gg/core/ModSources.h`); M2 sub-project 2's ring (`docs/superpowers/specs/2026-10-30-m2-sources-design.md` §6.1, §6.4); M2 sub-project 4's delay (`gg/core/Delay.h`); sub-project 3b's playhead, `~/src/gg-m3-sp3b-playhead/docs/superpowers/specs/2026-11-07-m3-playhead-design.md` (H5, H13, HB1 to HB3), for Scan Sync alone |
-| **Branch** | `m3-sp7-temposync` (from `m3-voice`), worktree `~/src/gg-m3-sp7-temposync` |
-| **Indices** | layer **0x7C to 0x7F** (uses 0x7C, 0x7D, 0x7E); global **0x48 to 0x4F** (uses 0x48, 0x49); `rng::Field` **0x48, 0x49** |
+| **Builds on** | sub-project 1, `docs/superpowers/specs/2026-11-07-m3-voice-design.md` (on `m3-voice`, draft PR #37); M2 sub-project 1's transport sources (`gg/core/ModSources.h`); M2 sub-project 2's ring (`docs/superpowers/specs/2026-10-30-m2-sources-design.md` §6.1, §6.4); M2 sub-project 4's delay (`gg/core/Delay.h`); sub-project 3b's playhead, `~/.local/share/giga-grains/worktrees/gg-m3-sp3b-playhead/docs/superpowers/specs/2026-11-07-m3-playhead-design.md` (H5, H13, HB1 to HB3), for Scan Sync alone |
+| **Branch** | `m3-sp7-temposync` (from `m3-voice`), worktree `~/.local/share/giga-grains/worktrees/gg-m3-sp7-temposync` |
+| **Indices** | layer **0x6B to 0x6F** (the five modulator Sync switches; the director's assignment of 2026-11-09, in sub-project 3b's block, which its H12 leaves unused) and **0x7D, 0x7E** of the block 0x7C to 0x7F (0x7C and 0x7F unused); global **0x48 to 0x4F** (uses 0x48, 0x49); `rng::Field` **0x48, 0x49** |
 | **Runs beside** | sub-projects 2 (expression), 3 (pitch-sync), 3b (playhead), 4 (tuning), 5 (views and presets), 8 to 11, in parallel (§8 lists the seams) |
 
 ## 1. Intent
@@ -36,7 +36,8 @@ every sibling's that has merged).
   change, with the stop policy (R2); INTENT §15's "internal monotonic sample clock" that "detects
   loops and jumps from discontinuities";
 - **the division table** and its display and parsing (§4.3);
-- **Mod Sync** (per layer): LFO 1 and 2, Random 1 and 2 and Step in note divisions (§4.4);
+- **the modulator Sync switches** (per layer, one per modulator: LFO 1 Sync, LFO 2 Sync, Random 1
+  Sync, Random 2 Sync, Step Sync): each puts its modulator's rate in note divisions (§4.4);
 - **Delay Sync** (global): the delay's Time in note divisions (§4.5);
 - **Loop Sync** (per layer): Loop Length in beats or bars (§4.6);
 - **Ring Quantize** (global): the ring's hold and resume (Freeze) and its splice marks on the next
@@ -60,7 +61,7 @@ every sibling's that has merged).
 - new factory presets that sync and remote-controls pages for the new parameters (sub-project 5's,
   §8).
 
-## 3. Forced choices (Claude's provisional calls; the director may overrule each)
+## 3. Forced choices (Claude's provisional calls, confirmed by the director's review of 2026-11-09; R3 overruled and amended)
 
 - **R0. Tempo sync of rates is a new M3 sub-project, 7, in parallel with the others.** The
   director's decision of 2026-11-07 moves gap 6 into M3. It amends the program design (§8 gains a
@@ -95,17 +96,19 @@ every sibling's that has merged).
   streams; M4 may add one Stopped setting that covers these sources too, and nothing here precludes
   it).
 
-- **R3. The parameters: three per layer, two global, all stepped switches.** Per layer: **Mod
-  Sync** (Off, Step, Step + Random, All), **Loop Sync** (Off, Beats, Bars), **Scan Sync** (Off,
-  On). Global: **Delay Sync** (Off, On), **Ring Quantize** (Off, Beat, Bar). Mod Sync's four values
-  run from least to most locked: Step alone (the commonest synced modulator), then the two Randoms
-  too, then the two LFOs too. A layer that wants a free LFO beside a synced one reads another
-  layer's modulators (every route has a `sourceLayer`), which run whether or not that layer sounds.
-  *Declined:* one switch per modulator per layer (five layer indices for the modulators alone, plus
-  Loop and Scan: seven, and the agreed block holds four); one switch per modulator shared by every
-  layer (five globals, but a switch in layer B's Edit panel would change layer A's); combination
-  enums ("LFO 1 + Random 2"). If the director wants per-modulator switches, 0x7F and more indices
-  agreed then carry them; IDs freeze only at M5's first beta (§18).
+- **R3. The parameters: seven per layer, two global, all stepped switches** (the director's
+  decision of 2026-11-09, overruling the provisional call). Per layer: one **Sync** switch per
+  modulator, **LFO 1 Sync**, **LFO 2 Sync**, **Random 1 Sync**, **Random 2 Sync** and **Step
+  Sync** (each Off, On), then **Loop Sync** (Off, Beats, Bars) and **Scan Sync** (Off, On). Global:
+  **Delay Sync** (Off, On), **Ring Quantize** (Off, Beat, Bar). Each modulator syncs on its own, so
+  one layer can run a synced LFO beside a free one, or a synced Step beside free Randoms, without
+  borrowing another layer's modulators. The five switches take the layer indices 0x6B to 0x6F,
+  which sub-project 3b's H12 leaves unused in its block (R14). *Declined:* **one Mod Sync ladder
+  per layer** (Off, Step, Step + Random, All, from least to most locked: Claude's provisional call,
+  one index, overruled by the director: a layer that wanted a free LFO beside a synced one had to
+  read another layer's modulators); one switch per modulator shared by every layer (five globals,
+  but a switch in layer B's Edit panel would change layer A's); combination enums ("LFO 1 +
+  Random 2").
 
 - **R4. The division sits on the rate knob, snapped at a 120 BPM reference.** Synced, a rate knob
   keeps its value and range; its value picks the note value nearest, in log, to the length its Hz
@@ -206,17 +209,18 @@ every sibling's that has merged).
   the engine's geometry).
 
 - **R11. The sync switches are not route targets, and the synced values are not modulation
-  targets of their own.** Mod Sync changes how the modulators step, so a route to it would make a
-  source's timing depend on a source (the matrix's one-pass rule, INTENT §14): it joins the
-  modulators' controls. Loop Sync, Scan Sync, Delay Sync and Ring Quantize are switches of a time
-  base, which nothing modulates usefully. All five are automatable and stepped, not modulatable.
+  targets of their own.** A modulator's Sync switch changes how that modulator steps, so a route
+  to it would make a source's timing depend on a source (the matrix's one-pass rule, INTENT §14):
+  the five join the modulators' controls. Loop Sync, Scan Sync, Delay Sync and Ring Quantize are
+  switches of a time base, which nothing modulates usefully. All nine are automatable and stepped,
+  not modulatable.
   The rate knobs keep their flags: host automation and CLAP modulation move them, and synced they
   snap.
 
 - **R12. State and presets.** No patch-version bump: a state or preset without the new values
-  reads their defaults (Off), today's behavior. Mod Sync, Scan Sync and Delay Sync are sound: saved
-  with the patch, set by a preset load, Off at INIT, and in Mutate's default locks (a press that
-  syncs a modulator changes what the preset is). **Loop Sync is a ring parameter** (`isRingParam`):
+  reads their defaults (Off), today's behavior. The five modulator Sync switches, Scan Sync and
+  Delay Sync are sound: saved with the patch, set by a preset load, Off at INIT, and in Mutate's
+  default locks (a press that syncs a modulator changes what the preset is). **Loop Sync is a ring parameter** (`isRingParam`):
   a preset load keeps it, INIT resets it (INIT keeps Ring Length alone), Mutate locks it, and a
   preset source may not set it (`--pack-preset` exits 2, as for Loop Length). **Ring Quantize is an
   instance setting:** a preset load and INIT keep it, as they keep the MIDI settings, and Mutate
@@ -231,9 +235,14 @@ every sibling's that has merged).
   bit for bit (`β − 0.0` is β; `/ 4.0` as now), and no golden has another meter. *Declined:*
   leaving two definitions of a bar in one product.
 
-- **R14. Indices.** Layer **0x7C Mod Sync, 0x7D Loop Sync, 0x7E Scan Sync** of the block 0x7C to
-  0x7F agreed for this sub-project, in a new list after every other layer list (its indices are
-  the scope's highest); **0x7F stays unused**. Global **0x48 Delay Sync, 0x49 Ring Quantize** of
+- **R14. Indices** (amended with R3, 2026-11-09). Layer **0x6B LFO 1 Sync, 0x6C LFO 2 Sync, 0x6D
+  Random 1 Sync, 0x6E Random 2 Sync, 0x6F Step Sync**, the director's assignment: the tail of
+  sub-project 3b's block 0x68 to 0x6F, which 3b's H12 (0x68 to 0x6A) leaves unused. They form a
+  list of their own, after `GG_LAYER_PARAMS_M2_EXTREMES` and 3b's list (0x68 to 0x6A) and before
+  sub-project 8's (0x70). Layer **0x7D Loop Sync, 0x7E Scan Sync** of the block 0x7C to 0x7F agreed
+  for this sub-project, in a second list after every other layer list (its indices are the scope's
+  highest); **0x7C and 0x7F stay unused** (0x7C was the ladder's). Two lists, since the index
+  column must stay ascending and the siblings' lists of 0x70 to 0x7B fall between. Global **0x48 Delay Sync, 0x49 Ring Quantize** of
   the block 0x48 to 0x4F; **0x4A to 0x4F stay unused**. New `rng::Field` values
   **`ModRandom1Synced = 0x48`, `ModRandom2Synced = 0x49`**: a synced draw's index is a song-position
   period, not a count from reset, so it gets its own field and never correlates with the free
@@ -290,15 +299,16 @@ every sibling's that has merged).
   (empty if no event pends) **only while some tempo-dependent feature is engaged** (any layer's Loop
   Sync or Scan Sync, or Delay Sync), so its tempo reaches the delay, the window and the playhead at
   that boundary; a quantized action's boundary (R8) always applies. With every switch Off no
-  boundary is added, so no ramp is retargeted and the pieces are today's. (Mod Sync needs nothing:
-  the modulators step every boundary already, and routes from them are time-varying.)
+  boundary is added, so no ramp is retargeted and the pieces are today's. (The modulator Sync
+  switches need nothing: the modulators step every boundary already, and routes from them are
+  time-varying.)
 - **RB7. Leaving and entering sync.** Each synced step writes the free state from the synced one
   (LFO: `phase_ = φ`; Random: `phase_ = φ`, `target_` and `out_` the synced target and output;
   Step: `phase_ = φ`, `k_ = k mod length`, Euclidean), so the next free step continues without a
   jump; the free Random keeps its own k counter (keyed by its own field). Entering sync jumps to the
   song's value, by R5.
 - **RB8. The division tables** (`core/include/gg/core/SyncDivisions.h`, constexpr literals):
-  - **Note values** (Mod Sync, Delay Sync): for n = −4 … 7, the beats `(2/3) × 2^n` (triplet),
+  - **Note values** (the modulator Sync switches, Delay Sync): for n = −4 … 7, the beats `(2/3) × 2^n` (triplet),
     `2^n` (straight) and `1.5 × 2^n` (dotted), 36 entries sorted ascending (the triplet of 2^(n+1)
     falls between 2^n and its dotted). The Delay table is its prefix up to 4 beats.
   - **Pass lengths** (Scan Sync): `2^n` and `1.5 × 2^n` beats for n = −1 … 14, sorted: 1/8 (the
@@ -307,11 +317,12 @@ every sibling's that has merged).
     `e(i−1) × e(i) ≤ D_ref² < e(i) × e(i+1)` (a tie goes to the longer), the products constexpr
     literals; `D_ref = exp2Det(…)` from the knob (§4.3); below the first or above the last entry,
     the end entry.
-  - Mod Sync's levels: Off 0; Step 1 (Step); Step + Random 2 (Step, Random 1, Random 2); All 3 (the
-    five).
+  - The modulator Sync switches: each is Off 0 or On 1, and On syncs its own modulator alone
+    (LFO 1 Sync LFO 1, …, Step Sync Step); the five are independent (R3, amended 2026-11-09).
 - **RB9. Display and parsing.** The rate knobs' text depends on another parameter, so the plugin's
   `value_to_text` and `text_to_value` (and the editor's, through the same formatter) consult the
-  layer's Mod Sync, Loop Sync and Scan Sync and the global Delay Sync in its main-thread value
+  rate's own switch (a modulator rate its modulator's Sync switch; Loop Length the layer's Loop
+  Sync; Scan Speed its Scan Sync; Delay Time the global Delay Sync) in its main-thread value
   store; `paramMeta` stays static. When one of those switches changes from any source, the plugin
   requests a main-thread callback and calls `clap_host_params::rescan(CLAP_PARAM_RESCAN_TEXT)`.
   Text is ASCII: `1/64` … `32/1`, a `T` suffix for a triplet, a `.` for a dotted value (`1/8T`,
@@ -360,10 +371,11 @@ every sibling's that has merged).
   new bench case; `gg-bench --cases reference,engine-sample --quick` before and after the Scan task,
   the ratio within its noise.
 - **RB16. Placements** (the frame tests require every parameter reachable; sub-project 5 may move
-  them): Mod Sync in the LFO 1 panel's first row (it heads the modulators); Loop Sync in the Ring
-  panel after Loop Length; Scan Sync after 3b's Scan cells; Delay Sync in the FX view's Delay panel
+  them): each modulator's Sync switch in its own panel right after its Rate (LFO 1 Sync in
+  `Panel::Lfo1`, LFO 2 Sync in `Panel::Lfo2`, Random 1 Sync in `Panel::Random1`, Random 2 Sync in
+  `Panel::Random2`, Step Sync in `Panel::Step`); Loop Sync in the Ring panel after Loop Length; Scan Sync after 3b's Scan cells; Delay Sync in the FX view's Delay panel
   after Delay Time; Ring Quantize in the FX view's MIDI panel (its last panel of instance
-  settings). Short labels if the elision check needs them ("Sync", "Quantize"; "Step+Rnd").
+  settings). Short labels if the elision check needs them ("Sync", "Quantize").
 - **RB17. Real-time safety.** The clock, the tables, the quantizer and the lock are fixed-size
   values and a few double operations; no loop but the fixed layers and streams; nothing allocates,
   locks or calls libm beyond `std::floor`, `std::fabs` and `exp2Det`. `params.flush` is untouched
@@ -378,8 +390,8 @@ every sibling's that has merged).
   their phase depends on the block size by up to a cell (gg-render, setting it once, is exact);
   moving them onto the clock moves `fx-mod-transport` by rounding, so it waits for a commit that
   says so; (b) whether clap-wrapper's VST3 and AU paths fill `bar_start` and the time signature
-  (the close's host matrix checks; without them bars count from beat 0 in 4/4); (c) per-modulator
-  sync switches, if the director asks (R3).
+  (the close's host matrix checks; without them bars count from beat 0 in 4/4). (The draft's row
+  (c), per-modulator sync switches, is gone: the director's R3 builds them.)
 
 ## 4. Design
 
@@ -387,33 +399,42 @@ every sibling's that has merged).
 
 | Slot | CLAP ID | Display name | Values, default | Kind |
 |---|---|---|---|---|
-| `ModSync`, `B_ModSync` … | `0x01007C` … `0x04007C` | Mod Sync (A Mod Sync …) | 0 Off, 1 Step, 2 Step + Random, 3 All; 0 | layer, automatable, stepped; a modulator control (no route targets it) |
+| `Lfo1Sync`, `B_Lfo1Sync` … | `0x01006B` … `0x04006B` | LFO 1 Sync (A LFO 1 Sync …) | 0 Off, 1 On; 0 | layer, automatable, stepped; a modulator control (no route targets it) |
+| `Lfo2Sync` … | `0x01006C` … `0x04006C` | LFO 2 Sync | 0 Off, 1 On; 0 | as LFO 1 Sync |
+| `Random1Sync` … | `0x01006D` … `0x04006D` | Random 1 Sync | 0 Off, 1 On; 0 | as LFO 1 Sync |
+| `Random2Sync` … | `0x01006E` … `0x04006E` | Random 2 Sync | 0 Off, 1 On; 0 | as LFO 1 Sync |
+| `StepSync` … | `0x01006F` … `0x04006F` | Step Sync | 0 Off, 1 On; 0 | as LFO 1 Sync |
 | `LoopSync`, `B_LoopSync` … | `0x01007D` … `0x04007D` | Loop Sync | 0 Off, 1 Beats, 2 Bars; 0 | layer, automatable, stepped; a ring parameter |
 | `ScanSync`, `B_ScanSync` … | `0x01007E` … `0x04007E` | Scan Sync | 0 Off, 1 On; 0 | layer, automatable, stepped (Scan task, RB14) |
 | `DelaySync` | `0x000048` | Delay Sync | 0 Off, 1 On; 0 | global, automatable, stepped |
 | `RingQuantize` | `0x000049` | Ring Quantize | 0 Off, 1 Beat, 2 Bar; 0 | global, automatable, stepped; an instance setting |
 
-- A new list `GG_LAYER_PARAMS_M3_TEMPOSYNC(X)` (`X(ModSync, 0x7C, "Mod Sync") X(LoopSync, 0x7D,
-  "Loop Sync") X(ScanSync, 0x7E, "Scan Sync")`), **last** in both `GG_LAYER_PARAMS` and
-  `GG_LAYER_PARAMS_SINCE_M1` (after `GG_LAYER_PARAMS_M2_EXTREMES` and after every sibling's list in
-  0x68 to 0x7B), so the index column stays ascending (`validIndexColumn`).
+- Two new lists, so the index column stays ascending (`validIndexColumn`), in both
+  `GG_LAYER_PARAMS` and `GG_LAYER_PARAMS_SINCE_M1`:
+  - `GG_LAYER_PARAMS_M3_MODSYNC(X)` (`X(Lfo1Sync, 0x6B, "LFO 1 Sync") X(Lfo2Sync, 0x6C, "LFO 2
+    Sync") X(Random1Sync, 0x6D, "Random 1 Sync") X(Random2Sync, 0x6E, "Random 2 Sync")
+    X(StepSync, 0x6F, "Step Sync")`), after `GG_LAYER_PARAMS_M2_EXTREMES` (and, once 3b merges,
+    after 3b's list of 0x68 to 0x6A) and before every sibling's list in 0x70 to 0x7B;
+  - `GG_LAYER_PARAMS_M3_TEMPOSYNC(X)` (`X(LoopSync, 0x7D, "Loop Sync") X(ScanSync, 0x7E, "Scan
+    Sync")`), **last** (after every sibling's list in 0x70 to 0x7B).
 - The globals append to `ParamSlot` after the last global in effect at merge (`BendRange` on this
   branch), with `kParamIds` `0x000048` and `0x000049`.
 - `detail::isReservedIndexInUse` gains `(scope == 0 && (index == 0x48 || index == 0x49)) ||
-  (scope >= 1 && index >= 0x7C && index <= 0x7E)` (scope-specific, since the static_assert checks
-  that every in-use index is used in each scope it names). `kNextFreeLayerIndex` and
-  `kNextFreeGlobalIndex` are untouched (they count indices below 0x40).
-- Counts on this branch: `kLayerParamCount` 63 → 65 (Mod Sync, Loop Sync), `kParamCount` 290 → 300;
-  with the Scan task 66 and 304; merged with the others, the sums. Every hard-coded count follows,
+  (scope >= 1 && ((index >= 0x6B && index <= 0x6F) || (index >= 0x7D && index <= 0x7E)))`
+  (scope-specific, since the static_assert checks that every in-use index is used in each scope it
+  names; 0x7E with the Scan task). `kNextFreeLayerIndex` and `kNextFreeGlobalIndex` are untouched
+  (they count indices below 0x40).
+- Counts on this branch: `kLayerParamCount` 63 → 69 (the five modulator Sync switches, Loop Sync),
+  `kParamCount` 290 → 316; with the Scan task 70 and 320; merged with the others, the sums. Every hard-coded count follows,
   as sub-project 1 listed (`tests/support/ParamTable.h`, `patch_tests`, `identity_tests`,
   `params_tests`, `rt_tests`, `EditLayout` and its tests, the sweep floors with their reasons), and
   the comments in `ParamIds.h` that state counts.
-- `isModulatorControlSlot` (and `isModulatorControl`) admits Mod Sync beside the range check, and
-  `isValidTarget` refuses Loop Sync, Scan Sync, Delay Sync and Ring Quantize (R11). `isRingParam`
-  gains Loop Sync. Ring Quantize joins the instance settings a preset load and INIT keep (beside
-  `isMidiSetting`; the builder may widen that predicate's name). `defaultMutateLocks` gains all
-  five.
-- CLAP flags: `CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED` for all five.
+- `isModulatorControlSlot` (and `isModulatorControl`) admits the five modulator Sync switches
+  beside the range check, and `isValidTarget` refuses Loop Sync, Scan Sync, Delay Sync and Ring
+  Quantize (R11). `isRingParam` gains Loop Sync. Ring Quantize joins the instance settings a preset
+  load and INIT keep (beside `isMidiSetting`; the builder may widen that predicate's name).
+  `defaultMutateLocks` gains all nine.
+- CLAP flags: `CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED` for all nine.
 - No patch-version bump (R12); `PatchState` reads absent values as defaults (the builder confirms,
   as sub-project 1 did, with a test loading an M3-voice state).
 
@@ -444,7 +465,7 @@ or after `from`, `llround` of the line's exact sample, from the current line), `
 
 | Use | Knob value v | Reference length | Table |
 |---|---|---|---|
-| Mod Sync rates | log2 Hz, −6.64 to 5.64 | `D_ref = exp2Det(1 − v)` beats (a cycle at 120 BPM) | note values 1/64T to 32/1 |
+| Modulator rates (their Sync switch On) | log2 Hz, −6.64 to 5.64 | `D_ref = exp2Det(1 − v)` beats (a cycle at 120 BPM) | note values 1/64T to 32/1 |
 | Delay Sync | log2 s, −9.97 to 1 | `D_ref = 2 × exp2Det(v)` | note values 1/64T to 1/1 |
 | Loop Sync | log2 s, log2 0.05 to log2 300 | `b_ref = 2 × exp2Det(v)` | Beats: 1/4, 1/2 (below 1 beat, by the geometric means 0.354 and 0.707), else `floor(b_ref + 0.5)`; Bars: `max(1, floor(b_ref / 4 + 0.5))` × barBeats |
 | Scan Sync | −1 to 1 (3b's law, 8v³) | `D_ref = 1 / (2 × abs(v)³)` | pass lengths 1/8 to 4096/1, straight and dotted; sign from v |
@@ -453,10 +474,10 @@ The note value of D beats: `2^n` is "1/(4 / 2^n)" for n ≤ 2 (1/64 … 1/1) and
 (2/1 … 32/1); its triplet `(2/3)·2^n` and dotted `1.5·2^n` add `T` and `.`. At 120 BPM every M2
 default rate and the delay's default land on an entry exactly (R4).
 
-### 4.4 Mod Sync (R5)
+### 4.4 The modulator Sync switches (R3, R5)
 
 `ParamMap.h`'s `lfoParams`, `randomParams` and `stepParams` gain `double divisionBeats` (0 when the
-layer's Mod Sync leaves that modulator free). `Lfo::step`, `RandomSource::step` and
+modulator's own Sync switch in that layer is Off). `Lfo::step`, `RandomSource::step` and
 `StepSequencer::step` take the cell's beat; with `divisionBeats > 0` they compute R5's closed forms
 (and write RB7's free state), else today's code path, unchanged. `Processor::stepSourcesAt` passes
 `clock_.beatAt(c)`. The synced Random's key is `{seed, layer, 0, Field::ModRandom1Synced` or
@@ -498,13 +519,14 @@ length join the voice cache key with 3b's slots.
 - **At rest** (every switch Off): the modulators, `toRingParams`, `delayParams`, `syncFreeze`, the
   commands and the playhead take today's paths byte for byte; the clock observes but adds no
   boundary (RB6); R13's Transport Bar expression is today's in 4/4 with no offset. So every existing
-  golden's WAV SHA-256 is unchanged and its event log byte for byte: `check-wav-hashes.sh` after
+  golden's WAV SHA-256 is unchanged and its event log byte for byte: `scripts/check-at-rest.sh` after
   every DSP task, last line `baseline cases: 108, changed: 0, gone: 0`, and the voice and merged
   siblings' goldens compared, in the final report. No new event-log field.
 
 ### 4.10 `gg-render`
 
-- `params` takes `"A Mod Sync"` … `"D Mod Sync"` (0 to 3), `"A Loop Sync"` … (0 to 2),
+- `params` takes `"A LFO 1 Sync"`, `"A LFO 2 Sync"`, `"A Random 1 Sync"`, `"A Random 2 Sync"`,
+  `"A Step Sync"` … `"D Step Sync"` (0, 1), `"A Loop Sync"` … (0 to 2),
   `"A Scan Sync"` … (0, 1; with the Scan task), `"Delay Sync"` (0, 1) and `"Ring Quantize"` (0 to
   2), from the macro tables; automation takes them as any stepped parameter (`"A Loop Sync"` too:
   only Ring Length is refused in automation).
@@ -523,10 +545,11 @@ length join the voice cache key with 3b's slots.
 ### 4.11 Goldens (new; each 6 to 8 s at block 256, seed 1; each catches the 16 injected steps or joins the click-injection table with its reason)
 
 - `fx-sync-mod`: the FX over a stereo 50 to 700 Hz sweep, 120 BPM playing from beat 0, **90 BPM
-  from 4.0 s**. Layer A Mod Sync All; LFO 1 Rate log2 6 (1/8T), Square, to Pitch ±12 (a triplet
-  trill); LFO 2 at its default (2/1) to Position. The trill's period follows the tempo change with
+  from 4.0 s**. Layer A LFO 1 Sync and LFO 2 Sync On; LFO 1 Rate log2 6 (1/8T), Square, to Pitch
+  ±12 (a triplet trill); LFO 2 at its default (2/1) to Position. The trill's period follows the tempo change with
   no phase jump.
-- `inst-sync-step`: the instrument, one held note over a 330 Hz sine; Mod Sync Step + Random; Step
+- `inst-sync-step`: the instrument, one held note over a 330 Hz sine; Step Sync and Random 1 Sync
+  On (the other three free); Step
   at its default (1/8), Step Length 6, to Pitch ±12 (a six-step figure across 4/4); Random 1 at
   1/16 (log2 8 Hz), Smooth 50%, to Stereo. 120 BPM, **a host loop at 3.0 s back to beat 2.0**: the
   figure and the random steps replay from beat 2.
@@ -537,7 +560,7 @@ length join the voice cache key with 3b's slots.
   Loop Length (1 bar, 2 s at 120 BPM), Overdub 70%, Ring Quantize Bar; Freeze automated on at
   2.7 s (the head stops in [4.0 s − 31 samples, 4.0 s]) and off at 5.1 s (recording resumes at
   6.0 s); a `splice` operation at 1.3 s (marked at 2.0 s).
-- `fx-sync-stop`: the FX over a 330 Hz sine, Mod Sync All, LFO 1 at 1/4 (log2 2 Hz) Sine to Pitch
+- `fx-sync-stop`: the FX over a 330 Hz sine, LFO 1 Sync On, LFO 1 at 1/4 (log2 2 Hz) Sine to Pitch
   ±2; playing from beat 0, **stopped at 2.0 s, playing from beat 0 at 3.5 s**: the vibrato runs on
   through the stop and snaps to the song's phase at 3.5 s.
 - With the Scan task: `inst-scan-sync`: the instrument at Mode Cloud, one held note over a 4 s
@@ -566,8 +589,9 @@ Each new case's spectrogram is looked at before commit. The timing claims are pi
 - **The modulators:** each synced form against its closed form over 10,000 cells; a looped
   transport gives the same values at the same beats bit for bit; the synced Random is continuous at
   every period boundary for Smooth in (0, 1]; Step's Euclidean mod over negative beats; leaving
-  sync never jumps (RB7); at Mod Sync Off the values equal M2's bit for bit; Mod Sync's levels
-  select the right modulators.
+  sync never jumps (RB7); with every Sync switch Off the values equal M2's bit for bit; each
+  modulator's Sync switch syncs that modulator alone (a synced LFO 1 beside a free LFO 2 in one
+  layer).
 - **The delay:** the target `D × 60 / T` with the halving; a tempo change glides; Off is M2's.
 - **The ring:** Loop Sync's frames at tempos and meters, clamped; a tempo change is a window change;
   the published loop frames for a capture. Ring Quantize: a hold's head stops in `[t_q − 31, t_q]`
@@ -587,11 +611,11 @@ Each new case's spectrogram is looked at before commit. The timing claims are pi
   the tempo stepped from 1 to 1000 BPM, a host loop every 100 ms and Freeze toggled every 70 ms
   under Ring Quantize Beat: finiteness, the peak bound, no runaway and the goldens' click score
   outside named exemptions, as the harness's other cases (`SweepDriver.h`).
-- **Plugin:** the counts; the five parameters' flags and texts; the rate knobs' synced text and
+- **Plugin:** the counts; the nine parameters' flags and texts; the rate knobs' synced text and
   parsing through `value_to_text` and `text_to_value`; the rescan request after a switch changes;
   `bar_start` and `tsig_denom` reach the clock; the tripwire (`[plugin][rt]`) with every switch on,
   a relocking transport and a pending hold; a preset load keeps Loop Sync and Ring Quantize and sets
-  the other three; INIT; Mutate's default press leaves all five.
+  the other seven; INIT; Mutate's default press leaves all nine.
 - **Render:** `gg-render` parses the new names and transport keys and refuses bad ones (exit 2);
   `--pack-preset` refuses Loop Sync and Ring Quantize in a source.
 - **UI:** `EditLayout` places each new slot exactly once; the frame tests' reachability and elision
@@ -613,7 +637,7 @@ A new Catch2 tag `[temposync]` (the CTest label `temposync`), listed in CLAUDE.m
 - **§15** (host robustness): the monotonic-clock bullet "as built": the steady test, the relock,
   the stop policy.
 - **§17** (UI): the placements (RB16) and the rate knobs' synced display.
-- **§18** (state): the five parameters, which ones a preset load keeps (R12), no patch-version bump.
+- **§18** (state): the nine parameters, which ones a preset load keeps (R12), no patch-version bump.
 - **§19** (verification): `gg-render`'s transport keys (R15) and the seven goldens.
 - **§20** (the roadmap): M3's row names sub-project 7; **M4's row** keeps the Sync scheduler, swing,
   probability, patterns and the streams' stop and loop policies, and gains the looper transport's
@@ -621,8 +645,9 @@ A new Catch2 tag `[temposync]` (the CTest label `temposync`), listed in CLAUDE.m
   sub-project 3b's H13 note (tempo-locked Scan Speed is M4's) is superseded by R10.
 - **§22:** "Default behavior of rhythmic streams when the transport stops" stays M4's, with a note
   that synced modulators and the Cloud scan run on (R2).
-- **§23:** one row for this sub-project (the next free number at merge; #97 on this branch), with
-  R0 to R15 marked provisional.
+- **§23:** one row for this sub-project (the next free number at merge), with R0 to R15 as
+  Claude's provisional calls confirmed by the director's review of 2026-11-09, and R3 as the
+  director overruled it (a Sync switch per modulator per layer; the ladder declined).
 - The program design's §8 gains row 7 (below) and §10 its open items (none left).
 - CLAUDE.md: the parameter and golden counts, the `temposync` label, the new `gg-render` names and
   transport keys.
@@ -631,14 +656,14 @@ Program §8's new row:
 
 | # | Sub-project | Delivers | Exit |
 |---|---|---|---|
-| 7 | **Tempo sync of rates** | The sync clock (steady, jump, tempo, stop, play); Mod Sync, Loop Sync, Scan Sync per layer; Delay Sync and Ring Quantize; Transport Bar's meter; `gg-render`'s transport changes | Five goldens (seven with Scan Sync) render the same at six block sizes under tempo changes, loops, stops and locates; a steady host sent every call equals set-once bit for bit; a quantized hold stops the head within 31 samples before the line; every existing golden's hash unchanged; RTSan and the sanitizers clean |
+| 7 | **Tempo sync of rates** | The sync clock (steady, jump, tempo, stop, play); a Sync switch per modulator, Loop Sync and Scan Sync per layer; Delay Sync and Ring Quantize; Transport Bar's meter; `gg-render`'s transport changes | Five goldens (seven with Scan Sync) render the same at six block sizes under tempo changes, loops, stops and locates; a steady host sent every call equals set-once bit for bit; a quantized hold stops the head within 31 samples before the line; every existing golden's hash unchanged; RTSan and the sanitizers clean |
 
 ## 7. What is built in what order (for the plan)
 
 1. The clock and the tables (core, tests), `Transport`'s new fields, the plugin's transport fill,
    Transport Bar (R13).
 2. The parameters (IDs, metadata, counts, targets, presets, Mutate, the display and rescan).
-3. Mod Sync (the modulators).
+3. The modulator Sync switches (the modulators).
 4. Delay Sync and Loop Sync (and RB12's published window).
 5. Ring Quantize.
 6. `gg-render`'s transport keys and the five goldens; the at-rest check.
@@ -653,13 +678,15 @@ Tasks 3 to 5 are independent after 2; 6 depends on 3 to 5.
 - **3b (playhead):** RB13's `Playhead::lock` and `CloudParams::scanSync` are this sub-project's
   additions to 3b's code; 3b's `sync`, `scanFold`, geometry and restarts are used as built. 3b's
   §6 note that M4 gains tempo-locked Scan Speed is superseded (§6 here). Scan Sync's voice-cache
-  slot joins 3b's (`kVoiceKeySlots` follows).
+  slot joins 3b's (`kVoiceKeySlots` follows). The five modulator Sync switches take 0x6B to 0x6F,
+  the unused tail of 3b's block (the director's assignment, R14): at 3b's merge its list (0x68 to
+  0x6A) goes before this sub-project's `GG_LAYER_PARAMS_M3_MODSYNC`.
 - **2 (expression):** both edit `isValidTarget` and the per-voice target lists; Scan Speed's
   per-voice route works under Scan Sync by RB13. No per-note slot for the switches. Its MIDI
   settings and this one's Ring Quantize both join the "kept by a preset load" set: the merge takes
   the union.
 - **3 (pitch-sync):** its per-layer **Clock** (Free, Pitch) is a different thing from this clock;
-  the names don't collide (`SyncClock` in code; "Mod Sync" and the rest in the UI). M4's tempo
+  the names don't collide (`SyncClock` in code; "LFO 1 Sync" and the rest in the UI). M4's tempo
   grid may later be a third Clock value, reading `SyncClock`.
 - **4 (tuning):** nothing shared.
 - **5 (views and presets):** may move the placements, add a "Sync" remote-controls page, and write
