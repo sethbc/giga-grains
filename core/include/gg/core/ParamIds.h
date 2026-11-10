@@ -389,6 +389,19 @@ enum class BusFilterType : uint8_t
     Notch,
 };
 
+/// A layer's drive shape (color spec C2): its Drive Shape parameter's value, 0 to 7.
+enum class DriveShape : uint8_t
+{
+    Soft,
+    Medium,
+    Hard,
+    Asymmetric,
+    Ojd,
+    Rectify,
+    Fold,
+    SineFold,
+};
+
 /// The global limiter's mode (M2 sub-project 4's spec §6.5): Limiter Mode's value, 0 to 2.
 enum class LimiterMode : uint8_t
 {

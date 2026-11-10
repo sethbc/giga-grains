@@ -17,6 +17,7 @@ add_library(gg-core STATIC
         src/Delay.cpp
         src/Diffuser.cpp
         src/fx/BusFilter.cpp
+        src/fx/Drive.cpp
         src/Limiter.cpp
         src/LivePeaks.cpp
         src/MachineSettings.cpp

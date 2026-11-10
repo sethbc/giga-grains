@@ -10,6 +10,7 @@ add_executable(gg-tests
         core/buses_tests.cpp
         core/delay_tests.cpp
         core/diffuser_tests.cpp
+        core/drive_tests.cpp
         core/exchange_tests.cpp
         core/fx_processor_tests.cpp
         core/halfband_tests.cpp
