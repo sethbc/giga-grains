@@ -575,3 +575,105 @@ TEST_CASE("pitchsync_no_allocation", "[core][pitchsync][rt]")
     }
     CHECK(gg::test::layers::allFinite(l));
 }
+
+namespace
+{
+/// What the smallest Size's bursts look like. A burst is a maximal run of non-zero samples in
+/// x[from, to); its step is the largest |x[i] - x[i - 1]| from the zero before it to the zero
+/// after it, so a burst that starts or stops abruptly shows its whole height as one step.
+struct BurstStats
+{
+    int bursts = 0;
+    int longest = 0;          ///< The longest run, in samples.
+    int64_t zeros = 0;        ///< Samples that are exactly zero.
+    int64_t samples = 0;      ///< Samples inspected.
+    bool stepsInBound = true; ///< Every burst's step <= peak * (pi / its length + margin).
+    double worstRatio = 0.0;  ///< The largest step / (peak * pi / length) over the bursts.
+    bool finite = true;
+};
+
+/// `margin` is the allowance, as a fraction of the burst's peak, for the sample's own slope
+/// (a 20 Hz sine over a 29-sample burst, read at its peak, moves under 0.5% of its level).
+BurstStats burstStats(const std::vector<float> &x, size_t from, size_t to, double margin)
+{
+    BurstStats st;
+    size_t i = from;
+    while (i < to)
+    {
+        st.finite = st.finite && std::isfinite(x[i]);
+        ++st.samples;
+        if (x[i] == 0.0f)
+        {
+            ++st.zeros;
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        double peak = 0.0, step = 0.0;
+        while (j < to && x[j] != 0.0f)
+        {
+            peak = std::max(peak, static_cast<double>(std::fabs(x[j])));
+            const double before = j > 0 ? static_cast<double>(x[j - 1]) : 0.0;
+            step = std::max(step, std::fabs(static_cast<double>(x[j]) - before));
+            ++j;
+        }
+        if (j < to)
+        {
+            step = std::max(step, std::fabs(static_cast<double>(x[j]) - x[j - 1]));
+        }
+        const auto len = static_cast<int>(j - i);
+        const double windowSlope = std::numbers::pi / static_cast<double>(len);
+        st.bursts += 1;
+        st.longest = std::max(st.longest, len);
+        st.stepsInBound = st.stepsInBound && step <= peak * (windowSlope + margin);
+        st.worstRatio = std::max(st.worstRatio, step / (peak * windowSlope));
+        st.samples += len - 1;
+        i = j;
+    }
+    return st;
+}
+} // namespace
+
+TEST_CASE("pitchsync_smallest_size_is_windowed_bursts", "[core][pitchsync]")
+{
+    // Size 5 ms at A2 is 1/15 of a period: the voice is a train of 29-sample Hann bursts. The
+    // golden for the Size steps starts at 1/4 period because the click metric scores these bursts
+    // themselves (clean score 27.9); this is what that case no longer covers.
+    constexpr size_t kFrom = 4800, kTo = 38400;
+    constexpr double kMargin = 0.02;
+    auto p = std::make_unique<Processor>(ProcessorConfig{kRate, 4096, 7, Mode::Instrument});
+    p->setSourceNow(0, gg::test::layers::sine(20.0)); // slow: 29 samples move it under 0.5%
+    p->setRoutes(gg::core::ModRoutes{});              // the factory routes move Size and Position
+    p->setBase(slotA(LayerParam::Spray), 0.0f);
+    p->setBase(slotA(LayerParam::Distribution), 0.0f);
+    p->setBase(slotA(LayerParam::Density), 6.0f);
+    p->setBase(slotA(LayerParam::Mode), 1.0f);
+    p->setBase(slotA(LayerParam::Clock), 1.0f);
+    p->setBase(slotA(LayerParam::Size), sizeOf(0.005));
+    p->setBase(slotA(LayerParam::Position), 0.0125f); // 12.5 ms: the sine's first peak
+    Script s;
+    s.on(0, 45); // A2, 110 Hz: a period is 436.4 samples
+    Stereo out;
+    render(*p, s, 0, 38400, {256}, out);
+
+    const BurstStats st = burstStats(out.left, kFrom, kTo, kMargin);
+    CHECK(st.finite);
+    CHECK(st.bursts >= 75); // 110 Hz over 0.7 s is 77 pulses
+    CHECK(st.longest <= 32);
+    CHECK(st.longest >= 16); // the 16-sample floor
+    // Silence between the bursts: only the bursts' own samples are non-zero.
+    CHECK(static_cast<double>(st.zeros) / static_cast<double>(st.samples) > 0.9);
+    CHECK(st.stepsInBound);
+    CHECK(st.worstRatio < 1.2);
+
+    // The negative control: a rectangular burst of the same length through the same helper
+    // breaks the bound, so the check above fails on a burst that starts or stops abruptly.
+    std::vector<float> rect(2000, 0.0f);
+    for (size_t i = 500; i < 529; ++i)
+    {
+        rect[i] = 0.3f;
+    }
+    const BurstStats r = burstStats(rect, 0, rect.size(), kMargin);
+    CHECK_FALSE(r.stepsInBound);
+    CHECK(r.worstRatio > 5.0);
+}

@@ -324,8 +324,10 @@ table with its reason):
   Stereo 0: A2, A3, then the chord A2-C♯3-E3, Env 1 Release 0.3 s.
 - `inst-pitchsync-formant`: one A2 over a 1 kHz sine sample at HQ, Pitch stepped −12, 0, +12, +24 at
   1 s intervals (levels 0, 0, 1, 2 in the log: S8 visible).
-- `inst-pitchsync-periods`: one A2 over noise, Size stepped 5 ms, 37.5 ms, 150 ms, 600 ms, 2 s (1/15,
-  ½, 2, 8 and 26⅔ periods).
+- `inst-pitchsync-periods`: one A2 over noise, Size stepped 18.75 ms, 37.5 ms, 150 ms, 600 ms, 2 s
+  (¼, ½, 2, 8 and 26⅔ periods). The first step is not 5 ms (1/15 of a period, S3's floor): there
+  the click metric scores the windowed bursts themselves (clean score 27.9, against the limit of
+  15), so `pitchsync_smallest_size_is_windowed_bursts` covers that Size instead.
 - `inst-pitchsync-jitter`: one A2, Distribution 0, 0.25, 0.5, 1.
 - `inst-pitchsync-slide`: MPE On, a note on channel 2 bent +12 and back over 2 s, then a second note
   slid by a CLAP tuning expression (the rescale, SB3).

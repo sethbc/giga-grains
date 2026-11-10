@@ -1,0 +1,33 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 5.0,
+  "blockSize": 256,
+  "seed": 1,
+  "input": {
+    "kind": "sweep",
+    "startHz": 100,
+    "endHz": 2000,
+    "seconds": 5.0,
+    "amplitude": 0.3
+  },
+  "channels": 1,
+  "params": {
+    "Mix": 1.0,
+    "Position": 0.2,
+    "Size": -2.736965594166206,
+    "Stereo": 0.0,
+    "Distribution": 0.0,
+    "A Mode": 1,
+    "A Clock": 1,
+    "A Env 1 Release": -1.7369655941662063,
+    "Density": 4.0
+  },
+  "notes": [
+    {
+      "time": 0.2,
+      "key": 45,
+      "duration": 4.6
+    }
+  ]
+}

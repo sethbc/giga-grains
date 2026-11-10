@@ -1,0 +1,49 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 5.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {
+    "kind": "file",
+    "path": "noise-2s.wav"
+  },
+  "params": {
+    "Position": 0.25,
+    "Density": 4.0,
+    "Size": -2.736965594166206,
+    "Level": -12.0,
+    "Stereo": 0.0,
+    "Distribution": 0.0,
+    "A Mode": 1,
+    "A Clock": 1,
+    "A Env 1 Release": -1.7369655941662063
+  },
+  "notes": [
+    {
+      "time": 0.25,
+      "key": 45,
+      "duration": 1.0
+    },
+    {
+      "time": 1.5,
+      "key": 57,
+      "duration": 1.0
+    },
+    {
+      "time": 3.0,
+      "key": 45,
+      "duration": 1.5
+    },
+    {
+      "time": 3.0,
+      "key": 49,
+      "duration": 1.5
+    },
+    {
+      "time": 3.0,
+      "key": 52,
+      "duration": 1.5
+    }
+  ]
+}

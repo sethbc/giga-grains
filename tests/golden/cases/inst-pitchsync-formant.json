@@ -1,0 +1,49 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 4.5,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {
+    "kind": "sine",
+    "frequencyHz": 1000,
+    "seconds": 2.0,
+    "amplitude": 0.5
+  },
+  "params": {
+    "Position": 0.25,
+    "Density": 4.0,
+    "Size": -2.736965594166206,
+    "Level": -12.0,
+    "Stereo": 0.0,
+    "Distribution": 0.0,
+    "A Mode": 1,
+    "A Clock": 1,
+    "A Quality": 2,
+    "Pitch": -12.0
+  },
+  "notes": [
+    {
+      "time": 0.1,
+      "key": 45,
+      "duration": 4.3
+    }
+  ],
+  "automation": [
+    {
+      "time": 1.0,
+      "param": "Pitch",
+      "value": 0.0
+    },
+    {
+      "time": 2.0,
+      "param": "Pitch",
+      "value": 12.0
+    },
+    {
+      "time": 3.0,
+      "param": "Pitch",
+      "value": 24.0
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 5.5,
+  "blockSize": 256,
+  "seed": 1,
+  "input": {
+    "kind": "noise",
+    "seconds": 5.5,
+    "amplitude": 0.3
+  },
+  "channels": 2,
+  "params": {
+    "Mix": 1.0,
+    "Position": 0.2,
+    "Size": -2.736965594166206,
+    "Stereo": 0.0,
+    "Distribution": 0.0,
+    "A Mode": 1,
+    "A Clock": 1,
+    "A Env 1 Release": -1.7369655941662063
+  },
+  "notes": [
+    {
+      "time": 0.25,
+      "key": 45,
+      "duration": 1.0
+    },
+    {
+      "time": 1.25,
+      "key": 49,
+      "duration": 1.0
+    },
+    {
+      "time": 2.25,
+      "key": 52,
+      "duration": 1.0
+    },
+    {
+      "time": 3.25,
+      "key": 45,
+      "duration": 2.0
+    },
+    {
+      "time": 3.25,
+      "key": 49,
+      "duration": 2.0
+    },
+    {
+      "time": 3.25,
+      "key": 52,
+      "duration": 2.0
+    }
+  ],
+  "automation": [
+    {
+      "time": 0.0,
+      "param": "Density",
+      "value": 1.0
+    },
+    {
+      "time": 2.0,
+      "param": "Density",
+      "value": 4.0
+    },
+    {
+      "time": 4.0,
+      "param": "Density",
+      "value": 7.0
+    }
+  ]
+}

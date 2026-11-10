@@ -203,6 +203,23 @@ const std::map<std::string, int> &partlyHidden()
         // Layer B's Resample at +12 with Feedback 0.6 re-grains the instrument's own output, a
         // cascade of octaves that fills the spectrum: its top octaves hide ten of the steps.
         {"inst-resample-feedback", 6},
+        // M3 pitch-sync (spec 4.10). A noise sample under a pulse train: caught only at 2.94 s, the
+        // silence between A3's release and the chord at 3.0 s (the other fifteen sit inside notes,
+        // whose noise bed scores the steps no higher than the clean render's 4.17).
+        {"inst-pitchsync", 1},
+        // The 1 kHz sine read at Pitch +24 (rate 4, a 4 kHz carrier with sidebands at f0 spacing,
+        // the brightest band in its spectrogram) hides the five steps from 3.18 s to 4.24 s, which
+        // score 6.7 to 7.8; the twelve earlier ones, under -12 to +12 (500 Hz to 2 kHz), score 17.3
+        // to 493.
+        {"inst-pitchsync-formant", 11},
+        // A noise sample at Size 1/4 period to 26 2/3 periods: the noise bed hides every step
+        // (each scores the clean render's 8.47).
+        {"inst-pitchsync-periods", 0},
+        // The same noise bed at every Distribution: each step scores the clean render's 3.84.
+        {"inst-pitchsync-jitter", 0},
+        // Stereo noise input through the live ring under notes sounding from 0.25 s to 5.25 s: a
+        // noise bed (each step scores the clean render's 5.20).
+        {"fx-pitchsync", 0},
     };
     return cases;
 }
