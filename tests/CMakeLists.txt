@@ -377,6 +377,12 @@ if (NOT WIN32)
             COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bootstrap_tests.sh
             ${CMAKE_CURRENT_BINARY_DIR}/bootstrap-tests)
     set_tests_properties(scripts_bootstrap PROPERTIES LABELS scripts)
+    # scripts/retry-failed.py, which CI's Rosetta step runs to re-run failed cases once, against
+    # a stub gg-tests and hand-written Catch2 reports.
+    add_test(NAME scripts_retry_failed
+            COMMAND ${GG_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/retry_failed_tests.sh
+            ${CMAKE_CURRENT_BINARY_DIR}/retry-failed-tests)
+    set_tests_properties(scripts_retry_failed PROPERTIES LABELS scripts)
 endif ()
 
 # RTSan's negative control (rtsan build only), labels `rt` and `rtsan`: a program that allocates
