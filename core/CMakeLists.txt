@@ -49,10 +49,11 @@ target_include_directories(gg-core PUBLIC include PRIVATE src)
 # (ruling M1-l). Linking statically, consumers still link tinyxml.
 #
 # PRIVATE too: sst-effects and sst-filters, header-only, for Space's reverb. Only the internal
-# src/space headers include them.
+# src/space headers include them. sst-waveshapers likewise, for the layers' drive: core/src/fx/Drive.cpp
+# alone includes it.
 target_link_libraries(gg-core
         PUBLIC gg::engine sst-basic-blocks fmt::fmt clap
-        PRIVATE sst-plugininfra::patchbase sst-effects sst-filters gg::compiler-options
+        PRIVATE sst-plugininfra::patchbase sst-effects sst-filters sst-waveshapers gg::compiler-options
         )
 # fmt 12.2.0 made <fmt/core.h> <fmt/base.h> alone, without fmt::format. sst-basic-blocks'
 # ParamMetadata.h includes <fmt/core.h> and calls fmt::format (still so at its upstream head on

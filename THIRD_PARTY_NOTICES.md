@@ -33,13 +33,14 @@ license; its commercial license is not used. Copyright (c) Raw Material Software
 License text: `libs/JUCE/LICENSE.md` (which points to the AGPLv3) and the AGPLv3 in `LICENSE`.
 Both products' source, which the AGPL requires us to offer, includes JUCE as a pinned submodule.
 
-### sst-basic-blocks, sst-filters, sst-effects (both products)
+### sst-basic-blocks, sst-filters, sst-effects, sst-waveshapers (both products)
 
 GPL-3.0-or-later (`libs/sst/sst-basic-blocks/LICENSE.md`, `libs/sst/sst-filters/LICENSE.md`,
-`libs/sst/sst-effects/LICENSE.md`, each the GPLv3 text). Copyright 2018-2026, various authors, as
-described in the GitHub transaction log of surge-synthesizer/sst-basic-blocks, sst-filters and
-sst-effects. The grain engine uses SIMD wrappers, sinc tables and envelopes from sst-basic-blocks;
-Space's diffuser and reverb use sst-filters and sst-effects. GPLv3 section 13 lets this code be
+`libs/sst/sst-effects/LICENSE.md`, `libs/sst/sst-waveshapers/LICENSE.md`, each the GPLv3 text). Copyright 2018-2026, various authors, as
+described in the GitHub transaction log of surge-synthesizer/sst-basic-blocks, sst-filters,
+sst-effects and sst-waveshapers. The grain engine uses SIMD wrappers, sinc tables and envelopes from sst-basic-blocks;
+Space's diffuser and reverb use sst-filters and sst-effects; the layers' drive uses
+sst-waveshapers' saturators, rectifier and folders. GPLv3 section 13 lets this code be
 combined with AGPLv3 code; the combined work is AGPLv3-or-later. (sst-basic-blocks also carries
 Signalsmith Audio's MIT-licensed `elliptic-blep` under `libs/elliptic-blep`, with its own
 `LICENSE.txt`: Copyright 2024 Signalsmith Audio Ltd. / Geraint Luff. No first-party code includes

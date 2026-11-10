@@ -63,6 +63,14 @@ add_subdirectory(sst/sst-filters EXCLUDE_FROM_ALL)
 set(SST_EFFECTS_BUILD_TESTS OFF CACHE BOOL "Don't build sst-effects' tests" FORCE)
 set(SST_EFFECTS_BUILD_EXAMPLES OFF CACHE BOOL "Don't build sst-effects' examples" FORCE)
 add_subdirectory(sst/sst-effects EXCLUDE_FROM_ALL)
+# sst-waveshapers (header-only, after sst-filters: its headers include sst/utilities/globals.h,
+# which sst-filters provides). gg-core links it PRIVATE and only core/src/fx/Drive.cpp, one
+# translation unit, includes it (Saturators, Rectifiers, Wavefolders, Effects). No fuzzes and no
+# QuadWaveshaper_Impl.h: they use std::uniform_real_distribution (determinism). Tests and
+# examples stay off.
+set(SST_WAVESHAPERS_BUILD_TESTS OFF CACHE BOOL "Don't build sst-waveshapers' tests" FORCE)
+set(SST_WAVESHAPERS_BUILD_EXAMPLES OFF CACHE BOOL "Don't build sst-waveshapers' examples" FORCE)
+add_subdirectory(sst/sst-waveshapers EXCLUDE_FROM_ALL)
 if (TARGET sst-effects-preset-api)
     message(FATAL_ERROR "sst-effects built its preset library: add it before sst-plugininfra")
 endif ()
@@ -169,7 +177,7 @@ set(SST_PLUGININFRA_PROVIDE_MINIZ OFF CACHE BOOL "Giga Grains doesn't use miniz"
 set(SST_PLUGININFRA_PROVIDE_STRNATCMP ON CACHE BOOL "Declared, never built: sst-plugininfra's own target links it" FORCE)
 set(SST_PLUGININFRA_BUILD_TESTS OFF CACHE BOOL "Don't build sst-plugininfra's tests" FORCE)
 add_subdirectory(sst/sst-plugininfra EXCLUDE_FROM_ALL)
-gg_mark_system_includes(simde sst-cpputils sst-basic-blocks sst-filters sst-effects
+gg_mark_system_includes(simde sst-cpputils sst-basic-blocks sst-filters sst-effects sst-waveshapers
         sst-plugininfra::patchbase sst-plugininfra::tinyxml sst-plugininfra::filesystem clap)
 # Every translation unit that includes tinyxml.h compiles with char8_t off: sst-plugininfra's
 # filesystem shim, which tinyxml links PUBLIC, puts -fno-char8_t (MSVC: /Zc:char8_t-) on its
