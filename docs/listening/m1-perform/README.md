@@ -151,7 +151,7 @@ AU in Live. Note the host and format of anything that fails.
 
 **First, install the build under review.** The AU in `~/Library/Audio/Plug-Ins/Components` is a
 branch build, installed during validation. Replace it, and the CLAP and VST3, with the release
-build of the commit you are judging (CLAUDE.md, "Validators", shows the AU's install).
+build of the commit you are judging (AGENTS.md, "Validators", shows the AU's install).
 
 - [ ] **Both products load in both hosts,** and each opens the Perform view. It has a header
   (product, preset "Init", Perform, Edit grayed out, "frame ms (avg 60)"), the canvas and the
@@ -205,7 +205,7 @@ These were run on the release build of `fe4de01` (the sub-project's code). This 
 documents. Machine: Apple M5 Max, macOS. Other builds were sharing the machine (load average
 about 3).
 
-**Validators** (CLAUDE.md, "Validators"), on `build/release/gg-products`:
+**Validators** (AGENTS.md, "Validators"), on `build/release/gg-products`:
 
 - **clap-validator 0.4.1, `Giga Grains.clap`** (both plugins): `81 tests run, 67 passed, 0
   failed, 0 warnings, 14 skipped`. `param-conversions` PASSED for both plugins, with Macro

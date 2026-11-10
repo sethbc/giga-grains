@@ -140,7 +140,7 @@ const clap_plugin_descriptor *descriptorFor(Product product) noexcept;
 /// (ruling R18), and sets every ring at its Ring Length. The audio thread asks for on_main_thread
 /// when a layer's requested ring changes (checkRingLengths), where the watcher resizes the ring
 /// (MediaSession::pollRingLengths). A ring is never adopted in params.flush, which stays trivial
-/// (CLAUDE.md): a flush takes an offer carrying a ring whole and leaves it, values, source and
+/// (AGENTS.md): a flush takes an offer carrying a ring whole and leaves it, values, source and
 /// ring, to the next process() call's start (Processor::takeOffers), so a restored frozen ring is
 /// still held from its first processed sample. Two costs of that deferral: a change the editor or
 /// the host makes in a params.flush after the restore and before that process() is overwritten

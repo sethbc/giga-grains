@@ -763,7 +763,7 @@ class Processor
     /// ring exchange). Returns whether an offer's values were applied. Call it on the
     /// audio thread between process() calls, or on another while process() isn't running.
     ///
-    /// With `adoptRings` false (params.flush, which stays trivial: CLAUDE.md), an offer that
+    /// With `adoptRings` false (params.flush, which stays trivial: AGENTS.md), an offer that
     /// carries a ring is taken whole and kept, its values, source and ring alike, and nothing
     /// more is taken from that layer's sources() until a takeOffers() that adopts rings (the next
     /// process() call's start, setSourceNow or setRingNow) applies it first, then takes the next.
