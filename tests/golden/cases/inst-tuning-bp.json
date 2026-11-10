@@ -1,0 +1,26 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 5.0, "Size": -4.0, "Level": -18.0, "A Mode": 1, "A Env 1 Release": -3.0},
+  "tuning": {"scl": "! Bohlen-Pierce.scl\n!\nBohlen-Pierce\n 13\n!\n 146.304230835799\n 292.608461671598\n 438.912692507397\n 585.216923343196\n 731.521154178995\n 877.825385014794\n 1024.129615850593\n 1170.433846686392\n 1316.738077522191\n 1463.042308357990\n 1609.346539193789\n 1755.650770029588\n 3/1\n"},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 0.4},
+    {"time": 0.65, "key": 61, "duration": 0.4},
+    {"time": 1.05, "key": 62, "duration": 0.4},
+    {"time": 1.45, "key": 63, "duration": 0.4},
+    {"time": 1.85, "key": 64, "duration": 0.4},
+    {"time": 2.25, "key": 65, "duration": 0.4},
+    {"time": 2.65, "key": 66, "duration": 0.4},
+    {"time": 3.05, "key": 67, "duration": 0.4},
+    {"time": 3.45, "key": 68, "duration": 0.4},
+    {"time": 3.85, "key": 69, "duration": 0.4},
+    {"time": 4.25, "key": 70, "duration": 0.4},
+    {"time": 4.65, "key": 71, "duration": 0.4},
+    {"time": 5.05, "key": 72, "duration": 0.4},
+    {"time": 5.45, "key": 73, "duration": 0.4}
+  ]
+}

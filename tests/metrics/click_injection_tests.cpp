@@ -203,6 +203,10 @@ const std::map<std::string, int> &partlyHidden()
         // Layer B's Resample at +12 with Feedback 0.6 re-grains the instrument's own output, a
         // cascade of octaves that fills the spectrum: its top octaves hide ten of the steps.
         {"inst-resample-feedback", 6},
+        // Mix 1 over loop-48k.wav's noise bursts, in a dense cloud (Density 64 Hz, 250 ms grains),
+        // with the pentatonic's retuned notes between: four of the sixteen steps land inside a
+        // burst's noise bed and score no higher than the clean render's 6.8.
+        {"fx-tuning-unmapped", 12},
     };
     return cases;
 }

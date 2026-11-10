@@ -1,0 +1,41 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 5.0, "Size": -4.0, "Level": -18.0, "A Mode": 1, "MPE": 1, "A Env 1 Release": -3.0},
+  "tuning": {"scl": "! 5-limit just.scl\n!\n5-limit just\n 12\n!\n 16/15\n 9/8\n 6/5\n 5/4\n 4/3\n 45/32\n 3/2\n 8/5\n 5/3\n 9/5\n 15/8\n 2/1\n", "kbm": "! just432.kbm\n12\n0\n127\n60\n69\n432.0\n12\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n"},
+  "controls": [
+    {"time": 0.4, "kind": "sustain", "value": 1.0},
+    {"time": 3.5, "kind": "sustain", "value": 0.0},
+    {"time": 5.0, "kind": "pitchBend", "value": 0.5, "channel": 2},
+    {"time": 5.05, "kind": "pitchBend", "value": 0.5010417, "channel": 2},
+    {"time": 5.1, "kind": "pitchBend", "value": 0.5020833, "channel": 2},
+    {"time": 5.15, "kind": "pitchBend", "value": 0.503125, "channel": 2},
+    {"time": 5.2, "kind": "pitchBend", "value": 0.5041667, "channel": 2},
+    {"time": 5.25, "kind": "pitchBend", "value": 0.5052083, "channel": 2},
+    {"time": 5.3, "kind": "pitchBend", "value": 0.50625, "channel": 2},
+    {"time": 5.35, "kind": "pitchBend", "value": 0.5072917, "channel": 2},
+    {"time": 5.4, "kind": "pitchBend", "value": 0.5083333, "channel": 2},
+    {"time": 5.45, "kind": "pitchBend", "value": 0.509375, "channel": 2},
+    {"time": 5.5, "kind": "pitchBend", "value": 0.5104167, "channel": 2},
+    {"time": 5.55, "kind": "pitchBend", "value": 0.5114583, "channel": 2},
+    {"time": 5.6, "kind": "pitchBend", "value": 0.5125, "channel": 2},
+    {"time": 5.65, "kind": "pitchBend", "value": 0.5135416, "channel": 2},
+    {"time": 5.7, "kind": "pitchBend", "value": 0.5145833, "channel": 2},
+    {"time": 5.75, "kind": "pitchBend", "value": 0.515625, "channel": 2},
+    {"time": 5.8, "kind": "pitchBend", "value": 0.5166666, "channel": 2},
+    {"time": 5.85, "kind": "pitchBend", "value": 0.5177083, "channel": 2},
+    {"time": 5.9, "kind": "pitchBend", "value": 0.51875, "channel": 2},
+    {"time": 5.95, "kind": "pitchBend", "value": 0.5197916, "channel": 2},
+    {"time": 6.0, "kind": "pitchBend", "value": 0.5208333, "channel": 2}
+  ],
+  "notes": [
+    {"time": 0.5, "key": 60, "duration": 0.5},
+    {"time": 0.5, "key": 64, "duration": 0.5},
+    {"time": 0.5, "key": 67, "duration": 0.5},
+    {"time": 4.0, "key": 69, "duration": 3.0, "channel": 2}
+  ]
+}

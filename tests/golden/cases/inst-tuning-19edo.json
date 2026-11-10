@@ -1,0 +1,40 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 8.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "sine", "frequencyHz": 220, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.25, "Density": 1.736965594166206, "Size": -1.8, "Distribution": 0.0, "Spray": 0.0, "Level": -12.0},
+  "automation": [
+    {"time": 6.4, "param": "Density", "value": 6.0},
+    {"time": 6.4, "param": "Distribution", "value": 0.5},
+    {"time": 6.4, "param": "Size", "value": -4.0}
+  ],
+  "tuning": {"scl": "! 19-EDO.scl\n!\n19-EDO\n 19\n!\n 63.157894736842\n 126.315789473684\n 189.473684210526\n 252.631578947368\n 315.789473684211\n 378.947368421053\n 442.105263157895\n 505.263157894737\n 568.421052631579\n 631.578947368421\n 694.736842105263\n 757.894736842105\n 821.052631578947\n 884.210526315789\n 947.368421052632\n 1010.526315789474\n 1073.684210526316\n 1136.842105263158\n 2/1\n"},
+  "notes": [
+    {"time": 0.25, "key": 60, "duration": 0.3},
+    {"time": 0.55, "key": 61, "duration": 0.3},
+    {"time": 0.85, "key": 62, "duration": 0.3},
+    {"time": 1.15, "key": 63, "duration": 0.3},
+    {"time": 1.45, "key": 64, "duration": 0.3},
+    {"time": 1.75, "key": 65, "duration": 0.3},
+    {"time": 2.05, "key": 66, "duration": 0.3},
+    {"time": 2.35, "key": 67, "duration": 0.3},
+    {"time": 2.65, "key": 68, "duration": 0.3},
+    {"time": 2.95, "key": 69, "duration": 0.3},
+    {"time": 3.25, "key": 70, "duration": 0.3},
+    {"time": 3.55, "key": 71, "duration": 0.3},
+    {"time": 3.85, "key": 72, "duration": 0.3},
+    {"time": 4.15, "key": 73, "duration": 0.3},
+    {"time": 4.45, "key": 74, "duration": 0.3},
+    {"time": 4.75, "key": 75, "duration": 0.3},
+    {"time": 5.05, "key": 76, "duration": 0.3},
+    {"time": 5.35, "key": 77, "duration": 0.3},
+    {"time": 5.65, "key": 78, "duration": 0.3},
+    {"time": 5.95, "key": 79, "duration": 0.3},
+    {"time": 6.5, "key": 60, "duration": 1.5},
+    {"time": 6.5, "key": 66, "duration": 1.5},
+    {"time": 6.5, "key": 71, "duration": 1.5}
+  ]
+}

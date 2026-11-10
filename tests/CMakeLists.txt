@@ -75,6 +75,7 @@ add_executable(gg-tests
         metrics/metrics_tests.cpp
         metrics/preset_goldens_tests.cpp
         metrics/spectrogram_tests.cpp
+        metrics/tuning_frequency_tests.cpp
         sweep/SweepDriver.cpp
         sweep/sweep_bursts_tests.cpp
         sweep/sweep_extremes_tests.cpp
@@ -138,7 +139,7 @@ target_link_libraries(gg-tests PRIVATE ${gg_tests_libraries} gg::compiler-option
 target_include_directories(gg-tests PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(gg-tests PRIVATE sst-effects sst-filters)
 # core/tuning_tests.cpp checks the tuning port against tuning-library itself, over its own corpus.
-target_link_libraries(gg-tests PRIVATE gg::tuning-library)
+target_link_libraries(gg-tests PRIVATE gg::tuning-library gg::pffft)
 target_compile_definitions(gg-tests PRIVATE
         GG_TUNING_LIBRARY_DATA="${CMAKE_SOURCE_DIR}/libs/tuning-library/tests/data")
 # metrics/spectrogram_tests.cpp reads the spectrogram PNG back with stb_image, implemented in

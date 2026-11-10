@@ -1,0 +1,18 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "input": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Mix": 1.0, "Density": 6.0, "Size": -2.0},
+  "tuning": {"scl": "! just pentatonic.scl\n!\njust pentatonic\n 5\n!\n 9/8\n 5/4\n 3/2\n 5/3\n 2/1\n", "kbm": "! pentatonic.kbm\n12\n0\n127\n60\n69\n440.0\n5\n0\nx\n1\nx\n2\nx\nx\n3\nx\n4\nx\nx\n"},
+  "notes": [
+    {"time": 0.5, "key": 60, "duration": 0.8},
+    {"time": 1.4, "key": 61, "duration": 0.8},
+    {"time": 2.3, "key": 62, "duration": 0.8},
+    {"time": 3.2, "key": 66, "duration": 0.8},
+    {"time": 4.1, "key": 67, "duration": 0.8},
+    {"time": 5.0, "key": 69, "duration": 0.8}
+  ]
+}
