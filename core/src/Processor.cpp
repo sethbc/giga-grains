@@ -1090,7 +1090,8 @@ void Processor::updateVoices() noexcept
                 if (effective_[keySlots[kVoiceTargets.size() + 4]] > 0.5f) // Scan Track (H7)
                 {
                     cloud.scanSpeed =
-                        std::clamp(cloud.scanSpeed * exp2Det(pitchIn / 12.0), -64.0, 64.0);
+                        std::clamp(cloud.scanSpeed * exp2Det(pitchIn / 12.0),
+                                   -CloudScheduler::kMaxScanSpeed, CloudScheduler::kMaxScanSpeed);
                 }
                 // Level and the voice's offset clamped together to Level's range; exact in
                 // double, so an offset that fits is the offset itself.

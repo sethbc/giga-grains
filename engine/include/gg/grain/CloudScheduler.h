@@ -219,6 +219,10 @@ class CloudScheduler
     /// The bound on CloudParams::pitchSemitones, and on a grain's pitch with a key held.
     static constexpr double kMaxPitchSemitones = 48.0;
 
+    /// The bound on CloudParams::scanSpeed, x real time (M3 playhead spec H7, HB6); the
+    /// Processor's tracked speed is clamped to it too.
+    static constexpr double kMaxScanSpeed = 64.0;
+
     CloudScheduler() noexcept { prepare(48000.0); }
 
     /// Sets the output sample rate (a non-finite or non-positive rate means 48000) and resets.

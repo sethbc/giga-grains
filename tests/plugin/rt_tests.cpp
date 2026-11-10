@@ -1847,3 +1847,108 @@ TEST_CASE("plugin process and flush take four loaders' offers at once without al
     CHECK(*std::max_element(outLeft.begin(), outLeft.end()) > 0.0f);
     plugin.onMainThread(); // frees what the layers handed back
 }
+
+TEST_CASE("scanning voices allocate nothing", "[plugin][rt][playhead]")
+{
+    // M3 sub-project 3b: 16 voices of layer A at Scan Speed 0.75 (3.375x) with Bounce and Scan
+    // Track On, the speed and the edge moved from call to call, through process() and
+    // params.flush, 0- and 1-sample blocks among the 512s, both products.
+    const char *id = GENERATE(kInstrumentId, kFxId);
+    CAPTURE(id);
+    const bool isFx = std::string_view(id) == kFxId;
+    gg::test::PluginUnderTest plugin(id);
+    REQUIRE(plugin.valid());
+    if (!isFx)
+    {
+        REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("rt-scan")));
+    }
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    const auto a = [](LayerParam p) { return paramId(layerSlot(p, 0)); };
+    const std::array<clap_event_param_value, 5> setup{{
+        gg::test::paramValue(a(LayerParam::Mode), 1.0),
+        gg::test::paramValue(a(LayerParam::ScanSpeed), 0.75),
+        gg::test::paramValue(a(LayerParam::ScanEdge), 1.0),
+        gg::test::paramValue(a(LayerParam::ScanTrack), 1.0),
+        gg::test::paramValue(a(LayerParam::Density), 6.0),
+    }};
+    {
+        gg::test::InputEvents list;
+        for (const auto &v : setup)
+        {
+            list.add(&v.header);
+        }
+        plugin.flush(list.list());
+    }
+    REQUIRE(plugin.activate(48000.0, 512));
+
+    constexpr std::size_t kCalls = 8;
+    std::array<std::vector<clap_event_param_value>, kCalls> perCall;
+    for (std::size_t c = 0; c < kCalls; ++c)
+    {
+        perCall[c].push_back(gg::test::paramValue(
+            a(LayerParam::ScanSpeed), (c % 2 == 0) ? 0.75 : -0.5 + 0.1 * double(c), 64));
+        perCall[c].push_back(
+            gg::test::paramValue(a(LayerParam::ScanEdge), static_cast<double>(c % 3), 128));
+        perCall[c].push_back(
+            gg::test::paramValue(a(LayerParam::ScanTrack), (c % 4 == 3) ? 0.0 : 1.0, 256));
+    }
+    std::array<clap_event_note, 16> ons{};
+    for (std::size_t k = 0; k < ons.size(); ++k)
+    {
+        ons[k] = noteOn(static_cast<int16_t>(40 + 3 * k), static_cast<uint32_t>(k));
+    }
+    std::vector<float> inLeft(512), inRight(512), outLeft(512), outRight(512);
+    for (std::size_t i = 0; i < inLeft.size(); ++i)
+    {
+        inLeft[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i)));
+        inRight[i] = static_cast<float>(gg::rng::bipolar(gg::rng::splitmix64(2 * i + 1)));
+    }
+    float *inputs[2] = {inLeft.data(), inRight.data()};
+    float *outputs[2] = {outLeft.data(), outRight.data()};
+
+    std::array<gg::test::InputEvents, kCalls> processEvents;
+    std::array<gg::test::InputEvents, kCalls> flushEvents;
+    for (std::size_t c = 0; c < kCalls; ++c)
+    {
+        if (c == 0)
+        {
+            for (const auto &on : ons)
+            {
+                processEvents[c].add(&on.header);
+            }
+        }
+        for (const auto &v : perCall[c])
+        {
+            processEvents[c].add(&v.header);
+            flushEvents[c].add(&v.header);
+        }
+    }
+    const auto *params = paramsOf(plugin);
+    REQUIRE(params != nullptr);
+
+    AllocTripwire::resetCount();
+    std::array<clap_process_status, kCalls> status{};
+    {
+        AllocTripwire::Scope armed;
+        for (std::size_t c = 0; c < kCalls; ++c)
+        {
+            const uint32_t frames = c == 1 ? 0 : (c == 2 ? 1 : 512);
+            status[c] = plugin.process(frames, inputs, outputs, processEvents[c].list());
+        }
+        for (std::size_t c = 0; c < kCalls; ++c)
+        {
+            params->flush(plugin.clap(), flushEvents[c].list(), gg::test::discardingOutputEvents());
+        }
+    }
+    const uint64_t allocations = AllocTripwire::count();
+    for (const auto s : status)
+    {
+        CHECK(s == CLAP_PROCESS_CONTINUE);
+    }
+    CHECK(plugin.impl().processor()->heldKeys().size() == 16);
+    if (gg::test::AllocTripwire::available())
+    {
+        REQUIRE(allocations == 0);
+    }
+}

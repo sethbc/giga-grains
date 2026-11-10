@@ -1,0 +1,10 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "sweep", "startHz": 100, "endHz": 4000, "seconds": 4.0, "amplitude": 0.5},
+  "params": {"Position": 0.0, "Density": 5.0, "Size": -4.0, "Level": -12.0, "A Mode": 1, "A Env 1 Release": -2.0, "A Scan Speed": 0.5, "A Scan Track": 1},
+  "notes": [{"time": 0.25, "key": 48, "duration": 1.5}, {"time": 2.0, "key": 60, "duration": 1.5}, {"time": 3.75, "key": 72, "duration": 1.5}]
+}

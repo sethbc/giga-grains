@@ -1,0 +1,11 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "input": {"kind": "sine", "frequencyHz": 220, "seconds": 6.0, "amplitude": 0.1},
+  "channels": 2,
+  "samples": {"A": {"kind": "file", "path": "loop-48k.wav"}},
+  "params": {"Mix": 1.0, "A Source": 3, "Position": 0.1, "Density": 5.0, "Size": -2.321928094887362, "A Scan Speed": 0.25}
+}

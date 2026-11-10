@@ -764,3 +764,62 @@ TEST_CASE("the ring parameters are each layer's five", "[core][preset]")
     }
     CHECK(kept == gg::core::kLayers);
 }
+
+TEST_CASE("a preset load sets the scan parameters and INIT clears them", "[core][preset][playhead]")
+{
+    // M3 sub-project 3b: Scan Speed, Scan Edge and Scan Track are ordinary patch values, so a
+    // preset carries them for every layer and a load sets them; INIT is their defaults (0).
+    using gg::core::LayerParam;
+    for (const Mode mode : {Mode::Fx, Mode::Instrument})
+    {
+        SessionState state = initState(mode);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            const auto speed = at(gg::core::layerSlot(LayerParam::ScanSpeed, layer));
+            const auto edge = at(gg::core::layerSlot(LayerParam::ScanEdge, layer));
+            const auto track = at(gg::core::layerSlot(LayerParam::ScanTrack, layer));
+            CHECK(state.values[speed] == 0.0f);
+            CHECK(state.values[edge] == 0.0f);
+            CHECK(state.values[track] == 0.0f);
+            state.values[speed] = -0.25f + 0.125f * static_cast<float>(layer);
+            state.values[edge] = static_cast<float>(1 + layer % 2);
+            state.values[track] = 1.0f;
+        }
+        PresetInfo info;
+        info.name = "Scan";
+        info.product = mode;
+        info.tags = {"texture"};
+        const std::string bytes = encodePreset(info, state);
+        PresetInfo readInfo;
+        SessionState loaded = initState(mode);
+        REQUIRE(readPreset(bytes, mode, readInfo, loaded));
+        CHECK(bitsOf(loaded.values) == bitsOf(state.values));
+        // The keep rules (ring parameters, Ring Lengths) leave the scan parameters to the load.
+        ParamValues current = initState(mode).values;
+        ParamValues values = state.values;
+        gg::core::keepRingParams(current, values);
+        gg::core::keepRingLengths(current, values);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            for (const LayerParam p :
+                 {LayerParam::ScanSpeed, LayerParam::ScanEdge, LayerParam::ScanTrack})
+            {
+                const auto i = at(gg::core::layerSlot(p, layer));
+                CHECK(values[i] == state.values[i]);
+            }
+        }
+        // INIT again: every one back to its default.
+        const SessionState init = initState(mode);
+        for (uint8_t layer = 0; layer < gg::core::kLayers; ++layer)
+        {
+            for (const LayerParam p :
+                 {LayerParam::ScanSpeed, LayerParam::ScanEdge, LayerParam::ScanTrack})
+            {
+                const auto i = at(gg::core::layerSlot(p, layer));
+                CHECK(init.values[i] ==
+                      gg::core::paramMeta(gg::core::layerSlot(p, layer), mode).defaultVal);
+                CHECK(init.values[i] == 0.0f);
+            }
+        }
+    }
+}

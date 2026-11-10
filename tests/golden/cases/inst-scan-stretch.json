@@ -1,0 +1,11 @@
+{
+  "mode": "instrument",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "sample": {"kind": "file", "path": "loop-48k.wav"},
+  "params": {"Position": 0.5, "Density": 5.0, "Size": -2.0, "Level": -12.0, "A Mode": 1, "A Env 1 Release": -2.0, "A Scan Speed": 0.0625},
+  "automation": [{"time": 3.0, "param": "A Scan Speed", "value": -0.25}],
+  "notes": [{"time": 0.25, "key": 60, "duration": 5.0}]
+}

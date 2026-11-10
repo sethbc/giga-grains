@@ -115,7 +115,7 @@ double combScore(const std::vector<float> &x, std::size_t start)
 /// Renders the comb scenario (a noise sample, Size 200 ms, Density 20 Hz: an overlap of 4) with
 /// `smear`, and the position moving 0.002 of the sample over the 8 s when `stretched`: 1000x. The
 /// score is the mean over the six windows after the first 2 s.
-double renderScore(double smear, bool stretched)
+double renderScore(double smear, bool stretched, double scanSpeed = 0.0)
 {
     const std::string json = std::string{R"({
       "mode": "instrument", "sampleRate": 48000, "durationSeconds": 8.0, "blockSize": 128,
@@ -123,7 +123,8 @@ double renderScore(double smear, bool stretched)
       "sample": {"kind": "noise", "seconds": 4.0, "amplitude": 0.5},
       "params": {"Position": 0.4, "Density": 4.321928094887363, "Size": -2.321928094887362,
                  "Level": -6.0, "A Smear": )"} +
-                             std::to_string(smear) + R"(, "A LFO 1 Rate": -3.0,
+                             std::to_string(smear) + R"(, "A Scan Speed": )" +
+                             std::to_string(scanSpeed) + R"(, "A LFO 1 Rate": -3.0,
                  "A LFO 1 Shape": 2},)" +
                              (stretched ? R"("mod": [{"slot": 13, "source": "LFO 1",
                  "target": "Position", "targetLayer": "A", "depth": 0.002,
@@ -163,4 +164,17 @@ TEST_CASE("smear removes the comb at infinite and 1000x stretch", "[golden][metr
         CHECK(on < kCombAbsent);
         CHECK(off - on >= kGapDb);
     }
+}
+
+TEST_CASE("smear removes the comb from a slow scan", "[golden][metrics][playhead]")
+{
+    // Scan Speed 0.05 is 8 x 0.05^3 = 0.001x real time: the playhead crawls over the noise (the
+    // 1000x stretch of the LFO's route, by the playhead), grains re-read nearly one offset, and
+    // Smear decorrelates them as it does the LFO's.
+    const double off = renderScore(0.0, false, 0.05);
+    const double on = renderScore(1.0, false, 0.05);
+    CAPTURE(off, on);
+    CHECK(off > kCombPresent);
+    CHECK(on < kCombAbsent);
+    CHECK(off - on >= kGapDb);
 }

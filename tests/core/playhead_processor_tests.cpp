@@ -21,6 +21,8 @@
 #include "gg/core/ModMatrix.h"
 #include "gg/core/ParamMap.h"
 #include "gg/core/Processor.h"
+#include "gg/grain/CloudScheduler.h"
+#include "gg/grain/Playhead.h"
 #include "sst/basic-blocks/params/ParamMetadata.h"
 
 using Catch::Matchers::WithinAbs;
@@ -397,6 +399,153 @@ TEST_CASE("scan speed automation is block-size invariant", "[core][playhead][det
             {
                 CHECK(otherLog->layer(L) == log->layer(L));
             }
+        }
+    }
+}
+
+TEST_CASE("scan track on a cloud layer changes nothing", "[core][playhead]")
+{
+    // H7: Scan Track multiplies the speed by the key's ratio per voice; a Cloud layer has no
+    // voice and no key ratio, so Track On gives the grains Track Off gives, bit for bit.
+    const auto grains = [](bool track) {
+        auto p = make(Mode::Instrument, false);
+        p->setBase(slotA(LayerParam::ScanSpeed), 0.4f);
+        p->setBase(slotA(LayerParam::ScanTrack), track ? 1.0f : 0.0f);
+        auto log = std::make_unique<Log>();
+        p->setEventSink(&Log::record, log.get());
+        Script s;
+        s.on(64, 76);
+        s.on(9000, 55);
+        s.off(30000, 76);
+        s.off(30000, 55);
+        Stereo out;
+        render(*p, s, 40000, {256}, out);
+        return std::make_pair(log->layer(0), std::move(out));
+    };
+    const auto [off, offAudio] = grains(false);
+    const auto [on, onAudio] = grains(true);
+    REQUIRE(off.size() > 20);
+    CHECK(on == off);
+    CHECK(gg::test::layers::sameBits(onAudio.left, offAudio.left));
+    CHECK(gg::test::layers::sameBits(onAudio.right, offAudio.right));
+}
+
+TEST_CASE("scan track toggled while a voice sounds takes effect at the next boundary",
+          "[core][playhead]")
+{
+    auto p = make(Mode::Instrument);
+    p->setBase(slotA(LayerParam::ScanSpeed), 0.5f);
+    p->setBase(slotA(LayerParam::Density), 8.0f); // 256 Hz: plenty of grains per segment
+    auto log = std::make_unique<Log>();
+    p->setEventSink(&Log::record, log.get());
+    Script s;
+    s.on(0, 72);
+    s.param(10000, slotA(LayerParam::ScanTrack), 1.0);
+    Stereo out;
+    render(*p, s, 30000, {256}, out);
+    const auto grains = grainsOf(*log, 0, 0);
+    // Key 72 is an octave up: 2x once the toggle lands, 1x before. The boundary is a block start
+    // (the speed rebases there, HB1), so a margin of a few blocks keeps a segment clean.
+    CHECK_THAT(speedOf(grains, 0, 9700), WithinRel(1.0, 1e-6));
+    CHECK_THAT(speedOf(grains, 10800, 29000), WithinRel(2.0, 1e-6));
+    // The playhead continues across the change: no grain jumps back or ahead of the closed form
+    // by more than the one block the toggle waited for (256 frames at 2x).
+    const gg::GrainSpec *before = nullptr;
+    const gg::GrainSpec *after = nullptr;
+    for (const gg::GrainSpec &g : grains)
+    {
+        if (g.onsetSample < 9700)
+        {
+            before = &g;
+        }
+        else if (g.onsetSample >= 10800 && after == nullptr)
+        {
+            after = &g;
+        }
+    }
+    REQUIRE(before != nullptr);
+    REQUIRE(after != nullptr);
+    const double advanced = after->startPos - before->startPos;
+    const double span = onsetOf(*after) - onsetOf(*before);
+    CHECK(advanced > span * 1.0);
+    CHECK(advanced < span * 2.0);
+}
+
+TEST_CASE("scan track's tracked speed is clamped to 64x", "[core][playhead]")
+{
+    // Scan Speed 1.0 is 8x; key 127 is 67 semitones up, a ratio of about 48, so 8 x 48 is far
+    // past the engine's bound and the speed is exactly kMaxScanSpeed.
+    const auto pairs = [](bool track, int16_t key) {
+        auto p = make(Mode::Instrument);
+        p->setBase(slotA(LayerParam::ScanSpeed), 1.0f);
+        p->setBase(slotA(LayerParam::ScanTrack), track ? 1.0f : 0.0f);
+        p->setBase(slotA(LayerParam::Density), 9.0f); // 512 Hz
+        auto log = std::make_unique<Log>();
+        p->setEventSink(&Log::record, log.get());
+        Script s;
+        s.on(0, key);
+        Stereo out;
+        render(*p, s, 24000, {256}, out);
+        const auto grains = grainsOf(*log, 0, 0);
+        REQUIRE(grains.size() > 20);
+        std::vector<double> speeds;
+        for (size_t i = 1; i < grains.size(); ++i)
+        {
+            if (grains[i].startPos > grains[i - 1].startPos) // no wrap between the two
+            {
+                speeds.push_back((grains[i].startPos - grains[i - 1].startPos) /
+                                 (onsetOf(grains[i]) - onsetOf(grains[i - 1])));
+            }
+        }
+        return speeds;
+    };
+    const auto clamped = pairs(true, 127);
+    REQUIRE(clamped.size() > 10);
+    for (const double v : clamped)
+    {
+        CHECK_THAT(v, WithinRel(gg::CloudScheduler::kMaxScanSpeed, 1e-6));
+    }
+    CHECK(gg::CloudScheduler::kMaxScanSpeed == 64.0);
+    const auto plain = pairs(false, 127);
+    REQUIRE(plain.size() > 10);
+    for (const double v : plain)
+    {
+        CHECK_THAT(v, WithinRel(8.0, 1e-6));
+    }
+}
+
+TEST_CASE("the voice scan's positions follow the closed form", "[core][playhead]")
+{
+    // inst-scan-voice's setup (layer A Voice, Scan Speed 0.5 = 1x, Wrap, Position 0, three notes
+    // 0.75 s apart) over the fixture's 1 s sample, so the scan wraps: each voice's grain i starts
+    // at scanFold((onset_i - start_v) / rate x R / (F - 1), 0, 1, Wrap) of the sample.
+    auto p = make(Mode::Instrument);
+    p->setBase(slotA(LayerParam::ScanSpeed), 0.5f);
+    p->setBase(slotA(LayerParam::ScanEdge), 0.0f);
+    auto log = std::make_unique<Log>();
+    p->setEventSink(&Log::record, log.get());
+    const int64_t starts[3] = {12000, 48000, 84000};
+    Script s;
+    for (const int64_t t : starts)
+    {
+        s.on(t, 60);
+        s.off(t + 120000, 60);
+    }
+    Stereo out;
+    render(*p, s, 250000, {256}, out);
+    constexpr double kFrames = 48000.0; // the fixture sample's frames, at the render's rate
+    for (uint32_t v = 0; v < 3; ++v)
+    {
+        const auto grains = grainsOf(*log, 0, v);
+        REQUIRE(grains.size() > 100);
+        // The first grain is the note's own boundary, at start_v exactly.
+        CHECK(grains.front().onsetSample == starts[v]);
+        for (const gg::GrainSpec &g : grains)
+        {
+            const double x =
+                (onsetOf(g) - static_cast<double>(starts[v])) / kRate * kRate / (kFrames - 1.0);
+            const double fraction = gg::scanFold(0.0 + x, 0.0, 1.0, gg::ScanEdge::Wrap);
+            CHECK_THAT(g.startPos / (kFrames - 1.0), WithinAbs(fraction, 1e-9));
         }
     }
 }

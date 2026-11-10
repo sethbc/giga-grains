@@ -1,0 +1,18 @@
+{
+  "mode": "fx",
+  "sampleRate": 48000,
+  "durationSeconds": 6.0,
+  "blockSize": 256,
+  "seed": 1,
+  "input": {"kind": "sweep", "startHz": 100, "endHz": 3000, "seconds": 5.5, "amplitude": 0.25},
+  "channels": 2,
+  "params": {"Mix": 1.0, "A Ring Length": 0.0, "Position": 0.25, "Spray": 0.0, "Density": 5.0, "Size": -3.0},
+  "automation": [
+    {"time": 1.0, "param": "Freeze", "value": 1},
+    {"time": 1.0, "param": "A Scan Speed", "value": -0.5},
+    {"time": 3.0, "param": "A Scan Edge", "value": 1},
+    {"time": 4.5, "param": "Freeze", "value": 0},
+    {"time": 4.5, "param": "A Scan Speed", "value": -0.25},
+    {"time": 4.5, "param": "A Scan Edge", "value": 2}
+  ]
+}

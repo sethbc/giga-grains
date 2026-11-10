@@ -12,8 +12,7 @@ namespace
 {
 constexpr double kMinDensityHz = 0.01;
 constexpr float kMaxGain = 4.0f;
-// The bound on CloudParams::scanSpeed, × real time (M3 playhead spec H7, HB6).
-constexpr double kMaxScanSpeed = 64.0;
+constexpr double kMaxScanSpeed = CloudScheduler::kMaxScanSpeed;
 
 double finiteOr(double v, double fallback) noexcept { return std::isfinite(v) ? v : fallback; }
 float finiteOr(float v, float fallback) noexcept { return std::isfinite(v) ? v : fallback; }

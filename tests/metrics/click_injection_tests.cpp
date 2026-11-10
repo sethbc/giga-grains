@@ -203,6 +203,19 @@ const std::map<std::string, int> &partlyHidden()
         // Layer B's Resample at +12 with Feedback 0.6 re-grains the instrument's own output, a
         // cascade of octaves that fills the spectrum: its top octaves hide ten of the steps.
         {"inst-resample-feedback", 6},
+        // M3 playhead. The sweeps' fast scans put the grains' tones high in the spectrum and
+        // the dense overlapping grains hide steps that land inside them; the counts are the
+        // steps that fall in a gap or a quiet stretch (the cases' notes end before the render).
+        // inst-scan-edges: the Bounce and Clamp phases (2 s on) sit on a held sweep tone.
+        {"inst-scan-edges", 13},
+        // inst-scan-stretch: loop-48k.wav's bursts at a crawl, a noise bed under the one note.
+        {"inst-scan-stretch", 8},
+        // inst-scan-track: the +12 note's high scan hides the step at the last note's start.
+        {"inst-scan-track", 15},
+        // fx-scan-ring: the swept input's top octaves, read back through the frozen ring.
+        {"fx-scan-ring", 15},
+        // fx-scan-spectral: Spectral smear of loop-48k.wav is a noise-like wash.
+        {"fx-scan-spectral", 11},
     };
     return cases;
 }
