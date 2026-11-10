@@ -1030,7 +1030,7 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     `tests/metrics/preset_goldens_tests.cpp` requires each expected click score under 15 (and
     peak under -1 dBFS, nothing non-finite or silent), and the cases and the sources to match
     one to one. Their click scores run 0 to 8.8 (`inst-23-locust-cloud`). A preset source's
-    change moves its golden; a change to `tools/`, `core/` or `plugin/` that moves one of the 60
+    change moves its golden; a change to `tools/`, `core/` or `plugin/` that moves one of the
     other cases' WAVs is a regression as before.
   - **The event-log comparison never sees the reverb or the diffuser:** the log records grains,
     and Space runs after them. Across platforms, Space's five cases are checked by their metrics
