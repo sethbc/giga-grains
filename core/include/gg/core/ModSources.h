@@ -11,6 +11,7 @@
 #include "gg/core/MathDet.h"
 #include "gg/core/ParamIds.h"
 #include "gg/core/Rng.h"
+#include "gg/core/Transport.h"
 #include "gg/grain/AmpEnvelope.h"
 
 /// The mod matrix's sources (M2 spec §6.8): small state machines, each stepped once per 32-sample
@@ -187,16 +188,6 @@ class EnvFollower
 struct MidiSources
 {
     float modWheel{0}, aftertouch{0}, pitchBend{0.5f}, velocity{0}, key{0};
-};
-
-/// The host's transport as its last transport event gave it.
-struct Transport
-{
-    bool hasBeats{false};
-    double beatPosition{0};
-    double tempoBpm{120};
-    bool playing{false};
-    int beatsPerBar{4};
 };
 
 /// The transport sources: the host's beat phase, bar phase and playing flag, advanced between the
