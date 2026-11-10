@@ -716,6 +716,9 @@ class Processor
     /// parameter, a slot out of range, or a slot whose voice was never computed (or cleared by a
     /// Mode switch or a reset).
     float voiceValue(uint8_t layer, uint32_t voiceSlot, LayerParam p) const noexcept;
+    /// How many voices a new note's start finished because its layer's budget left no room for
+    /// the voice's first grain (M3 expression spec E10, EB12), since construction.
+    uint64_t budgetVoiceSteals() const noexcept { return budgetSteals_; }
 
     /// Not real-time safe: while process() isn't running, for an inactive plugin, gg-render and
     /// tests. Layer `layer`'s sources(layer) holds `s` (SourceExchange::hold), and its engine
@@ -1195,6 +1198,11 @@ class Processor
     /// updateVoices computes each voice's parameters and hands them to its engine.
     void syncModes() noexcept SST_CPPUTILS_NONBLOCKING;
     void commitVoices(int64_t b) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The quota each rendering layer's engine gets for the piece from `t`: the Budget's units
+    /// split equally among the layers rendering, from rendering_ as the last piece (or the
+    /// piece's own setup) left it (P8: a Layer On change in the same group may give the piece
+    /// another quota, accepted). kUnlimitedQuota while no layer renders.
+    uint64_t layerQuotaAt(int64_t t) const noexcept SST_CPPUTILS_NONBLOCKING;
     void stepVoices(int64_t c) noexcept SST_CPPUTILS_NONBLOCKING;
     void updateVoices() noexcept SST_CPPUTILS_NONBLOCKING;
     /// What a voice's parameters depend on beside its layer's values (M3 expression plan P3):
@@ -1321,6 +1329,7 @@ class Processor
     ParamValues voiceScratch_{};
     ParamValues voiceOffsets_{};
     uint64_t voiceRecomputes_{0};
+    uint64_t budgetSteals_{0};
 
     // The mod matrix (the class comment): its routes, whether one moves with time alone, and the
     // sources' values per layer, filled by updateEffective. The global sources: the MIDI ones in

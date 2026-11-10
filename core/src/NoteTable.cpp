@@ -68,6 +68,33 @@ void NoteTable::releaseNow(size_t i, float releaseVelocity) noexcept
     }
 }
 
+void NoteTable::choke(size_t i) noexcept
+{
+    Note &n = notes_[i];
+    if (isHeld(n.state))
+    {
+        releaseNow(i, 0.0f);
+    }
+    n.choked = true;
+}
+
+void NoteTable::unlist(size_t i) noexcept
+{
+    const auto drop = [i](std::array<uint8_t, kMaxNotes> &list, size_t &count) {
+        size_t kept = 0;
+        for (size_t k = 0; k < count; ++k)
+        {
+            if (list[k] != i)
+            {
+                list[kept++] = list[k];
+            }
+        }
+        count = kept;
+    };
+    drop(started_, startedCount_);
+    drop(released_, releasedCount_);
+}
+
 void NoteTable::release(size_t i, float releaseVelocity) noexcept
 {
     Note &n = notes_[i];
@@ -100,6 +127,7 @@ bool NoteTable::apply(const NoteEvent &e, uint64_t ordinalClock, Note *replaced)
             {
                 *replaced = n;
             }
+            unlist(i); // the lists name the new note's slot once, for it
         }
         n = Note{};
         n.id = e.noteId;
@@ -175,6 +203,19 @@ bool NoteTable::apply(const NoteEvent &e, uint64_t ordinalClock, Note *replaced)
             }
         }
         break;
+    case NoteEventType::Choke:
+        for (size_t i = 0; i < kMaxNotes; ++i)
+        {
+            const Note &n = notes_[i];
+            const bool match = e.noteId >= 0 ? n.id == e.noteId
+                                             : (e.channel < 0 || n.channel == e.channel) &&
+                                                   (e.key < 0 || n.key == e.key);
+            if (n.state != State::Free && match)
+            {
+                choke(i);
+            }
+        }
+        break;
     }
     return replacedOne;
 }
@@ -186,7 +227,7 @@ void NoteTable::setChannelBend(int ch, float bend) noexcept
     {
         for (Note &n : notes_)
         {
-            if (n.state != State::Free && n.channel == ch)
+            if (followsChannel(n) && n.channel == ch)
             {
                 n.bend = bend;
             }
@@ -201,7 +242,7 @@ void NoteTable::setChannelPressure(int ch, float v) noexcept
     {
         for (Note &n : notes_)
         {
-            if (n.state != State::Free && n.channel == ch && !n.hadPolyPressure)
+            if (followsChannel(n) && n.channel == ch && !n.hadPolyPressure)
             {
                 n.pressure = v;
             }
@@ -216,7 +257,7 @@ void NoteTable::setChannelTimbre(int ch, float v) noexcept
     {
         for (Note &n : notes_)
         {
-            if (n.state != State::Free && n.channel == ch)
+            if (followsChannel(n) && n.channel == ch)
             {
                 n.timbre = v;
             }

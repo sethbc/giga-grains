@@ -104,7 +104,8 @@ float finiteOrZero(float x) noexcept { return std::isfinite(x) ? x : 0.0f; }
 constexpr std::array<float, Processor::kFeedbackDelay> kSilence{};
 
 /// Whether a note event's fields are in range (NoteEvent): On needs a channel 0..15 and a key
-/// 0..127, Off also takes −1 for either, AllOff takes a channel 0..15 or −1 and ignores the key.
+/// 0..127, Off and Choke also take −1 for either, AllOff takes a channel 0..15 or −1 and ignores
+/// the key.
 bool validNote(const NoteEvent &n) noexcept
 {
     const auto inRange = [](int16_t v, int16_t lo, int16_t hi) { return v >= lo && v <= hi; };
@@ -113,6 +114,7 @@ bool validNote(const NoteEvent &n) noexcept
     case NoteEventType::On:
         return inRange(n.channel, 0, 15) && inRange(n.key, 0, 127);
     case NoteEventType::Off:
+    case NoteEventType::Choke:
         return inRange(n.channel, -1, 15) && inRange(n.key, -1, 127);
     case NoteEventType::AllOff:
         return inRange(n.channel, -1, 15);
@@ -179,7 +181,7 @@ bool anyTimeVarying(const ModRoutes &routes) noexcept
 }
 
 // sameCloud compares every field of CloudParams: a field added there must be added there too.
-static_assert(sizeof(CloudParams) == 120, "CloudParams changed: update sameCloud");
+static_assert(sizeof(CloudParams) == 128, "CloudParams changed: update sameCloud");
 
 /// Whether two CloudParams are the same, bit for bit (+0 and −0 differ, so the engine is never
 /// spared a value that would change a bit).
@@ -191,7 +193,7 @@ bool sameCloud(const CloudParams &a, const CloudParams &b) noexcept
     return same(a.densityHz, b.densityHz) && same(a.distribution, b.distribution) &&
            same(a.grainDurationSec, b.grainDurationSec) && same(a.position, b.position) &&
            same(a.spray, b.spray) && same(a.pitchSemitones, b.pitchSemitones) &&
-           same(a.stereo, b.stereo) &&
+           same(a.stereo, b.stereo) && same(a.pan, b.pan) &&
            std::bit_cast<uint32_t>(a.gain) == std::bit_cast<uint32_t>(b.gain) &&
            same(a.texture, b.texture) && a.quality == b.quality &&
            a.sprayInSeconds == b.sprayInSeconds &&
@@ -801,6 +803,13 @@ const NoteTable::Note *Processor::noteOf(const VoiceAllocator::Voice &v) const n
     return n.state != NoteTable::State::Free && n.ordinal == v.noteOrdinal ? &n : nullptr;
 }
 
+uint64_t Processor::layerQuotaAt(int64_t /*t*/) const noexcept
+{
+    const auto renderingCount =
+        static_cast<uint64_t>(std::count(rendering_.begin(), rendering_.end(), true));
+    return renderingCount > 0 ? budgetUnits_ / renderingCount : kUnlimitedQuota;
+}
+
 void Processor::commitVoices(int64_t b) noexcept
 {
     const std::span<const NoteTable::Note> notes = noteTable_.notes();
@@ -846,6 +855,7 @@ void Processor::commitVoices(int64_t b) noexcept
         }
         computeVoice(L, slot);
     };
+    bool budgetStolen = false;
     for (uint8_t L = 0; L < kLayers; ++L)
     {
         Layer &l = *layers_[L];
@@ -853,9 +863,24 @@ void Processor::commitVoices(int64_t b) noexcept
         {
             continue;
         }
-        // The group's releases and pedal holds first, so a note-on of the same group steals a
-        // voice this group released rather than a held one (V4).
+        // A choked note's voices finish at b, with no release: they stop spawning and their
+        // grains play out their windows, as a steal's do. Then the group's releases and pedal
+        // holds, so a note-on of the same group steals a voice this group released rather than a
+        // held one (V4).
         const std::span<VoiceAllocator::Voice> voices = l.voices.voices();
+        for (size_t slot = 0; slot < voices.size(); ++slot)
+        {
+            VoiceAllocator::Voice &v = voices[slot];
+            const NoteTable::Note *n = v.spawning ? noteOf(v) : nullptr;
+            if (n != nullptr && n->choked)
+            {
+                if (v.told)
+                {
+                    l.engine.finishVoice(static_cast<uint32_t>(slot));
+                }
+                l.voices.finish(static_cast<int>(slot));
+            }
+        }
         for (size_t slot = 0; slot < voices.size(); ++slot)
         {
             if (follow(voices[slot]))
@@ -868,9 +893,34 @@ void Processor::commitVoices(int64_t b) noexcept
         for (const uint8_t index : noteTable_.startedThisGroup())
         {
             const NoteTable::Note &n = notes[std::min<size_t>(index, notes.size() - 1)];
-            if (n.state == NoteTable::State::Free)
+            if (n.state == NoteTable::State::Free || n.choked)
             {
-                continue;
+                continue; // a note choked in its own group never speaks
+            }
+            // E10: no room in the layer's budget for the new voice's first grain: the layer's
+            // oldest weak voice finishes first, as V4's steal finishes one, so the new voice
+            // takes the slot it freed and the cap steal doesn't also fire. The ledger is the
+            // engine's at b (it can't see voices started in this group), the quota the one the
+            // piece from b renders with (P8). At most one per voice started. P9: the boundary's
+            // voice count then excludes the finished voice and counts the new one.
+            const int weakSlot = l.voices.oldestWeak();
+            if (weakSlot >= 0)
+            {
+                const auto tier = static_cast<Tier>(std::lround(std::clamp(
+                    static_cast<double>(
+                        effective_[static_cast<size_t>(layerSlot(LayerParam::Quality, L))]),
+                    0.0, 2.0)));
+                if (l.engine.soundingWeightAt(b) + l.engine.nextGrainWeight(tier) > layerQuotaAt(b))
+                {
+                    VoiceAllocator::Voice &weak = l.voices.voices()[static_cast<size_t>(weakSlot)];
+                    if (weak.told)
+                    {
+                        l.engine.finishVoice(static_cast<uint32_t>(weakSlot));
+                    }
+                    l.voices.finish(weakSlot);
+                    ++budgetSteals_;
+                    budgetStolen = true;
+                }
             }
             uint32_t ordinal = 0;
             int stolen = -1;
@@ -890,6 +940,12 @@ void Processor::commitVoices(int64_t b) noexcept
                 v.envValue[1] = v.env[1].step(v.envParams[1], true, cellSeconds_);
             }
         }
+    }
+    if (budgetStolen)
+    {
+        // EB12: a note whose last voice a budget steal finished ends now (after every layer's
+        // starts, so a note this group started and released isn't ended before its voices).
+        collectEndedNotes();
     }
     updateVoicesSounding();
 }
@@ -1395,6 +1451,10 @@ void Processor::applyNote(const NoteEvent &n) noexcept
     {
         // M3 Voice spec B4: the last note-off's release velocity, from its boundary.
         pendingReleaseVelocity_ = unitClamped(n.releaseVelocity);
+    }
+    else if (n.type == NoteEventType::Choke)
+    {
+        pendingReleaseVelocity_ = 0.0f; // as the note-off a choke was before (it has none)
     }
 }
 
@@ -2787,7 +2847,7 @@ void Processor::render(const Buffers &b, int64_t from, int64_t to) noexcept
             static_cast<uint64_t>(std::count(rendering_.begin(), rendering_.end(), true));
         if (renderingCount > 0)
         {
-            const uint64_t quota = budgetUnits_ / renderingCount;
+            const uint64_t quota = layerQuotaAt(from);
             for (size_t L = 0; L < kLayers; ++L)
             {
                 Layer &l = *layers_[L];

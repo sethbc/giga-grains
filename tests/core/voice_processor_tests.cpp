@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <tuple>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -73,6 +74,10 @@ struct Script
     void off(int64_t t, int16_t key, int16_t channel = 0, int32_t id = -1)
     {
         notes.push_back({t, {0, NoteEventType::Off, channel, key, 0.0f, id}});
+    }
+    void choke(int64_t t, int16_t key, int16_t channel = 0, int32_t id = -1)
+    {
+        notes.push_back({t, {0, NoteEventType::Choke, channel, key, 0.0f, id}});
     }
     void control(int64_t t, ControlKind kind, int16_t channel, float value, int16_t key = -1,
                  int32_t id = -1)
@@ -1398,4 +1403,430 @@ TEST_CASE("Bus Split per voice", "[core][voice][mod]")
         CHECK(g.bus == 1);
     }
     CHECK(p->effective(slotA(LayerParam::BusSplit)) == 0.0f);
+}
+
+// ---------------------------------------------------------------------------------------------
+// M3 expression spec E10, EB12 (Task 10): the steal by budget.
+
+namespace
+{
+/// Voice layer A at HQ (a mono sine's grains weigh 20), Density 400 Hz, grains of 125 ms, the
+/// Budget 256 (1,024 weight units: about 51 grains), Env 1's release 4 s so that released voices
+/// go on spawning through the test.
+std::unique_ptr<Processor> budgetProcessor(float size = -3.0f, float densityHz = 400.0f)
+{
+    auto p = voiceProcessor();
+    p->setBase(slotA(LayerParam::Quality), 2.0f);
+    p->setBase(slotA(LayerParam::Density), std::log2(densityHz));
+    p->setBase(slotA(LayerParam::Size), size);
+    p->setBase(slotA(LayerParam::Env1Release), 2.0f);
+    p->setBase(ParamSlot::Budget, 256.0f);
+    return p;
+}
+
+/// A chord of `held` held notes and `weak` released ones (keys 48 up; released at 5000), then a
+/// new note at kNewNote.
+constexpr int64_t kNewNote = 24000;
+Script chordScript(int held, int weak)
+{
+    Script s;
+    for (int16_t k = 0; k < held + weak; ++k)
+    {
+        s.on(640 * k, static_cast<int16_t>(48 + k), 0, 1.0f, 100 + k);
+    }
+    for (int16_t k = 0; k < weak; ++k)
+    {
+        s.off(5000 + 100 * k, static_cast<int16_t>(48 + k), 0, 100 + k);
+    }
+    s.on(kNewNote, 80, 0, 1.0f, 200);
+    return s;
+}
+} // namespace
+
+TEST_CASE("a new note under a spent budget finishes the oldest weak voice", "[core][voice][budget]")
+{
+    auto p = budgetProcessor();
+    auto log = attachLog(*p);
+    Script s; // ordinals 0 and 1 released (0 the older), 2 held
+    for (int16_t k = 0; k < 3; ++k)
+    {
+        s.on(640 * k, static_cast<int16_t>(48 + k), 0, 1.0f, 100 + k);
+    }
+    s.off(5000, 48, 0, 100);
+    s.off(5100, 49, 0, 101);
+    s.on(kNewNote, 80, 0, 1.0f, 200);
+    Stereo out;
+    // The pedaled variant is covered by the next case; here plain releases.
+    render(*p, s, 0, kNewNote - 1, {256}, out, nullptr, log.get());
+    REQUIRE(p->budgetVoiceSteals() == 0);
+    EndedNote ended[8];
+    CHECK(p->takeEndedNotes(ended) == 0);
+    render(*p, s, kNewNote - 1, kNewNote + 24000, {256}, out, nullptr, log.get());
+    CHECK(p->budgetVoiceSteals() == 1);
+    // The oldest weak voice (ordinal 0) spawns nothing after b; the other weak one goes on.
+    const auto first = grainsOf(*log, 0, 0);
+    REQUIRE_FALSE(first.empty());
+    CHECK(lastOnset(first) < kNewNote);
+    CHECK(countIn(grainsOf(*log, 0, 1), kNewNote + 1000, kNewNote + 24000) > 10);
+    CHECK(countIn(grainsOf(*log, 0, 2), kNewNote + 1000, kNewNote + 24000) > 10);
+    const auto newest = grainsOf(*log, 0, 3);
+    REQUIRE_FALSE(newest.empty());
+    CHECK(newest.front().onsetSample >= kNewNote); // its first draws may drop: no room until half
+    // Its note ends at once (no voice plays it), the other released note's not yet.
+    REQUIRE(p->takeEndedNotes(ended) == 1);
+    CHECK(ended[0].noteId == 100);
+    CHECK(clickScore(out) < 15.0);
+}
+
+TEST_CASE("a budget steal finishes a pedal-held voice too", "[core][voice][budget]")
+{
+    auto p = budgetProcessor();
+    Script s;
+    s.control(0, ControlKind::Sustain, 0, 1.0f);
+    for (int16_t k = 0; k < 3; ++k)
+    {
+        s.on(640 * k, static_cast<int16_t>(48 + k), 0, 1.0f, 100 + k);
+    }
+    s.off(5000, 48, 0, 100);
+    s.on(kNewNote, 80, 0, 1.0f, 200);
+    Stereo out;
+    render(*p, s, 0, kNewNote + 12000, {256}, out);
+    CHECK(p->budgetVoiceSteals() == 1);
+    // The pedal still holds the note: no NOTE_END.
+    EndedNote ended[8];
+    CHECK(p->takeEndedNotes(ended) == 0);
+}
+
+TEST_CASE("budget steal with no weak voice finishes nothing", "[core][voice][budget]")
+{
+    auto p = budgetProcessor();
+    auto log = attachLog(*p);
+    Script s = chordScript(4, 0);
+    Stereo out;
+    render(*p, s, 0, kNewNote + 24000, {256}, out, nullptr, log.get());
+    CHECK(p->budgetVoiceSteals() == 0);
+    CHECK(p->stolenGrains() > 0); // E9 took grains instead
+    for (uint32_t ordinal = 0; ordinal < 4; ++ordinal)
+    {
+        INFO("ordinal " << ordinal);
+        // None was finished: each still spawns (E9 thins the heaviest, not any voice to nothing).
+        CHECK(countIn(grainsOf(*log, 0, ordinal), kNewNote + 1000, kNewNote + 24000) > 0);
+    }
+    CHECK(clickScore(out) < 15.0);
+}
+
+TEST_CASE("the budget steal frees the slot the new voice takes", "[core][voice][budget]")
+{
+    // 16 voices, one weak (ordinal 7), the budget spent: the 17th note finishes it and takes its
+    // slot, so the cap steal doesn't also fire.
+    auto p = budgetProcessor(-4.0f, 64.0f);
+    auto log = attachLog(*p);
+    Script s;
+    for (int16_t k = 0; k < 16; ++k)
+    {
+        s.on(640 * k, static_cast<int16_t>(40 + k));
+    }
+    s.off(640 * 15 + 100, 47); // ordinal 7
+    const int64_t at = 640 * 16 + 20000;
+    s.on(at, 80);
+    Stereo out;
+    render(*p, s, 0, at + 24000, {256}, out, nullptr, log.get());
+    CHECK(p->budgetVoiceSteals() == 1);
+    // The weak voice (its draws may all have dropped before: the budget was spent) spawns
+    // nothing from the steal.
+    CHECK(lastOnset(grainsOf(*log, 0, 7)) < at);
+    for (uint32_t ordinal = 0; ordinal < 16; ++ordinal)
+    {
+        if (ordinal != 7)
+        {
+            INFO("ordinal " << ordinal);
+            // Every other voice that had sounded goes on spawning: none was cap-stolen.
+            if (!grainsOf(*log, 0, ordinal).empty())
+            {
+                CHECK(countIn(grainsOf(*log, 0, ordinal), at + 1000, at + 24000) > 0);
+            }
+        }
+    }
+    const auto newest = grainsOf(*log, 0, 16);
+    if (!newest.empty())
+    {
+        CHECK(newest.front().onsetSample >= at);
+    }
+}
+
+TEST_CASE("a budget steal lowers the headroom count", "[core][voice][budget][mod]")
+{
+    // V7, P9: with the weak voice finished before the new one starts, the boundary counts 3
+    // voices (two held and the new one). Were the third note held, nothing would finish and it
+    // would count 4: the held voices' later grains gain by sqrt(4 / 3) with the steal.
+    const auto run = [](bool release) {
+        auto p = budgetProcessor();
+        auto log = attachLog(*p);
+        Script s;
+        for (int16_t k = 0; k < 3; ++k)
+        {
+            s.on(640 * k, static_cast<int16_t>(48 + k), 0, 1.0f, 100 + k);
+        }
+        if (release)
+        {
+            s.off(5000, 50, 0, 102); // ordinal 2
+        }
+        s.on(kNewNote, 80, 0, 1.0f, 200);
+        Stereo out;
+        render(*p, s, 0, kNewNote + 12000, {256}, out, nullptr, log.get());
+        return std::make_pair(std::move(log), p->budgetVoiceSteals());
+    };
+    const auto [stolen, steals] = run(true);
+    const auto [kept, noSteals] = run(false);
+    CHECK(steals == 1);
+    CHECK(noSteals == 0);
+    // Voice 0's grains, by index, a few cells after b.
+    std::vector<std::pair<float, float>> pairs;
+    const auto after = grainsOf(*kept, 0, 0);
+    for (const gg::GrainSpec &g : grainsOf(*stolen, 0, 0))
+    {
+        if (g.onsetSample < kNewNote + 4 * kGrid)
+        {
+            continue;
+        }
+        const auto m = std::find_if(after.begin(), after.end(),
+                                    [&](const gg::GrainSpec &x) { return x.index == g.index; });
+        if (m != after.end())
+        {
+            pairs.emplace_back(g.gain, m->gain);
+        }
+    }
+    REQUIRE(pairs.size() > 3);
+    for (const auto &[withSteal, without] : pairs)
+    {
+        CHECK_THAT(static_cast<double>(withSteal / without), WithinRel(std::sqrt(4.0 / 3.0), 1e-5));
+    }
+}
+
+TEST_CASE("budget steals are block size invariant", "[core][voice][budget][determinism]")
+{
+    const auto run = [](uint32_t block) {
+        auto p = budgetProcessor();
+        auto log = attachLog(*p);
+        Script s = chordScript(1, 3);
+        Stereo out;
+        render(*p, s, 0, kNewNote + 12000, {block}, out, nullptr, log.get());
+        return std::make_tuple(std::move(log), std::move(out), p->budgetVoiceSteals());
+    };
+    const auto [log, out, steals] = run(4096);
+    REQUIRE(steals == 1);
+    for (const uint32_t block : {1u, 32u, 64u})
+    {
+        INFO("block " << block);
+        const auto [otherLog, other, otherSteals] = run(block);
+        CHECK(otherSteals == steals);
+        CHECK(gg::test::layers::sameBits(other.left, out.left));
+        CHECK(gg::test::layers::sameBits(other.right, out.right));
+        CHECK(otherLog->layer(0) == log->layer(0));
+    }
+}
+
+TEST_CASE("a released voice yields its grain first and the steal line names its voice",
+          "[core][voice][budget]")
+{
+    // Task 9's follow-up: params.weak reaches the engine through the Processor, and the steal
+    // sink's record carries the stolen grain's voice. Two voices over a spent budget, in a run
+    // that releases ordinal 1 and a control that holds it: after the release, more of the grains
+    // stolen are ordinal 1's than in the control, the record names every voice, and E10 (no
+    // note starts) finishes nothing.
+    constexpr int64_t kRelease = 12000;
+    const auto run = [](bool release) {
+        auto p = budgetProcessor();
+        auto log = attachLog(*p);
+        p->setStealSink(&Log::recordSteal, log.get());
+        Script s;
+        s.on(0, 48, 0, 1.0f, 100);
+        s.on(640, 52, 0, 1.0f, 101);
+        if (release)
+        {
+            s.off(kRelease, 52, 0, 101);
+        }
+        Stereo out;
+        render(*p, s, 0, kRelease + 24000, {256}, out, nullptr, log.get());
+        REQUIRE(p->budgetVoiceSteals() == 0);
+        std::vector<uint32_t> voices;
+        for (const Log::Steal &st : log->steals)
+        {
+            REQUIRE(st.voice < 2); // never kNoVoice: both are voices
+            if (st.onset >= kRelease + 2 * kGrid)
+            {
+                voices.push_back(st.voice);
+            }
+        }
+        return voices;
+    };
+    const auto released = run(true);
+    const auto held = run(false);
+    REQUIRE(released.size() > 10);
+    CHECK(std::count(released.begin(), released.end(), 0u) > 0);
+    CHECK(std::count(released.begin(), released.end(), 1u) > 0);
+    // Only the weak flag, through the Processor, can make the two runs' victims differ.
+    CHECK(released != held);
+}
+
+TEST_CASE("budget and grain steals allocate nothing", "[core][voice][budget][rt]")
+{
+    auto p = budgetProcessor();
+    Script s = chordScript(1, 3);
+    s.sort();
+    constexpr uint32_t kBlock = 256;
+    constexpr int kBlocks = (kNewNote + 12000) / kBlock + 1;
+    std::vector<std::vector<NoteEvent>> notes(static_cast<size_t>(kBlocks));
+    for (const auto &[t, e] : s.notes)
+    {
+        NoteEvent ev = e;
+        ev.offset = static_cast<uint32_t>(t % kBlock);
+        notes[static_cast<size_t>(t / kBlock)].push_back(ev);
+    }
+    for (auto &n : notes)
+    {
+        n.reserve(8);
+    }
+    Stereo out;
+    out.left.assign(kBlock, 0.0f);
+    out.right.assign(kBlock, 0.0f);
+    std::array<EndedNote, 16> ended{};
+    gg::test::AllocTripwire::resetCount();
+    {
+        gg::test::AllocTripwire::Scope armed;
+        float *o[2] = {out.left.data(), out.right.data()};
+        for (int i = 0; i < kBlocks; ++i)
+        {
+            p->process(nullptr, 0, o, 2, kBlock, {}, notes[static_cast<size_t>(i)], {});
+            p->takeEndedNotes(ended);
+        }
+    }
+    const uint64_t allocations = gg::test::AllocTripwire::count();
+    if (gg::test::AllocTripwire::available())
+    {
+        REQUIRE(allocations == 0);
+    }
+    CHECK(p->budgetVoiceSteals() == 1);
+    CHECK(p->stolenGrains() > 0);
+}
+
+TEST_CASE("processor_voice_mpe_release_keeps_bend", "[core][voice]")
+{
+    // An MPE sender reuses member channel 2 for a new note, resetting its bend, pressure and
+    // CC 74 first: with MPE On the voice still releasing on channel 2 keeps its pitch (its
+    // grains' rate unchanged); with MPE Off the channel's bend still moves it, as before.
+    const float half = 12288.0f / 16383.0f;  // +0.5 of the 14-bit range
+    const float center = 8192.0f / 16383.0f; // exactly 0 (B7)
+    const auto rates = [&](bool mpe) {
+        auto p = voiceProcessor();
+        p->setBase(ParamSlot::Mpe, mpe ? 1.0f : 0.0f);
+        p->setBase(slotA(LayerParam::Env1Release), 1.0f); // 2 s
+        auto log = attachLog(*p);
+        Script s;
+        s.control(0, ControlKind::PitchBend, 2, half);
+        s.control(0, ControlKind::Aftertouch, 2, 0.8f);
+        s.control(0, ControlKind::Timbre, 2, 0.7f);
+        s.on(32, 60, 2, 1.0f, 1);
+        s.off(4800, 60, 2, 1);
+        s.control(9600, ControlKind::PitchBend, 2, center);
+        s.control(9600, ControlKind::Aftertouch, 2, 0.0f);
+        s.control(9600, ControlKind::Timbre, 2, 0.0f);
+        s.on(9632, 64, 2, 1.0f, 2);
+        Stereo out;
+        render(*p, s, 0, 24000, {256}, out, nullptr, log.get());
+        const auto grains = grainsOf(*log, 0, 0);
+        REQUIRE(countIn(grains, 0, 4800) > 3);
+        REQUIRE(countIn(grains, 9600 + kGrid, 24000) > 10);
+        std::pair<double, double> r{grains.front().rate, grains.back().rate};
+        return r;
+    };
+    SECTION("MPE On: the releasing voice keeps its bend")
+    {
+        const auto [before, after] = rates(true);
+        CHECK_THAT(before, WithinRel(std::exp2(0.5 * 48.0 / 12.0), 1e-9));
+        CHECK(after == before);
+    }
+    SECTION("MPE Off: the channel's bend moves a release")
+    {
+        const auto [before, after] = rates(false);
+        CHECK_THAT(before, WithinRel(std::exp2(0.5 * 2.0 / 12.0), 1e-9));
+        CHECK_THAT(after, WithinRel(1.0, 1e-9));
+    }
+}
+
+TEST_CASE("processor_voice_choke", "[core][voice][notes]")
+{
+    // A choke (CLAP NOTE_CHOKE) silences: the choked note's voice stops spawning at the choke's
+    // boundary (its grains play out their windows, as a steal) and the note ends there, with no
+    // Env 1 release. A pedal doesn't hold it. A Cloud layer treats it as a note-off.
+    SECTION("Voice: no grain from the choke's boundary, and the note ends there")
+    {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Release), 1.0f); // 2 s: an off would keep spawning
+        auto log = attachLog(*p);
+        Script s;
+        s.on(0, 60, 0, 1.0f, 42);
+        s.choke(4800, 60, 0, 42);
+        Stereo out;
+        render(*p, s, 0, 4800, {256}, out, nullptr, log.get());
+        std::array<EndedNote, 4> ended{};
+        CHECK(p->takeEndedNotes(ended) == 0);
+        render(*p, s, 4800, 4801, {256}, out, nullptr, log.get());
+        REQUIRE(p->takeEndedNotes(ended) == 1);
+        CHECK(ended[0].noteId == 42);
+        CHECK_FALSE(p->voicesSounding());
+        render(*p, s, 4801, 24000, {256}, out, nullptr, log.get());
+        const auto grains = grainsOf(*log, 0, 0);
+        REQUIRE(countIn(grains, 0, 4800) > 3);
+        CHECK(countIn(grains, 4800, 24000) == 0);
+        CHECK(p->takeEndedNotes(ended) == 0);
+    }
+    SECTION("Voice: a pedal-held note, and a note choked in its own group")
+    {
+        auto p = voiceProcessor();
+        p->setBase(slotA(LayerParam::Env1Release), 1.0f);
+        auto log = attachLog(*p);
+        Script s;
+        s.control(0, ControlKind::Sustain, 0, 1.0f);
+        s.on(0, 60, 0, 1.0f, 42);
+        s.off(2400, 60, 0, 42); // pedal-held
+        s.choke(4800, 60, 0, 42);
+        s.on(9601, 62, 0, 1.0f, 43);
+        s.choke(9608, 62, 0, 43); // the same group as its on (boundary 9632): no voice at all
+        Stereo out;
+        render(*p, s, 0, 24000, {256}, out, nullptr, log.get());
+        CHECK(countIn(grainsOf(*log, 0, 0), 4800, 24000) == 0);
+        CHECK(grainsOf(*log, 0, 1).empty());
+        std::array<EndedNote, 4> ended{};
+        REQUIRE(p->takeEndedNotes(ended) == 2);
+        CHECK(ended[0].noteId == 42);
+        CHECK(ended[1].noteId == 43);
+        CHECK_FALSE(p->voicesSounding());
+    }
+    SECTION("Cloud: a choke renders as a note-off does")
+    {
+        const auto play = [](bool choke) {
+            auto p = voiceProcessor(Mode::Instrument, false);
+            Script s;
+            s.on(0, 60, 0, 1.0f, 42);
+            if (choke)
+            {
+                s.choke(4800, 60, 0, 42);
+            }
+            else
+            {
+                s.off(4800, 60, 0, 42);
+            }
+            Stereo out;
+            render(*p, s, 0, 4801, {256}, out);
+            std::array<EndedNote, 4> ended{};
+            CHECK(p->takeEndedNotes(ended) == 1);
+            render(*p, s, 4801, 24000, {256}, out);
+            return out;
+        };
+        const Stereo choked = play(true);
+        const Stereo off = play(false);
+        CHECK(choked.left == off.left);
+        CHECK(choked.right == off.right);
+    }
 }

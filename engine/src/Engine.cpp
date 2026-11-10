@@ -580,6 +580,7 @@ void Engine::scheduleVoices(int64_t blockStart, uint32_t numFrames, Spawn &&spaw
     }
     // V7: headroom 1 / sqrt(n), n the spawning voices. Voices start and finish only between
     // process() calls, so n is the same for every block of a call and for any host block size.
+    // With none spawning nothing runs and headroom is unused; the guard only spares 1 / sqrt(0).
     const double headroom = spawning > 0 ? 1.0 / std::sqrt(static_cast<double>(spawning)) : 1.0;
     // The k-way merge (M3 Voice spec §4.3): the pool's ledger and steal cursor need
     // non-decreasing onsets, so each step takes the earliest pending draw in the block by onset
@@ -967,6 +968,12 @@ bool Engine::voiceVictim(int64_t onset, const Passes &passes, uint32_t &row) noe
     uint32_t heldCount = 0;
     for (uint8_t slot = 0; slot < kStreamSlots; ++slot)
     {
+        // forgetEnds(onset) ran (soundingWeight in admit): a slot of weight 0 has no sounding
+        // grain, latched weights being at least 1, so it needs no scan of the pool.
+        if (pool_.slotWeight(slot) == 0)
+        {
+            continue;
+        }
         uint32_t r = 0;
         if (!pool_.oldestSoundingOf(slot, onset, r))
         {
@@ -1024,6 +1031,16 @@ bool Engine::voiceVictim(int64_t onset, const Passes &passes, uint32_t &row) noe
         return false;
     };
     return first(orphans, orphanCount) || first(weak, weakCount) || first(held, heldCount);
+}
+
+uint64_t Engine::soundingWeightAt(int64_t t) noexcept { return pool_.soundingWeight(t); }
+
+uint32_t Engine::nextGrainWeight(Tier tier) const noexcept
+{
+    // As admit() weighs a draw: a ring (the live ring or the smear's) is stereo, a sample by its
+    // channels. The mode is the one the next process() call applies (the request).
+    const bool ring = requestedMode_ == SourceMode::Live || requestedMode_ == SourceMode::Spectral;
+    return grainWeight(tier, ring || !slots_[current_].levels[0].mono);
 }
 
 void Engine::renderPool(const BlockOutputs &outputs, int64_t blockStart, int64_t from,

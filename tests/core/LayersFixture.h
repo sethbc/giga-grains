@@ -132,6 +132,7 @@ struct Log
         uint64_t index;
         int64_t onset;
         std::size_t next;
+        uint32_t voice; // the stolen grain's voice ordinal (gg::kNoVoice: the Cloud stream's)
     };
     static constexpr std::size_t kCapacity = 1 << 17;
     static constexpr std::size_t kStealCapacity = 1 << 16;
@@ -146,12 +147,13 @@ struct Log
         steals.reserve(kStealCapacity);
     }
 
-    static void recordSteal(void *ctx, uint32_t layer, uint64_t index, uint32_t, int64_t onset)
+    static void recordSteal(void *ctx, uint32_t layer, uint64_t index, uint32_t voice,
+                            int64_t onset)
     {
         auto *log = static_cast<Log *>(ctx);
         if (log->steals.size() < kStealCapacity)
         {
-            log->steals.push_back({layer, log->call, index, onset, log->events.size()});
+            log->steals.push_back({layer, log->call, index, onset, log->events.size(), voice});
         }
         else
         {

@@ -69,6 +69,9 @@ class VoiceAllocator
     void reset() noexcept;
 
     bool anySpawning() const noexcept;
+    /// The slot of the spawning voice that is weak (released or pedal-held) with the smallest
+    /// ordinal, or −1 for none (M3 expression spec E10).
+    int oldestWeak() const noexcept;
     std::span<Voice> voices() noexcept { return {voices_.data(), voices_.size()}; }
     std::span<const Voice> voices() const noexcept { return {voices_.data(), voices_.size()}; }
 

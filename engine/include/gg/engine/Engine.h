@@ -558,6 +558,14 @@ class Engine
     /// a shorter ring adopted at any later call renders the same. Real-time safe, with the
     /// threading rule of live().
     void setRingLimit(int64_t frames) noexcept { requestedLimit_ = std::max<int64_t>(0, frames); }
+    /// W(t): the summed weight of the grains still sounding at sample t (the ledger, fading
+    /// grains included), M3 expression spec E10. Real-time safe, with the pool's soundingWeight
+    /// requirement: t no earlier than any onset already passed to the ladder, so call it between
+    /// pieces, at a boundary at or after the last piece's end.
+    uint64_t soundingWeightAt(int64_t t) noexcept SST_CPPUTILS_NONBLOCKING;
+    /// The weight of a grain of `tier` reading the engine's current source, stereo as the ladder
+    /// decides it (a ring is stereo, a sample by its channels).
+    uint32_t nextGrainWeight(Tier tier) const noexcept SST_CPPUTILS_NONBLOCKING;
     /// Whether a read limit is waiting for grains (setRingLimit).
     bool liveReadLimitPending() const noexcept { return readLimitPending_; }
     /// Whether a ring of `frames` may be adopted now, at the next call's first sample, without
