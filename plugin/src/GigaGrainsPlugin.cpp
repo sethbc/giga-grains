@@ -1045,13 +1045,15 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
     }
     if (header->type == CLAP_EVENT_NOTE_OFF || header->type == CLAP_EVENT_NOTE_CHOKE)
     {
-        // A choke is a note-off. Wildcards (−1) release every held note they match, except that
-        // an off with a known ID and both wildcards, or both fields given, releases that ID's
-        // note alone (ruling R15), by its ID. An unknown ID keeps the off's fields: wildcards
-        // release everything, safer than a stuck note.
+        // A choke is the core's Choke (it silences: a Voice layer's voices finish at once, with
+        // no release; a Cloud layer hears a note-off), addressed as a note-off is. Wildcards (−1)
+        // match every note they match, except that an off with a known ID and both wildcards, or
+        // both fields given, addresses that ID's note alone (ruling R15), by its ID. An unknown
+        // ID keeps the off's fields: wildcards release everything, safer than a stuck note.
         const auto *e = reinterpret_cast<const clap_event_note *>(header);
-        const float release =
-            header->type == CLAP_EVENT_NOTE_OFF ? static_cast<float>(e->velocity) : 0.0f;
+        const bool choke = header->type == CLAP_EVENT_NOTE_CHOKE;
+        const NoteEventType type = choke ? NoteEventType::Choke : NoteEventType::Off;
+        const float release = choke ? 0.0f : static_cast<float>(e->velocity);
         const bool oneWildcard = (e->channel == -1) != (e->key == -1);
         if (e->note_id >= 0 && !oneWildcard)
         {
@@ -1059,14 +1061,13 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
             {
                 if (s.id == e->note_id)
                 {
-                    event = NoteEvent{
-                        header->time, NoteEventType::Off, s.channel, s.key, 0.0f, s.id, release};
+                    event = NoteEvent{header->time, type, s.channel, s.key, 0.0f, s.id, release};
                     s = NoteIdSlot{}; // the note has ended
                     return true;
                 }
             }
         }
-        if (e->channel >= 0 && e->key >= 0)
+        if (e->channel >= 0 && e->key >= 0 && !choke)
         {
             forgetOldestNoteId(e->channel, e->key); // the note the pair releases
         }
@@ -1074,7 +1075,7 @@ bool GigaGrainsPlugin::toNoteEvent(const clap_event_header *header, NoteEvent &e
         {
             forgetNoteIds(e->channel, e->key);
         }
-        event = NoteEvent{header->time, NoteEventType::Off, e->channel, e->key, 0.0f, -1, release};
+        event = NoteEvent{header->time, type, e->channel, e->key, 0.0f, -1, release};
         return true;
     }
     if (header->type == CLAP_EVENT_MIDI)
