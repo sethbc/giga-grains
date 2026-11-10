@@ -567,6 +567,11 @@ class Engine
     /// construction.
     const kernels::Dispatch &kernelTable() const noexcept { return *kernels_; }
 
+    /// Restarts every stream's playhead (the Cloud stream's and every voice's) at the next
+    /// block: a source-mode change (M3 playhead spec HB9) and a state or preset load on a running
+    /// instance (ruling R12, through Processor::restartPlayheads). Audio thread; forces no onset.
+    void restartPlayheads() noexcept;
+
   private:
     void processBlock(const float *const *in, uint32_t numInChannels, float *const *out,
                       uint32_t numChannels, float *const *bus2, uint32_t offset, uint32_t numFrames,
@@ -613,8 +618,6 @@ class Engine
     /// W / sampleRate} with W the live window at clock_, Spectral its material's (the sample's,
     /// else the live ring's).
     ScanGeometry scanGeometry() const noexcept SST_CPPUTILS_NONBLOCKING;
-    /// Restarts every stream's playhead at the next block (a source-mode change, HB9).
-    void restartPlayheads() noexcept;
     /// Adds every pool grain into its row's bus over [from, to), in spawn order, with each grain's
     /// latched tier and source, whatever the mode in effect: the SIMD live kernel for a grain of
     /// kLiveSlot over the live ring, and for one of kSpectralSlot over the smear's ring, otherwise

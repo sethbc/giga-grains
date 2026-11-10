@@ -128,6 +128,10 @@ struct GrainDraw
     bool scanning{false};
     uint8_t scanEdge{0};
     double scanPoint{0.0};
+    /// A Sample draw under Stop whose offset x(t) > 0 at the onset (ruling R13, H3): the engine
+    /// keeps the grain's start where it still fits, so a point held at the upper edge sounds.
+    /// False otherwise, and in particular at x(t) = 0 and on a backward scan.
+    bool scanStopFit{false};
 
     friend bool operator==(const GrainDraw &, const GrainDraw &) = default;
 };
@@ -428,6 +432,7 @@ class CloudScheduler
         bool scanning = false;
         uint8_t scanEdge = 0;
         double scanPoint = 0.0;
+        bool scanStopFit = false;
         if (scan != 0.0) // the one branch at rest
         {
             if (mode_ == SourceMode::Live)
@@ -440,6 +445,7 @@ class CloudScheduler
             else if (mode_ == SourceMode::Sample)
             {
                 position = scanFold(params_.position + scan, 0.0, 1.0, playhead_.edge());
+                scanStopFit = scan > 0.0 && playhead_.edge() == ScanEdge::Stop;
             }
         }
         // Live mode: seconds behind the head, further back only. Spectral mode: the same with
@@ -505,6 +511,7 @@ class CloudScheduler
             .scanning = scanning,
             .scanEdge = scanEdge,
             .scanPoint = scanPoint,
+            .scanStopFit = scanStopFit,
         };
         const double e = -logDet(1.0 - rng::uniform01(key(rng::Field::Onset)));
         lastOnset_ = t;

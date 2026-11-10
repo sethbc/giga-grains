@@ -836,11 +836,19 @@ GrainSpec Engine::sampleGrain(const GrainDraw &d) const noexcept
     const int64_t frames = source.levels[0].frames;
     const double span = frames > 1 ? static_cast<double>(frames - 1) : 0.0;
     const double rate = d.rate * source.rate / config_.sampleRate;
+    double startPos = std::clamp(d.positionDraw * span + d.sprayOffsetSec * source.rate, 0.0, span);
+    // Ruling R13 (H3): a forward scan under Stop keeps the grain's start where the grain still
+    // fits, so the end of the sample holds and sounds; never below the sample's first frame.
+    if (d.scanStopFit)
+    {
+        GG_FP_CONTRACT_OFF
+        startPos = std::min(startPos, std::max(span - d.durationSamples * rate, 0.0));
+    }
     return {
         .index = d.index,
         .onsetSample = d.onsetSample,
         .onsetFrac = d.onsetFrac,
-        .startPos = std::clamp(d.positionDraw * span + d.sprayOffsetSec * source.rate, 0.0, span),
+        .startPos = startPos,
         .rate = rate,
         .durationSamples = d.durationSamples,
         .texture = d.texture,

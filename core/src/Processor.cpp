@@ -546,6 +546,14 @@ void Processor::setBase(ParamSlot slot, float value) noexcept
     }
 }
 
+void Processor::restartPlayheads() noexcept
+{
+    for (uint8_t L = 0; L < kLayers; ++L)
+    {
+        layers_[L]->engine.restartPlayheads();
+    }
+}
+
 void Processor::setBases(const ParamValues &values) noexcept
 {
     // Ruling FR-3: setBase() on every slot in slot order, with the effective values recomputed
@@ -981,9 +989,9 @@ void Processor::updateVoices() noexcept
         const auto pitchSlot = static_cast<size_t>(layerSlot(LayerParam::Pitch, L));
         const auto levelIndex = static_cast<size_t>(levelSlot(L));
         // What toCloudParams and a voice's own clamps read of the layer (spec §4.4): base,
-        // modulation and layer-wide offset of the voice targets, the Source, Bus Split and
-        // Level, and the material (a Spectral layer's Position units). A change of any moves
-        // the layer's generation, and every voice recomputes once.
+        // modulation and layer-wide offset of the voice targets, the Source, Bus Split, Level,
+        // Scan Edge and Scan Track, and the material (a Spectral layer's Position units). A change
+        // of any moves the layer's generation, and every voice recomputes once.
         std::array<size_t, kVoiceKeySlots> keySlots{};
         for (size_t i = 0; i < kVoiceTargets.size(); ++i)
         {
@@ -1651,6 +1659,7 @@ bool Processor::applyOffer(Layer &l, const SourceOffer &offer) noexcept
     if (offer.hasValues)
     {
         setBases(offer.values);
+        restartPlayheads(); // the instrument's state or preset load (ruling R12)
     }
     // A keep-source offer (ruling R19) leaves the source alone: the engine's, and one taken but
     // not yet adopted.

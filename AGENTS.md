@@ -1032,8 +1032,8 @@ gg-render --mutate-preset <in.ggpreset> -o <out.ggpreset> --amount A --counter N
     - `fx-scan-spectral`: layer A Spectral over `loop-48k.wav`, Scan Speed 0.25: the smear's
       analysis point moves (the log shows Spectral grains only).
     - Five hide some injected click steps, pinned in the click-injection table with reasons
-      marked "likely" (not isolated by experiment, carry-over row 427): `inst-scan-edges` 13,
-      `inst-scan-stretch` 8, `inst-scan-track` 15, `fx-scan-ring` 15 and `fx-scan-spectral` 11.
+      marked "likely" (not isolated by experiment, carry-over row 427): `inst-scan-edges` 10,
+      `inst-scan-stretch` 8, `inst-scan-track` 15, `fx-scan-ring` 14 and `fx-scan-spectral` 11.
       `inst-scan-voice` and `inst-scan-cloud` catch all 16.
     - Every one of the 108 M2-era cases and the eight voice goldens renders bit-identically at
       Scan Speed 0: a playhead change that moves one is a regression.

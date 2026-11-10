@@ -606,6 +606,10 @@ class Processor
     /// since the last reset()), while one already armed freezes at once (INTENT §23 #40; ruling
     /// FR-8). Real-time safe; call it between process() calls.
     void setBases(const ParamValues &values) noexcept;
+    /// Restarts every layer's playheads (the Cloud stream's and every voice's) at the next block:
+    /// a state or preset load on a running instance, in the load's own block (ruling R12, H11).
+    /// Audio thread; no allocation, no onset forced.
+    void restartPlayheads() noexcept;
 
     /// Sets every layer's engine seed (Engine::setSeed): the grains scheduled from the next
     /// process() call's first sample on are keyed by it; those already sounding keep their draws.

@@ -556,6 +556,36 @@ TEST_CASE("the voice scan wraps by the closed form", "[core][playhead]")
     }
 }
 
+TEST_CASE("a voice's stop at the sample's end still sounds", "[core][playhead]")
+{
+    // Ruling R13 through the Processor, a Voice layer: Scan Speed 0.5 = 1x, Stop, Position 0, the
+    // fixture's 1 s 220 Hz sample. Once the point reaches the end the grains hold where they fit.
+    auto p = make(Mode::Instrument);
+    p->setBase(slotA(LayerParam::ScanSpeed), 0.5f);
+    p->setBase(slotA(LayerParam::ScanEdge), 2.0f);
+    auto log = std::make_unique<Log>();
+    p->setEventSink(&Log::record, log.get());
+    Script s;
+    s.on(0, 60);
+    s.off(144000, 60);
+    Stereo out;
+    render(*p, s, 144000, {256}, out);
+    constexpr double kSpan = 47999.0;
+    const auto grains = grainsOf(*log, 0, 0);
+    REQUIRE(grains.size() > 100);
+    for (const gg::GrainSpec &g : grains)
+    {
+        CHECK(g.startPos <= kSpan - g.durationSamples * g.rate + 1e-6);
+        CHECK(g.startPos >= 0.0);
+    }
+    double sum = 0.0;
+    for (size_t i = 96000; i < 144000; ++i)
+    {
+        sum += static_cast<double>(out.left[i]) * static_cast<double>(out.left[i]);
+    }
+    CHECK(std::sqrt(sum / 48000.0) > 0.001);
+}
+
 namespace
 {
 /// The number after `"key":` in an event-log line.

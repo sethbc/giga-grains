@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Built (Tasks 1 to 6, 2026-11-07 to 2026-11-09). Drafted 2026-11-07 without the director, at the director's request ("keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input"). Every forced choice was **Claude's provisional call** (H0 to H13, §3), each with the alternatives declined; the builder check's answers are in §3a (HB1 to HB12). **The director reviewed the calls on 2026-11-09 and confirmed H0 to H13, H13 as amended** (tempo-locked scanning is sub-project 7's, Scan Sync, in M3, not M4's). Ruling R9 (below, HB9) was added in the build |
+| **Status** | Built (Tasks 1 to 6, 2026-11-07 to 2026-11-09). Drafted 2026-11-07 without the director, at the director's request ("keep building all of the sub-projects as parallel as possible and merging them as able to. progress as much as you can without input"). Every forced choice was **Claude's provisional call** (H0 to H13, §3), each with the alternatives declined; the builder check's answers are in §3a (HB1 to HB12). **The director reviewed the calls on 2026-11-09 and confirmed H0 to H13, H13 as amended** (tempo-locked scanning is sub-project 7's, Scan Sync, in M3, not M4's). Ruling R9 (below, HB9) was added in the build, and rulings R11 to R13 (H3, HB1, HB10) by the final review's fix wave, 2026-11-09 |
 | **Program** | `docs/superpowers/specs/2026-11-07-m3-program-design.md` (§3's "playable", §4, §8; this sub-project is new, H0) |
 | **Builds on** | sub-project 1, `docs/superpowers/specs/2026-11-07-m3-voice-design.md` (V1 to V7, B1 to B10) and its plan, on `m3-voice` (draft PR #37) |
 | **Branch** | `m3-sp3b-playhead` (from `m3-voice`), worktree `/home/sethbc/.local/share/giga-grains/worktrees/gg-m3-sp3b-playhead` |
@@ -93,6 +93,14 @@ and its event log byte for byte.
   ends the voice (Env 1 ends a voice, V1; a short Env 1 Release after the note's end already does
   it); Bounce with an explicit direction flag flipped at each reflection (equivalent while the speed
   holds, and the triangle form needs no state).
+  **Ruling R13 (Claude's, the final review's fix wave, 2026-11-09):** on a Sample, a forward scan
+  under Stop keeps each grain's start where the grain still fits, `start <= span - dur x rate`
+  (per grain, never below the sample's first frame), so a point held at the end sounds, where
+  every grain once started at the last frame and read nothing (silence while grains spawned).
+  Only with the playhead moved forward (x(t) > 0): at x = 0 the read is today's (Position 1.0 at
+  rest reads the last frame), a backward Stop is as before, and rings are untouched (their
+  admission clamp fits a grain already). The engine applies it (`GrainDraw::scanStopFit`,
+  `sampleGrain`); kernels and event-log fields are unchanged.
 
 - **H4. One playhead per stream, and when each restarts.** Each voice stream has its own, restarted
   at its note-on from its own Position (the layer's with the voice's own routes at that cell, so a
@@ -198,6 +206,12 @@ and its event log byte for byte.
   `clamp(P + x, lo, hi) − P` with P the stream's Position at t. (Wrap and Bounce reduce only to keep
   the offset small; the fold is periodic, so the point is the same up to rounding, which is
   deterministic. Stop's is what makes a reversed speed leave the edge at once, H3.)
+  **Ruling R11 (Claude's, the final review's fix wave, 2026-11-09):** an edge change first
+  refolds the offset under the old edge, `x = scanFold(P + x, lo, hi, old edge) - P` (x = 0, an
+  empty window and a non-finite point keep x), then takes the new edge's canon: the raw offset
+  grows past L between rebases, so the new canon of it moved the point (`inst-scan-edges` jumped
+  from near frame 27,200 to 95,999 at its step to Stop). H5's point stays piecewise linear through
+  an edge change; the rebase triggers are unchanged.
 - **HB2. The geometry** the Engine hands each stream at a piece start, from the source in effect:
   - **Sample** (the current slot holds a source of F frames at rate R): `unitsPerSecond = R / (F −
     1)` (a fraction of the source per source second, against `sampleGrain`'s span F − 1),
@@ -268,6 +282,13 @@ and its event log byte for byte.
   the playhead never moved, a restart sets x0 = 0 again, so no golden sees it. With Scan Speed
   returned to 0 after moving, x0 holds the point where it stopped (Scan 0 holds), and the next
   restart returns it to Position.
+  **Ruling R12 (Claude's, the final review's fix wave, 2026-11-09; H11):** a state or preset load
+  on a running instance restarts every playhead (each layer's Cloud stream and every voice) on the
+  audio thread, in the load's own block, right after `setBases`: `Processor::restartPlayheads`,
+  called by the plugin's `applyLoadedState` and, for the instrument's values that come with its
+  sample, by `Processor::applyOffer`. So loading INIT or any Scan 0 patch reads Position, not
+  Position plus a stale offset: "Scan 0 holds" is a speed gesture, not a load. `gg-render` loads
+  before its first block, where every restart is pending already, so no golden moves.
 - **HB11. Real-time safety.** `syncPlayhead` and the fold are a few double operations with no loop
   but the fixed 17 streams; nothing allocates or locks. RTSan and the tripwire tests cover 16
   scanning voices and a scanning Cloud stream in both products.

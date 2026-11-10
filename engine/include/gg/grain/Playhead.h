@@ -108,6 +108,11 @@ class Playhead
     ///   bit for bit from the last rebase's: x0 = canon(x(t)), tau0 = t, r' and the edge taken;
     /// - else nothing.
     ///
+    /// An edge change first refolds x under the old edge (ruling R11, H5: a changed edge never
+    /// moves the point): the raw offset runs past L between rebases, so x becomes
+    /// scanFold(position + x, lo, hi, old edge) - position before the new edge's canon. x = 0, an
+    /// empty or non-finite window and a non-finite position or point leave x as it is.
+    ///
     /// canon (read only here, so the window at the rebase's own sample): Wrap reduces x mod L,
     /// Bounce mod 2L (only to keep the offset small: the fold is periodic), and Stop gives
     /// clamp(position + x, lo, hi) - position, so a reversed speed leaves the edge at once (H3).
@@ -139,7 +144,8 @@ class Playhead
         }
         else if (std::bit_cast<uint64_t>(rate) != std::bit_cast<uint64_t>(r_) || edge != edge_)
         {
-            x0_ = canon(offsetAt(static_cast<double>(t)), edge, g, position);
+            const double x = offsetAt(static_cast<double>(t));
+            x0_ = canon(edge != edge_ ? refold(x, g, position) : x, edge, g, position);
         }
         else
         {
@@ -164,6 +170,20 @@ class Playhead
     bool moving() const noexcept { return r_ != 0.0 || x0_ != 0.0; }
 
   private:
+    // The offset of the point the current edge folds x to (ruling R11): the point itself, so a
+    // change of edge starts from where the scan is. The guards keep x as it is.
+    double refold(double x, const ScanGeometry &g, double position) const noexcept
+    {
+        GG_FP_CONTRACT_OFF
+        const double length = g.hi - g.lo;
+        const double point = position + x;
+        if (x == 0.0 || !(length > 0.0) || !std::isfinite(length) || !std::isfinite(point))
+        {
+            return x;
+        }
+        return scanFold(point, g.lo, g.hi, edge_) - position;
+    }
+
     static double canon(double x, ScanEdge edge, const ScanGeometry &g, double position) noexcept
     {
         GG_FP_CONTRACT_OFF

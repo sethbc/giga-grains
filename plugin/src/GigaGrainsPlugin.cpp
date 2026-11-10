@@ -1168,6 +1168,9 @@ void GigaGrainsPlugin::applyLoadedState() noexcept
             // One recomputation for the whole state on the audio thread, not one per slot (ruling
             // FR-3).
             processor_->setBases(loaded.values);
+            // A loaded patch starts at its Position, not Position plus a stale offset (ruling
+            // R12); in the instrument the values come with the offer (Processor::applyOffer).
+            processor_->restartPlayheads();
             for (std::size_t s = 0; s < kParamCount; ++s)
             {
                 storeValue(static_cast<ParamSlot>(s), loaded.values[s]);

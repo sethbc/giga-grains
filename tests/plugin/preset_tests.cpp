@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -339,6 +340,112 @@ TEST_CASE("INIT keeps MPE and the bend ranges", "[plugin][preset]")
     CHECK(plugin.value(paramId(ParamSlot::Size)) ==
           static_cast<double>(gg::core::initState(mode).values[at(ParamSlot::Size)]));
     CHECK_FALSE(plugin.impl().presetEdited());
+}
+
+namespace
+{
+/// The grains spawned at or after `from`, recorded by the Processor's sink.
+struct SpawnLog
+{
+    std::vector<gg::GrainSpec> grains;
+    int64_t from{0};
+
+    static void record(void *ctx, uint32_t layer, const gg::GrainSpec &g)
+    {
+        auto *log = static_cast<SpawnLog *>(ctx);
+        if (layer == 0 && g.onsetSample >= log->from && log->grains.size() < 4096)
+        {
+            log->grains.push_back(g);
+        }
+    }
+};
+} // namespace
+
+TEST_CASE("a load on a running instance restarts a moving playhead", "[plugin][preset][playhead]")
+{
+    // Ruling R12 (H11, HB10): a state or preset load restarts every playhead in the load's own
+    // block, so a Scan 0 load reads Position and not Position plus a stale offset. Twins differ
+    // only in scanning before the load: from the load on their grains are the same.
+    struct Load
+    {
+        const char *id;
+        bool init;
+    };
+    const Load load = GENERATE(Load{kFxId, true}, Load{kFxId, false}, Load{kInstrumentId, false});
+    CAPTURE(load.id, load.init);
+    const Mode mode = modeOf(load.id);
+    using gg::core::LayerParam;
+    using gg::core::layerSlot;
+    const auto a = [](LayerParam p) { return paramId(layerSlot(p, 0)); };
+    const auto loadedGrains = [&](float scan) {
+        PluginUnderTest plugin(load.id);
+        REQUIRE(plugin.valid());
+        REQUIRE(plugin.loadDefaultsWithSeed(0));
+        if (mode == Mode::Instrument)
+        {
+            REQUIRE(plugin.loadSampleState(gg::test::sineSampleFile("load-restart")));
+        }
+        const std::array<clap_event_param_value, 5> setup{{
+            gg::test::paramValue(a(LayerParam::Position), mode == Mode::Fx ? 0.5 : 0.25),
+            gg::test::paramValue(a(LayerParam::Spray), 0.0),
+            gg::test::paramValue(a(LayerParam::Distribution), 0.0),
+            gg::test::paramValue(a(LayerParam::Density), 6.0),
+            gg::test::paramValue(a(LayerParam::ScanSpeed), scan),
+        }};
+        gg::test::InputEvents list;
+        for (const auto &v : setup)
+        {
+            list.add(&v.header);
+        }
+        plugin.flush(list.list());
+        REQUIRE(plugin.activate(48000.0, 512));
+        SpawnLog log;
+        log.from = std::numeric_limits<int64_t>::max();
+        log.grains.reserve(4096);
+        plugin.impl().processor()->setEventSink(&SpawnLog::record, &log);
+        std::vector<float> inL(512), inR(512), outL(512), outR(512);
+        float *inputs[2] = {inL.data(), inR.data()};
+        float *outputs[2] = {outL.data(), outR.data()};
+        gg::test::InputEvents held;
+        const auto on = gg::test::noteEvent(CLAP_EVENT_NOTE_ON, 0, 60, 0);
+        held.add(&on.header);
+        constexpr int kBefore = 100;
+        constexpr int kAfter = 50;
+        for (int b = 0; b < kBefore; ++b)
+        {
+            gg::test::InputEvents none;
+            plugin.process(512, mode == Mode::Fx ? inputs : nullptr, outputs,
+                           (b == 0 && mode == Mode::Instrument) ? held.list() : none.list());
+        }
+        if (load.init)
+        {
+            REQUIRE(plugin.loadPreset(CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "init"));
+        }
+        else
+        {
+            SessionState s;
+            REQUIRE(gg::core::decodeState(plugin.save(), mode, s));
+            s.values[at(layerSlot(LayerParam::ScanSpeed, 0))] = 0.0f;
+            REQUIRE(plugin.load(gg::core::encodeState(s)));
+        }
+        log.from = int64_t{kBefore} * 512;
+        for (int b = 0; b < kAfter; ++b)
+        {
+            gg::test::InputEvents none;
+            plugin.process(512, mode == Mode::Fx ? inputs : nullptr, outputs, none.list());
+        }
+        return log.grains;
+    };
+    const auto rest = loadedGrains(0.0f);
+    const auto scanned = loadedGrains(0.5f); // 1x
+    REQUIRE_FALSE(rest.empty());
+    REQUIRE(rest.size() == scanned.size());
+    for (std::size_t i = 0; i < rest.size(); ++i)
+    {
+        INFO("grain " << i);
+        CHECK(scanned[i].onsetSample == rest[i].onsetSample);
+        CHECK(scanned[i].startPos == rest[i].startPos);
+    }
 }
 
 TEST_CASE("the other product's preset is refused and changes nothing", "[plugin][preset]")

@@ -205,15 +205,18 @@ const std::map<std::string, int> &partlyHidden()
         {"inst-resample-feedback", 6},
         // M3 playhead. The reasons below are likely ones, read off the spectrograms and the case
         // designs, not isolated by experiment: the exact counts are what the test pins.
-        // inst-scan-edges: likely the Bounce phase (2 s to 4 s) and Stop phase (4 s on), whose
-        // held and reversing sweep tones hide steps that land in them.
-        {"inst-scan-edges", 13},
+        // inst-scan-edges: steps 13 to 16 (4.59 s to 5.65 s) land in the tone the Stop phase
+        // holds at the sample's end from about 4.4 s (ruling R13: the held point sounds, where it
+        // once read nothing); steps 4 and 6 (1.41 s, 2.12 s), likely the sweep's wrapping tone.
+        {"inst-scan-edges", 10},
         // inst-scan-stretch: likely loop-48k.wav's noise bursts at a crawl, a bed under the note.
         {"inst-scan-stretch", 8},
         // inst-scan-track: likely the +12 note's fast, high scan hiding one step.
         {"inst-scan-track", 15},
-        // fx-scan-ring: likely the sweep's top octaves, read back through the frozen ring.
-        {"fx-scan-ring", 15},
+        // fx-scan-ring: steps 14 and 16 (4.94 s, 5.65 s), after the unfreeze at 4.5 s, where the
+        // point goes on from where it was (ruling R11) through the moving ring: likely the
+        // sweep's top octaves there (step 13 scores just over the limit).
+        {"fx-scan-ring", 14},
         // fx-scan-spectral: likely the Spectral kind's noise-like wash over loop-48k.wav.
         {"fx-scan-spectral", 11},
     };

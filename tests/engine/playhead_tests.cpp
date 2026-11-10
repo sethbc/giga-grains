@@ -244,6 +244,69 @@ TEST_CASE("a source change at speed 0 never rebases", "[engine][playhead]")
     CHECK(bits(p.offsetAt(10000.0)) == bits(0.0));
 }
 
+TEST_CASE("an edge change keeps the scan's point", "[engine][playhead]")
+{
+    // Ruling R11 (H5's point is piecewise linear): the raw offset grows past L between rebases,
+    // so a change of Scan Edge reads the point the old edge folded it to, not the raw offset.
+    // Just before and just after the change the point is the same, within 1e-9 of a frame. The
+    // one exception the fold allows: Stop holding hi, then Wrap, whose window is half open: hi
+    // wraps to lo.
+    using gg::ScanEdge;
+    struct Pair
+    {
+        ScanEdge from;
+        ScanEdge to;
+    };
+    const Pair pairs[] = {{ScanEdge::Wrap, ScanEdge::Stop},   {ScanEdge::Wrap, ScanEdge::Bounce},
+                          {ScanEdge::Bounce, ScanEdge::Wrap}, {ScanEdge::Bounce, ScanEdge::Stop},
+                          {ScanEdge::Stop, ScanEdge::Bounce}, {ScanEdge::Stop, ScanEdge::Wrap}};
+    struct Source
+    {
+        gg::ScanGeometry g;
+        double position;
+        double frame; // one frame, in Position's units
+        const char *name;
+    };
+    const Source sources[] = {
+        {geometry(kSampleRate / 95999.0, 0.0, 1.0), 0.25, 1.0 / 95999.0, "a 2 s sample"},
+        {geometry(-1.0, 0.0, 16.0), 4.0, 1.0 / kSampleRate, "a 16 s ring"},
+    };
+    for (const Source &source : sources)
+    {
+        const double length = source.g.hi - source.g.lo;
+        const double rate = source.g.unitsPerSecond / kSampleRate; // 1x
+        for (const double passes : {1.3, 2.3, 3.3})
+        {
+            for (const Pair &pair : pairs)
+            {
+                const auto t = static_cast<int64_t>(std::floor(passes * length / std::abs(rate)));
+                INFO(source.name << ", " << passes << " passes, edge " << int(pair.from) << " to "
+                                 << int(pair.to));
+                gg::Playhead p;
+                p.sync(0, 1.0, pair.from, source.g, kSampleRate, source.position);
+                const auto at = static_cast<double>(t);
+                const double before = gg::scanFold(source.position + p.offsetAt(at), source.g.lo,
+                                                   source.g.hi, pair.from);
+                p.sync(t, 1.0, pair.to, source.g, kSampleRate, source.position);
+                const double after = gg::scanFold(source.position + p.offsetAt(at), source.g.lo,
+                                                  source.g.hi, pair.to);
+                const bool wrapsHi = pair.from == ScanEdge::Stop && pair.to == ScanEdge::Wrap &&
+                                     before == source.g.hi;
+                const double expected = wrapsHi ? source.g.lo : before;
+                CHECK(std::abs(after - expected) <= 1e-9 * source.frame);
+                // The new leg goes on from there at the same rate, while it stays in the window.
+                if (pair.from != ScanEdge::Stop)
+                {
+                    constexpr double kDt = 1000.0;
+                    const double next = gg::scanFold(source.position + p.offsetAt(at + kDt),
+                                                     source.g.lo, source.g.hi, pair.to);
+                    CHECK(std::abs(next - (before + rate * kDt)) <= 1e-9 * source.frame);
+                }
+            }
+        }
+    }
+}
+
 // ---- The playhead in the scheduler and the engine (spec §4.2 to §4.7, HB1 to HB9) ----
 
 namespace
@@ -375,6 +438,137 @@ gg::EngineConfig ringConfig(double liveSeconds, bool spectral = false, uint32_t 
     return config;
 }
 } // namespace
+
+namespace
+{
+// `frames` mono frames of a sine at `hz`, half scale, at 48 kHz.
+std::shared_ptr<gg::SampleBuffer> sineBuffer(int64_t frames, double hz)
+{
+    auto buf = std::make_shared<gg::SampleBuffer>(1, frames, kSampleRate);
+    for (int64_t i = 0; i < frames; ++i)
+    {
+        buf->channel(0)[i] =
+            static_cast<float>(0.5 * std::sin(2.0 * 3.14159265358979323846 * hz *
+                                              static_cast<double>(i) / kSampleRate));
+    }
+    return buf;
+}
+
+// The RMS of v over [from, to).
+double rmsOf(const std::vector<float> &v, int64_t from, int64_t to)
+{
+    double sum = 0.0;
+    for (int64_t i = from; i < to; ++i)
+    {
+        const auto x = static_cast<double>(v[static_cast<std::size_t>(i)]);
+        sum += x * x;
+    }
+    return std::sqrt(sum / static_cast<double>(to - from));
+}
+} // namespace
+
+TEST_CASE("a stop at a sample's end still sounds", "[engine][playhead]")
+{
+    // Ruling R13 (H3: Stop holds the point): a forward scan reaching a Sample's end holds each
+    // grain where it still fits, start = span - dur x rate, instead of a start at span that
+    // reads nothing. A 2 s 220 Hz sample, Spray 0, 1x.
+    constexpr int64_t kF = 2 * 48000;
+    constexpr int64_t kEnd = 4 * 48000;
+    const double span = static_cast<double>(kF - 1);
+    std::vector<float> first;
+    for (const uint32_t block : {256U, 37U})
+    {
+        INFO("block " << block);
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setSource(sineBuffer(kF, 220.0));
+        engine.setCloudParams(scanParams(0.0, 1.0, gg::ScanEdge::Stop));
+        GrainLog log;
+        engine.setEventSink(&GrainLog::record, &log);
+        Stereo out = unwritten(kEnd);
+        run(engine, out, 0, kEnd, block);
+        REQUIRE(allFinite(out.left));
+        const double r = sampleRate1x(1.0, kF);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            INFO("grain " << g.index);
+            const double fit = span - g.durationSamples * g.rate;
+            const double point = std::clamp(r * onsetOf(g), 0.0, 1.0) * span;
+            REQUIRE(std::abs(g.startPos - std::min(point, fit)) < 1e-6);
+            REQUIRE(g.startPos >= 0.0);
+        }
+        // Grains from 3 s to 4 s all start at the fit, and the level is there.
+        CHECK(rmsOf(out.left, 3 * 48000, kEnd) > 0.01);
+        if (first.empty())
+        {
+            first = out.left;
+        }
+        else
+        {
+            CHECK(sameBits(out.left, first));
+        }
+    }
+}
+
+TEST_CASE("a stop's end hold never below the window's start", "[engine][playhead]")
+{
+    // Ruling R13: a grain longer than the sample starts at 0 and is cut at the end as today.
+    constexpr int64_t kF = 1200; // 25 ms
+    gg::Engine engine(gg::EngineConfig{});
+    engine.setSource(sineBuffer(kF, 220.0));
+    engine.setCloudParams(scanParams(0.0, 1.0, gg::ScanEdge::Stop)); // 50 ms grains
+    GrainLog log;
+    engine.setEventSink(&GrainLog::record, &log);
+    Stereo out = unwritten(4800);
+    run(engine, out, 0, 4800, 256);
+    REQUIRE_FALSE(log.grains.empty());
+    for (const gg::GrainSpec &g : log.grains)
+    {
+        INFO("grain " << g.index);
+        REQUIRE(g.startPos == 0.0);
+    }
+}
+
+TEST_CASE("the end hold leaves a backward stop and a stop at rest alone", "[engine][playhead]")
+{
+    // Ruling R13: a backward Stop stays as it was, its point near the end included, and with the
+    // playhead exactly at rest Position 1.0 reads the sample's last frame, today's read.
+    constexpr int64_t kF = 2 * 48000;
+    const double span = static_cast<double>(kF - 1);
+    SECTION("backward from the end")
+    {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setSource(sineBuffer(kF, 220.0));
+        engine.setCloudParams(scanParams(1.0, -1.0, gg::ScanEdge::Stop));
+        GrainLog log;
+        engine.setEventSink(&GrainLog::record, &log);
+        Stereo out = unwritten(2 * 48000);
+        run(engine, out, 0, 2 * 48000, 256);
+        REQUIRE(log.grains.size() > 100);
+        const double r = sampleRate1x(-1.0, kF);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            INFO("grain " << g.index);
+            REQUIRE(std::abs(g.startPos - std::clamp(1.0 + r * onsetOf(g), 0.0, 1.0) * span) <
+                    1e-6);
+        }
+    }
+    SECTION("at rest at Position 1.0")
+    {
+        gg::Engine engine(gg::EngineConfig{});
+        engine.setSource(sineBuffer(kF, 220.0));
+        engine.setCloudParams(scanParams(1.0, 0.0, gg::ScanEdge::Stop));
+        GrainLog log;
+        engine.setEventSink(&GrainLog::record, &log);
+        Stereo out = unwritten(48000);
+        run(engine, out, 0, 48000, 256);
+        REQUIRE(log.grains.size() > 10);
+        for (const gg::GrainSpec &g : log.grains)
+        {
+            INFO("grain " << g.index);
+            REQUIRE(g.startPos == span);
+        }
+    }
+}
 
 TEST_CASE("scan zero draws exactly today's grains", "[engine][playhead]")
 {
